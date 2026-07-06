@@ -34,13 +34,13 @@ claude --plugin-dir /path/to/nunchi
 
 ## Codex CLI (ChatGPT) 지원
 
-Codex CLI는 Claude Code와 호환되는 plugin/hooks 체계를 채택했다 (hooks.json 형식, `additionalContext` 주입, Stop `decision: block`, `CLAUDE_PLUGIN_ROOT` 호환 환경 변수까지 동일). 이 저장소는 `.codex-plugin/plugin.json` 매니페스트를 포함하므로 Codex에서도 설치된다.
+Codex CLI는 Claude Code와 호환되는 plugin/hooks 체계를 채택했다 (hooks.json 형식, `additionalContext` 주입, Stop `decision: block`, `CLAUDE_PLUGIN_ROOT` 호환 환경 변수까지 동일). Codex 지원은 이 `codex-support` 브랜치 전용이며, 마켓플레이스에 **`nunchi-codex`** 항목으로 등록되어 있다 (소스가 이 브랜치로 고정됨).
 
 Codex 안에서:
 
 ```
 /plugin marketplace add DevP0tion/DevP0tion
-/plugin install nunchi@devp0tion
+/plugin install nunchi-codex@devp0tion
 ```
 
 설치 후 **`/hooks`에서 nunchi의 hook을 검토·신뢰(trust)해야 동작한다** — Codex는 plugin 번들 hook을 자동으로 신뢰하지 않는다.
