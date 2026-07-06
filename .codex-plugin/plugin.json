@@ -1,0 +1,8 @@
+{
+  "name": "nunchi",
+  "description": "환경별 작업 강도 보정('적당히') passive skill — surprise 기록과 재귀 개선",
+  "version": "0.7.0",
+  "author": {
+    "name": "DevP0tion"
+  }
+}
