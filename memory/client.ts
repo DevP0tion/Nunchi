@@ -3,10 +3,80 @@
 // 서버 쪽 포트 락(EADDRINUSE 즉시 종료)으로 하나만 살아남으므로 안전하다.
 import { io, type Socket } from "socket.io-client";
 import { fileURLToPath } from "node:url";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { dirname, join, resolve } from "node:path";
 import { resolveMemoryPort } from "./server.ts";
 import { loadConfig } from "../hooks/config.ts";
 
 const SERVER_PATH = fileURLToPath(new URL("./server.ts", import.meta.url));
+
+/** 포트의 서버가 다른 프로젝트 소유일 때 — 소비자(MCP)는 이 에러를 받으면
+ *  사용자에게 강제 연결 / 새 포트 할당 중 하나를 물어봐야 한다 */
+export class ProjectMismatchError extends Error {
+  constructor(
+    readonly port: number,
+    readonly expectedDir: string,
+    /** null = 구버전 서버라 mem:info 미지원 (식별 불가) */
+    readonly serverDir: string | null
+  ) {
+    super(
+      [
+        `[nunchi] port ${port}의 memory server는 이 프로젝트 소유가 아님`,
+        `(서버: ${serverDir ?? "식별 불가 — 구버전 서버"}, 기대: ${expectedDir}).`,
+        "사용자에게 다음 중 하나를 선택하도록 물어볼 것:",
+        `1) 강제 연결 — connectMemory(projectDir, { force: true }). 다른 프로젝트의 memory.db를 공유하게 된다.`,
+        `2) 새 포트 할당 — assignFreePort(projectDir)가 빈 포트를 .claude/nunchi.json의 port에 기록한다. 이후 connectMemory 재호출.`,
+      ].join(" ")
+    );
+    this.name = "ProjectMismatchError";
+  }
+}
+
+/** 경로 비교 — Windows는 대소문자 무시 */
+export function sameProject(a: string, b: string): boolean {
+  const [x, y] = [resolve(a), resolve(b)];
+  return process.platform === "win32"
+    ? x.toLowerCase() === y.toLowerCase()
+    : x === y;
+}
+
+/** 서버의 소유 프로젝트 조회 — 구버전 서버(mem:info 미지원)면 null */
+async function serverProjectDir(s: Socket): Promise<string | null> {
+  try {
+    const res = await s.timeout(2000).emitWithAck("mem:info");
+    return res.ok && typeof res.projectDir === "string" ? res.projectDir : null;
+  } catch {
+    return null;
+  }
+}
+
+/** OS가 주는 빈 임시 포트를 받아 프로젝트 .claude/nunchi.json의 port에 기록.
+ *  nunchi.json은 plugin userConfig(환경 변수)보다 우선하므로 다음 연결부터 즉시 반영된다. */
+export async function assignFreePort(
+  projectDir: string = process.env.CLAUDE_PROJECT_DIR || process.cwd()
+): Promise<number> {
+  // ponytail: listen(0) 후 close — close~스폰 사이에 포트를 뺏길 수 있으나 확률 무시 가능
+  const port = await new Promise<number>((res, rej) => {
+    const srv = createServer();
+    srv.once("error", rej);
+    srv.listen(0, "127.0.0.1", () => {
+      const p = (srv.address() as { port: number }).port;
+      srv.close(() => res(p));
+    });
+  });
+  const cfgPath = join(projectDir, ".claude", "nunchi.json");
+  let cfg: Record<string, unknown> = {};
+  try {
+    if (existsSync(cfgPath)) cfg = JSON.parse(readFileSync(cfgPath, "utf8").trim());
+  } catch {
+    /* 손상된 config는 port만 담아 새로 쓴다 */
+  }
+  cfg.port = port;
+  mkdirSync(dirname(cfgPath), { recursive: true });
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+  return port;
+}
 
 export interface MemoryClient {
   set(key: string, value: string): Promise<void>;
@@ -20,9 +90,9 @@ export interface MemoryClient {
   close(): void;
 }
 
-function tryConnect(port: number, timeoutMs: number): Promise<Socket | null> {
+function tryConnect(url: string, timeoutMs: number): Promise<Socket | null> {
   return new Promise((resolve) => {
-    const s = io(`http://127.0.0.1:${port}`, {
+    const s = io(url, {
       reconnection: false,
       timeout: timeoutMs,
     });
@@ -35,31 +105,56 @@ function tryConnect(port: number, timeoutMs: number): Promise<Socket | null> {
 }
 
 export async function connectMemory(
-  projectDir: string = process.env.CLAUDE_PROJECT_DIR || process.cwd()
+  projectDir: string = process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+  opts: { force?: boolean } = {}
 ): Promise<MemoryClient> {
-  const port = resolveMemoryPort(projectDir);
-  // auto-start와 무관하게: 포트에 서버가 실행 중이면 그대로 연결
-  let socket = await tryConnect(port, 1000);
+  const cfg = loadConfig(projectDir);
+  let socket: Socket | null;
 
-  if (!socket) {
-    // 서버 미기동 → 스폰은 auto-start=true일 때만
-    if (!loadConfig(projectDir)["auto-start"]) {
-      throw new Error(
-        `[nunchi] memory server 미기동 (port ${port}) — auto-start가 꺼져 있어 스폰하지 않음`
-      );
+  const external = cfg["external-address"];
+  if (external) {
+    // 외부 서버: 스폰 없음. 명시적으로 지정한 공유 서버이므로 프로젝트 핸드셰이크도 생략
+    const url = external.includes("://") ? external : `http://${external}`;
+    socket = await tryConnect(url, 3000);
+    if (!socket) {
+      throw new Error(`[nunchi] external memory server 접속 실패 (${url})`);
     }
-    // 스폰 후 재시도 (동시 스폰 경쟁은 서버 포트 락이 정리)
-    Bun.spawn(["bun", SERVER_PATH], {
-      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-    }).unref();
-    for (let i = 0; i < 20 && !socket; i++) {
-      await new Promise((r) => setTimeout(r, 250));
-      socket = await tryConnect(port, 1000);
+  } else {
+    const port = resolveMemoryPort(projectDir);
+    const url = `http://127.0.0.1:${port}`;
+    // auto-start와 무관하게: 포트에 서버가 실행 중이면 그대로 연결
+    socket = await tryConnect(url, 1000);
+
+    if (!socket) {
+      // 서버 미기동 → 스폰은 auto-start=true일 때만
+      if (!cfg["auto-start"]) {
+        throw new Error(
+          `[nunchi] memory server 미기동 (port ${port}) — auto-start가 꺼져 있어 스폰하지 않음`
+        );
+      }
+      // 스폰 후 재시도 (동시 스폰 경쟁은 서버 포트 락이 정리)
+      Bun.spawn(["bun", SERVER_PATH], {
+        env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      }).unref();
+      for (let i = 0; i < 20 && !socket; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        socket = await tryConnect(url, 1000);
+      }
+      if (!socket) throw new Error(`[nunchi] memory server 접속 실패 (port ${port})`);
     }
-    if (!socket) throw new Error(`[nunchi] memory server 접속 실패 (port ${port})`);
+
+    // 핸드셰이크: 서버가 이 프로젝트 소유인지 확인 — 직접 스폰한 경우도 검증
+    // (스폰 경쟁에서 다른 프로젝트의 서버가 포트를 선점했을 수 있다)
+    if (!opts.force) {
+      const dir = await serverProjectDir(socket);
+      if (dir === null || !sameProject(dir, projectDir)) {
+        socket.close();
+        throw new ProjectMismatchError(port, projectDir, dir);
+      }
+    }
   }
 
   const s = socket;

@@ -1,6 +1,6 @@
 # nunchi (눈치)
 
-> 작업 강도 캘리브레이션("적당히") passive skill for Claude Code
+> 작업 강도 보정("적당히") passive skill for Claude Code
 
 "적당히"는 고정 규칙이 아니라 **환경별로 학습되는 다이얼**이다. 어떤 프로젝트는 테스트 생략을 벌주고, 어떤 프로젝트는 과잉 검증이 시간 낭비다. nunchi는 예측과 실제가 어긋난 순간(**surprise**)만 프로젝트별 `calibration.md`에 축적하고, 매 세션 시작 시 자동 주입해서 검증 깊이 · 테스트 범위 · 리서치 강도 · 리팩토링 범위를 결정하는 기준으로 재귀 개선한다.
 
@@ -98,6 +98,7 @@ claude --plugin-dir /path/to/nunchi
 | `auto_start` | `CLAUDE_PLUGIN_OPTION_AUTO_START` | `auto-start` | `true` | `true`면 SessionStart 시 memory server 자동 시작 |
 | `path` | `CLAUDE_PLUGIN_OPTION_PATH` | `path` | `.claude/nunchi` | calibration.md가 저장될 폴더 (프로젝트 루트 기준 상대 또는 절대). 초기화 시 없으면 생성 |
 | `port` | `CLAUDE_PLUGIN_OPTION_PORT` | `port` | `null` | memory server(Socket.IO) 포트. 미설정 시 memory-config.json의 port(기본 41720) 사용 |
+| `external_address` | `CLAUDE_PLUGIN_OPTION_EXTERNAL_ADDRESS` | `external-address` | `null` | 설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결 (예: `http://192.168.0.10:41720`, 스킴 생략 시 `http://`). 로컬 자동 스폰과 프로젝트 검증 핸드셰이크는 생략 |
 | `model` | `CLAUDE_PLUGIN_OPTION_MODEL` | `model` | `null` | 설정 시(예: `haiku`) `set`마다 `claude -p`로 검색 키워드를 비동기 생성. 미설정 시 비활성. 서버 기동 시 1회 로드되므로 변경은 memory server 재시작 후 반영 |
 
 프로젝트별 예시 — `{프로젝트}/.claude/nunchi.json`:
@@ -115,7 +116,9 @@ sqlite(`memory.db`)는 server.ts 단일 프로세스만 소유하고, MCP 서버
 
 - **단일 실행**: 포트 바인딩이 락. 중복 실행하면 `EADDRINUSE` 감지 후 즉시 종료(exit 0).
 - **자동 연결**: `connectMemory()`는 `auto-start`와 무관하게 포트에 실행 중인 서버가 있으면 그대로 연결한다. 서버가 없으면 `auto-start: true`일 때만 스폰 후 재접속 (동시 스폰 경쟁은 포트 락이 정리), `false`면 에러.
-- **설정**: `{path}/memory-config.json` (서버 전용 — 플러그인 config와 별개). `db`(파일명, 기본 `memory.db`), `port`(기본 41720). 플러그인 config의 `port`가 설정돼 있으면 그쪽이 우선.
+- **프로젝트 검증 핸드셰이크**: 여러 프로젝트가 같은 포트(기본 41720)를 쓰면 나중에 뜬 쪽이 남의 서버(= 남의 memory.db)에 붙을 수 있다. 이를 막기 위해 `connectMemory()`는 접속 직후 서버의 소유 프로젝트를 확인(`mem:info`)하고, 불일치면 `ProjectMismatchError`를 던진다. 이 에러를 받으면 사용자에게 물어본 뒤 둘 중 하나로 처리한다: ① `connectMemory(projectDir, { force: true })`로 강제 연결(타 프로젝트 db 공유), ② `assignFreePort(projectDir)`로 OS의 빈 포트를 받아 `.claude/nunchi.json`의 `port`에 기록 후 재연결. nunchi.json은 plugin userConfig(환경 변수)보다 우선하므로 즉시 반영된다.
+- **설정**: `{path}/memory-config.json` (서버 전용 — 플러그인 config와 별개). `db`(파일명, 기본 `memory.db`), `port`(기본 41720), `host`(바인딩 주소, 기본 `127.0.0.1`). 플러그인 config의 `port`가 설정돼 있으면 그쪽이 우선.
+- **외부 서버**: 플러그인 config에 `external-address`를 설정하면 로컬 스폰 없이 해당 주소로 연결한다 (명시적 공유 서버이므로 프로젝트 검증 핸드셰이크 생략). 외부에 서비스하는 쪽은 memory-config.json의 `host`를 `0.0.0.0` 등으로 바꿔 바인딩을 연다 — 인증이 없으므로 신뢰할 수 있는 네트워크에서만 열 것.
 - **API**: `set(key, value)` / `get(key)` / `search(query, limit)` / `shutdown()`
 - **검색**: FTS5(trigram, BM25 랭킹). 3글자 미만 질의는 LIKE 폴백. 구버전 db는 기동 시 자동 마이그레이션·백필.
 - **키워드 보강**: 플러그인 config에 `model`을 설정하면 `set`마다 `claude -p --model <값>`을 백그라운드로 돌려 유의어 키워드를 생성, 검색 대상에 포함한다. 값이 갱신되면 낡은 키워드는 자동 폐기. 미설정 시 완전 비활성.

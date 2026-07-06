@@ -22,7 +22,8 @@ const projectDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
 const cfg = loadConfig(projectDir);
 
 // auto-start: memory server 자동 시작 (이미 떠 있으면 서버가 포트 락으로 즉시 종료 → 멱등)
-if (cfg["auto-start"]) {
+// external-address 설정 시에는 외부 서버를 쓰므로 로컬 스폰을 건너뛴다
+if (cfg["auto-start"] && !cfg["external-address"]) {
   try {
     Bun.spawn(
       ["bun", fileURLToPath(new URL("../memory/server.ts", import.meta.url))],
@@ -60,8 +61,8 @@ if (existsSync(docPath)) {
     doc = doc.slice(0, MAX_CHARS) + "\n...(truncated: 문서가 상한을 초과함. 정제 필요)";
   }
   context = [
-    "[nunchi] 이 프로젝트는 작업 강도 캘리브레이션 규약을 사용한다.",
-    `아래는 이 환경에서 학습된 캘리브레이션 문서(${docRel}) 전문이다. 작업 강도(검증 깊이, 테스트 여부, 리서치 범위, 리팩토링 범위) 결정 시 이 문서가 기준이 된다.`,
+    "[nunchi] 이 프로젝트는 작업 강도 보정 규약을 사용한다.",
+    `아래는 이 환경에서 학습된 보정 문서(${docRel}) 전문이다. 작업 강도(검증 깊이, 테스트 여부, 리서치 범위, 리팩토링 범위) 결정 시 이 문서가 기준이 된다.`,
     `작업 중 예측과 실제가 어긋나는 경우(과잉 대응 / 과소 대응으로 인한 문제 / 환경 특이사항 발견)에는 nunchi 스킬 규약대로 이 문서(${docRel})에 1-3줄을 추가한다.`,
     "",
     "---",
@@ -70,7 +71,7 @@ if (existsSync(docPath)) {
   ].join("\n");
 } else {
   context = [
-    `[nunchi] 이 프로젝트는 작업 강도 캘리브레이션 규약을 사용한다. 캘리브레이션 문서(${docRel})는 아직 없다.`,
+    `[nunchi] 이 프로젝트는 작업 강도 보정 규약을 사용한다. 보정 문서(${docRel})는 아직 없다.`,
     `작업 중 예측과 실제가 어긋나는 경우(과잉 대응 / 과소 대응으로 인한 문제 / 환경 특이사항)를 처음 발견하면 nunchi 스킬을 참조해 ${docRel} 를 생성하고 기록한다.`,
   ].join("\n");
 }

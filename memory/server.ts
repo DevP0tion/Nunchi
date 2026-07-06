@@ -24,12 +24,16 @@ export interface MemoryConfig {
   db: string;
   /** Socket.IO 포트. 플러그인 config의 port가 설정돼 있으면 그쪽이 우선 */
   port: number;
+  /** 바인딩 주소. 기본 루프백. 외부 클라이언트(external-address)에게 서비스하려면
+   *  "0.0.0.0" 등으로 변경 — 인증이 없으므로 신뢰할 수 있는 네트워크에서만 열 것 */
+  host: string;
 }
 
 const MEMORY_CONFIG_DEFAULTS: MemoryConfig = {
   version: 1,
   db: DB_FILENAME,
   port: DEFAULT_PORT,
+  host: "127.0.0.1",
 };
 
 /** memory-config.json 로드 — 없거나 손상이면 기본값과 병합 (키 단위) */
@@ -192,7 +196,7 @@ export function pickKeywordsLine(raw: string): string {
 
 if (import.meta.main) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const { db, dbPath, port } = initMemory(projectDir);
+  const { db, dbPath, port, memoryConfig } = initMemory(projectDir);
   const store = createStore(db);
   // 보강 모델 — 기동 시 1회 로드. 변경은 memory server 재시작 후 반영
   const model = loadConfig(projectDir).model;
@@ -229,7 +233,7 @@ if (import.meta.main) {
     }
   }
 
-  // 루프백에만 바인딩 — 로컬 MCP 전용이므로 외부 인터페이스에 노출하지 않는다
+  // 기본 루프백 바인딩. 외부 서비스가 필요하면 memory-config.json의 host를 변경
   const httpServer = createServer();
   httpServer.on("error", (e: NodeJS.ErrnoException) => {
     if (e.code === "EADDRINUSE") {
@@ -239,7 +243,7 @@ if (import.meta.main) {
     throw e;
   });
   const io = new Server(httpServer);
-  httpServer.listen(port, "127.0.0.1");
+  httpServer.listen(port, memoryConfig.host);
 
   type Ack = (res: Record<string, unknown>) => void;
   const handle = (fn: () => Record<string, unknown>) => (ack: Ack) => {
@@ -252,6 +256,11 @@ if (import.meta.main) {
   };
 
   io.on("connection", (socket) => {
+    // 핸드셰이크: 클라이언트가 접속 직후 이 서버의 소유 프로젝트를 확인한다
+    // — 여러 프로젝트가 같은 포트를 쓸 때 다른 프로젝트의 db에 조용히 붙는 사고 방지
+    socket.on("mem:info", (ack) =>
+      handle(() => ({ projectDir, dbPath, port }))(ack)
+    );
     socket.on("mem:set", (p, ack) =>
       handle(() => {
         const key = String(p.key);

@@ -26,6 +26,9 @@ export interface NunchiConfig {
   port: number | null;
   /** 설정 시 mem:set마다 `claude -p --model <값>`으로 검색 키워드를 비동기 생성. null이면 비활성 */
   model: string | null;
+  /** 설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결 (예: "http://192.168.0.10:41720").
+   *  스킴 생략 시 http:// 로 간주. 로컬 스폰·프로젝트 핸드셰이크는 생략된다 */
+  "external-address": string | null;
 }
 
 export const DEFAULTS: NunchiConfig = {
@@ -33,6 +36,7 @@ export const DEFAULTS: NunchiConfig = {
   path: ".claude/nunchi",
   port: null,
   model: null,
+  "external-address": null,
 };
 
 /** path 폴더 안의 calibration 문서 파일명 (고정) */
@@ -77,6 +81,8 @@ function envConfig(): Partial<NunchiConfig> {
   if (Number.isFinite(port)) cfg.port = port;
   const model = process.env.CLAUDE_PLUGIN_OPTION_MODEL;
   if (model) cfg.model = model;
+  const external = process.env.CLAUDE_PLUGIN_OPTION_EXTERNAL_ADDRESS;
+  if (external) cfg["external-address"] = external;
   return cfg;
 }
 
@@ -95,6 +101,10 @@ export function loadConfig(projectDir: string): NunchiConfig {
     model:
       typeof merged.model === "string" && merged.model.trim()
         ? merged.model.trim()
+        : null,
+    "external-address":
+      typeof merged["external-address"] === "string" && merged["external-address"].trim()
+        ? merged["external-address"].trim()
         : null,
   };
 }

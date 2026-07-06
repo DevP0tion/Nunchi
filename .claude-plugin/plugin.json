@@ -1,7 +1,7 @@
 {
   "name": "nunchi",
-  "description": "환경별 작업 강도 캘리브레이션('적당히') passive skill — surprise 기록과 재귀 개선",
-  "version": "0.5.0",
+  "description": "환경별 작업 강도 보정('적당히') passive skill — surprise 기록과 재귀 개선",
+  "version": "0.6.0",
   "author": {
     "name": "DevP0tion"
   },
@@ -24,6 +24,12 @@
       "title": "Port",
       "description": "memory server(Socket.IO) 포트. 미설정 시 memory-config.json의 port(기본 41720) 사용",
       "type": "number",
+      "required": false
+    },
+    "external_address": {
+      "title": "External Address",
+      "description": "설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결 (예: http://192.168.0.10:41720, 스킴 생략 시 http). 로컬 자동 스폰과 프로젝트 검증 핸드셰이크는 생략",
+      "type": "string",
       "required": false
     },
     "model": {
