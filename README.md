@@ -34,7 +34,14 @@ claude --plugin-dir /path/to/nunchi
 
 ## Codex CLI (ChatGPT) 지원
 
-Codex CLI 지원은 **`codex-support` 브랜치**에서 제공한다 (`.codex-plugin/plugin.json` 매니페스트 포함 — main에는 Claude Code 설정만 둔다). 설치 방법과 Claude Code와의 차이는 해당 브랜치의 README를 참조.
+Codex CLI 지원은 **`codex-support` 브랜치**에서 제공한다 (`.codex-plugin/plugin.json` 매니페스트 포함 — main에는 Claude Code 설정만 둔다). 마켓플레이스에는 해당 브랜치로 고정된 **`nunchi-codex`** 항목이 별도로 등록되어 있다:
+
+```
+/plugin marketplace add DevP0tion/DevP0tion
+/plugin install nunchi-codex@devp0tion
+```
+
+Claude Code와의 차이 등 상세는 해당 브랜치의 README를 참조.
 
 ## 왜 만들었나
 
