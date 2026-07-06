@@ -4,6 +4,55 @@
 
 "적당히"는 고정 규칙이 아니라 **환경별로 학습되는 다이얼**이다. 어떤 프로젝트는 테스트 생략을 벌주고, 어떤 프로젝트는 과잉 검증이 시간 낭비다. nunchi는 예측과 실제가 어긋난 순간(**surprise**)만 프로젝트별 `calibration.md`에 축적하고, 매 세션 시작 시 자동 주입해서 검증 깊이 · 테스트 범위 · 리서치 강도 · 리팩토링 범위를 결정하는 기준으로 재귀 개선한다.
 
+## 요구사항
+
+- **Bun** 이 PATH에 있어야 한다 (hooks가 `bun <script>.ts` 로 실행됨). 확인: `bun --version`
+- hooks는 의존성 없이 동작한다. **memory server(server.ts/client.ts)** 의 socket.io는 Bun auto-install이 실행 시점에 자동 해석하므로 별도 `bun install`이 필요 없다. 단 첫 기동 시 Bun 전역 캐시가 비어 있으면 네트워크가 필요하며, 오프라인 환경에서는 미리 `bun install`을 실행해 둔다.
+
+## 설치
+
+**정식 설치 (필수)** — hooks가 `${CLAUDE_PLUGIN_ROOT}`를 사용하므로 반드시 plugin 시스템으로 설치해야 한다. `.claude/skills/` 폴더에 복사하는 방식은 SKILL.md만 로드되고 **hooks(SessionStart 주입, Stop 점검, server auto-start)가 전혀 동작하지 않는다.**
+
+Claude Code 안에서:
+
+```
+/plugin marketplace add DevP0tion/DevP0tion
+/plugin install nunchi@devp0tion
+```
+
+hooks는 자동 등록되며 **다음 세션 시작부터** 동작한다 (설치한 현재 세션에는 미적용).
+
+**개발/테스트용**: 설치 없이 실행하려면
+
+```sh
+claude --plugin-dir /path/to/nunchi
+```
+
+(hooks 파일 변경 시에는 dev 모드에서도 `/reload-plugins` 필요)
+
+확인: `claude plugin list` 에 `nunchi` 표시. 새 세션 시작 시 컨텍스트에 `[nunchi]` 주입 메시지가 보이면 정상.
+
+## Codex CLI (ChatGPT) 지원
+
+Codex CLI는 Claude Code와 호환되는 plugin/hooks 체계를 채택했다 (hooks.json 형식, `additionalContext` 주입, Stop `decision: block`, `CLAUDE_PLUGIN_ROOT` 호환 환경 변수까지 동일). 이 저장소는 `.codex-plugin/plugin.json` 매니페스트를 포함하므로 Codex에서도 설치된다.
+
+Codex 안에서:
+
+```
+/plugin marketplace add DevP0tion/DevP0tion
+/plugin install nunchi@devp0tion
+```
+
+설치 후 **`/hooks`에서 nunchi의 hook을 검토·신뢰(trust)해야 동작한다** — Codex는 plugin 번들 hook을 자동으로 신뢰하지 않는다.
+
+Claude Code와의 차이:
+
+- **userConfig(설정 UI) 없음** — 전역 설정 대신 프로젝트 `.claude/nunchi.json`을 사용한다 (경로는 두 도구 공통).
+- **calibration 공유** — 문서 경로가 `.claude/nunchi/calibration.md`로 동일하므로, 한 프로젝트를 Claude Code와 Codex로 번갈아 작업해도 학습이 하나로 쌓인다.
+- **SKILL.md 규약** — Codex에는 Skill 도구가 없으므로 SessionStart 주입 메시지에 SKILL.md 절대 경로가 포함된다. 모델이 기록 시 이 파일을 직접 읽는다.
+- **ponytail 감지·`model` 키워드 보강은 Claude Code 전용** — ponytail은 Claude Code plugin이고, 키워드 보강은 `claude` CLI를 호출한다. Codex 단독 환경에서는 자동으로 비활성 상태가 된다.
+- **Bun 요구사항 동일** — hooks가 `bun`으로 실행되므로 PATH에 있어야 한다.
+
 ## 왜 만들었나
 
 Claude Code는 세션이 끝나면 "이 프로젝트에서 뭐가 통하고 뭐가 사고 나는지"를 잊는다. nunchi는 그 경험 중 **신호만** 남긴다:
@@ -62,55 +111,6 @@ nunchi/
     ├── session-start.ts      # 매 세션: calibration 문서 컨텍스트 주입
     └── stop-check.ts         # N턴마다: surprise 점검 강제 (백업 루프)
 ```
-
-## 요구사항
-
-- **Bun** 이 PATH에 있어야 한다 (hooks가 `bun <script>.ts` 로 실행됨). 확인: `bun --version`
-- hooks는 의존성 없이 동작한다. **memory server(server.ts/client.ts)** 의 socket.io는 Bun auto-install이 실행 시점에 자동 해석하므로 별도 `bun install`이 필요 없다. 단 첫 기동 시 Bun 전역 캐시가 비어 있으면 네트워크가 필요하며, 오프라인 환경에서는 미리 `bun install`을 실행해 둔다.
-
-## 설치
-
-**정식 설치 (필수)** — hooks가 `${CLAUDE_PLUGIN_ROOT}`를 사용하므로 반드시 plugin 시스템으로 설치해야 한다. `.claude/skills/` 폴더에 복사하는 방식은 SKILL.md만 로드되고 **hooks(SessionStart 주입, Stop 점검, server auto-start)가 전혀 동작하지 않는다.**
-
-Claude Code 안에서:
-
-```
-/plugin marketplace add DevP0tion/DevP0tion
-/plugin install nunchi@devp0tion
-```
-
-hooks는 자동 등록되며 **다음 세션 시작부터** 동작한다 (설치한 현재 세션에는 미적용).
-
-**개발/테스트용**: 설치 없이 실행하려면
-
-```sh
-claude --plugin-dir /path/to/nunchi
-```
-
-(hooks 파일 변경 시에는 dev 모드에서도 `/reload-plugins` 필요)
-
-확인: `claude plugin list` 에 `nunchi` 표시. 새 세션 시작 시 컨텍스트에 `[nunchi]` 주입 메시지가 보이면 정상.
-
-## Codex CLI (ChatGPT) 지원
-
-Codex CLI는 Claude Code와 호환되는 plugin/hooks 체계를 채택했다 (hooks.json 형식, `additionalContext` 주입, Stop `decision: block`, `CLAUDE_PLUGIN_ROOT` 호환 환경 변수까지 동일). 이 저장소는 `.codex-plugin/plugin.json` 매니페스트를 포함하므로 Codex에서도 설치된다.
-
-Codex 안에서:
-
-```
-/plugin marketplace add DevP0tion/DevP0tion
-/plugin install nunchi@devp0tion
-```
-
-설치 후 **`/hooks`에서 nunchi의 hook을 검토·신뢰(trust)해야 동작한다** — Codex는 plugin 번들 hook을 자동으로 신뢰하지 않는다.
-
-Claude Code와의 차이:
-
-- **userConfig(설정 UI) 없음** — 전역 설정 대신 프로젝트 `.claude/nunchi.json`을 사용한다 (경로는 두 도구 공통).
-- **calibration 공유** — 문서 경로가 `.claude/nunchi/calibration.md`로 동일하므로, 한 프로젝트를 Claude Code와 Codex로 번갈아 작업해도 학습이 하나로 쌓인다.
-- **SKILL.md 규약** — Codex에는 Skill 도구가 없으므로 SessionStart 주입 메시지에 SKILL.md 절대 경로가 포함된다. 모델이 기록 시 이 파일을 직접 읽는다.
-- **ponytail 감지·`model` 키워드 보강은 Claude Code 전용** — ponytail은 Claude Code plugin이고, 키워드 보강은 `claude` CLI를 호출한다. Codex 단독 환경에서는 자동으로 비활성 상태가 된다.
-- **Bun 요구사항 동일** — hooks가 `bun`으로 실행되므로 PATH에 있어야 한다.
 
 ## 설정 (config)
 
