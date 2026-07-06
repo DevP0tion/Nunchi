@@ -1,0 +1,27 @@
+{
+  "description": "nunchi: 작업 강도 캘리브레이션 passive hooks",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.ts\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-check.ts\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

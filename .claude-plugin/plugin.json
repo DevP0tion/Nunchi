@@ -1,0 +1,36 @@
+{
+  "name": "nunchi",
+  "description": "환경별 작업 강도 캘리브레이션('적당히') passive skill — surprise 기록과 재귀 개선",
+  "version": "0.5.0",
+  "author": {
+    "name": "DevP0tion"
+  },
+  "userConfig": {
+    "auto_start": {
+      "title": "Auto Start",
+      "description": "true면 SessionStart 시 memory server 자동 시작",
+      "type": "string",
+      "required": false,
+      "default": "true"
+    },
+    "path": {
+      "title": "Calibration Dir",
+      "description": "calibration.md가 저장될 폴더 (프로젝트 루트 기준 상대 또는 절대). 초기화 시 없으면 생성",
+      "type": "string",
+      "required": false,
+      "default": ".claude/nunchi"
+    },
+    "port": {
+      "title": "Port",
+      "description": "memory server(Socket.IO) 포트. 미설정 시 memory-config.json의 port(기본 41720) 사용",
+      "type": "number",
+      "required": false
+    },
+    "model": {
+      "title": "Enrichment Model",
+      "description": "설정 시 mem:set마다 claude -p --model <값>으로 검색 키워드를 비동기 생성 (예: haiku). 미설정 시 비활성. 변경은 memory server 재시작 후 반영",
+      "type": "string",
+      "required": false
+    }
+  }
+}
