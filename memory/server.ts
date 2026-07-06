@@ -357,8 +357,10 @@ if (import.meta.main) {
     socket.on("cal:stamp", (ack) => handle(() => ({ stamp: cal.stamp() }))(ack));
     socket.on("mem:shutdown", (ack) => {
       if (typeof ack === "function") ack({ ok: true });
-      io.close();
+      // db를 먼저 닫는다 — 클라이언트가 disconnect를 볼 시점엔 DB 파일 잠금이 해제된 뒤다
+      // (ack 직후 rmSync하는 테스트의 EBUSY 경쟁 방지)
       db.close();
+      io.close();
       process.exit(0);
     });
   });
