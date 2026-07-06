@@ -139,7 +139,9 @@ export async function connectMemory(
     const port = resolveMemoryPort(projectDir);
     const url = `http://127.0.0.1:${port}`;
     // auto-start와 무관하게: 포트에 서버가 실행 중이면 그대로 연결
-    socket = await tryConnect(url, 1000);
+    // ponytail: noSpawn(훅 프로브)만 2초 — 풀스위트 부하 시 루프백 핸드셰이크가 1초를 넘어
+    // stamp=null 오탐(false positive)이 나던 문제. 스폰 경로의 콜드스타트 타이밍은 그대로 둔다
+    socket = await tryConnect(url, opts.noSpawn ? 2000 : 1000);
 
     if (!socket) {
       // 훅의 빠른 경로: 스폰 대기 없이 즉시 실패 (매 메시지 훅이 세션을 막지 않도록)

@@ -41,7 +41,7 @@ export function applyCalSchema(db: Database): void {
       evidence TEXT NOT NULL,
       confidence INTEGER NOT NULL DEFAULT 1,
       keywords TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
     )
   `);
   db.run(`
@@ -83,10 +83,10 @@ export function createCalStore(db: Database) {
   const getStmt = db.prepare(`SELECT ${COLS}, keywords FROM calibration WHERE id = ?`);
   const updStmt = db.prepare(
     `UPDATE calibration SET section = ?, area = ?, rule = ?, evidence = ?,
-     confidence = ?, keywords = ?, updated_at = datetime('now') WHERE id = ?`
+     confidence = ?, keywords = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
   );
   const confirmStmt = db.prepare(
-    `UPDATE calibration SET confidence = confidence + 1, updated_at = datetime('now') WHERE id = ?`
+    `UPDATE calibration SET confidence = confidence + 1, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
   );
   const delStmt = db.prepare(`DELETE FROM calibration WHERE id = ?`);
   const stampStmt = db.prepare(`SELECT max(updated_at) AS m FROM calibration`);

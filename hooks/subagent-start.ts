@@ -18,7 +18,9 @@ try {
   try {
     const core: CalEntryLite[] = await mem.calCore();
     if (core.length) {
-      lines.push("", "[확정 규칙 — '벌주는 것' 신뢰도 높음(3+). 항상 지킨다]", formatCalEntries(core));
+      // ponytail: 하드 슬라이스 — session-start와 동일하게 8천자 캡 (additionalContext 상한 보호)
+      const coreBlock = formatCalEntries(core).slice(0, 8000);
+      lines.push("", "[확정 규칙 — '벌주는 것' 신뢰도 높음(3+). 항상 지킨다]", coreBlock);
     }
     const prompt = String(input.prompt ?? "").trim();
     if (prompt) {
