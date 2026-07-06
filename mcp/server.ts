@@ -29,7 +29,7 @@ const section = z
   .enum(["punish", "forgive", "env"])
   .describe("punish=벌주는 것(반드시 한다), forgive=용서하는 것(생략 가능), env=환경 특이사항");
 
-const server = new McpServer({ name: "nunchi", version: "0.8.0" });
+const server = new McpServer({ name: "nunchi", version: "0.8.1" });
 
 server.registerTool(
   "nunchi_record",

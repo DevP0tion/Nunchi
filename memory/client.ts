@@ -155,12 +155,29 @@ export async function connectMemory(
         );
       }
       // 스폰 후 재시도 (동시 스폰 경쟁은 서버 포트 락이 정리)
-      // detached: Windows에서 부모(단명 클라이언트) 종료 시 자식이 함께 죽지 않도록
-      spawn("bun", [SERVER_PATH], {
-        env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
-        detached: true,
-        stdio: "ignore",
-      }).unref();
+      if (process.platform === "win32") {
+        // 새 터미널 창에서 실행 — 서버 생존이 눈에 보이고, 창을 닫으면 종료된다.
+        // (백그라운드 detached는 세션 종료 후 orphan으로 남아 memory.db를 잠그는 문제가 있었다)
+        // cmd /s /c: 바깥 따옴표 한 겹을 벗기고 안쪽을 보존. start의 첫 따옴표 인자는 창 제목.
+        spawn(
+          "cmd",
+          ["/d", "/s", "/c", `"start "nunchi memory server" bun "${SERVER_PATH}""`],
+          {
+            env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+            detached: true,
+            stdio: "ignore",
+            windowsVerbatimArguments: true,
+          }
+        ).unref();
+      } else {
+        // 비Windows: 범용적인 '새 터미널 창' 실행 방법이 없어 기존 detached 백그라운드 유지
+        // detached: 부모(단명 클라이언트) 종료 시 자식이 함께 죽지 않도록
+        spawn("bun", [SERVER_PATH], {
+          env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+          detached: true,
+          stdio: "ignore",
+        }).unref();
+      }
       for (let i = 0; i < 20 && !socket; i++) {
         await new Promise((r) => setTimeout(r, 250));
         socket = await tryConnect(url, 1000);
@@ -204,11 +221,21 @@ export async function connectMemory(
     calCore: async () => (await req("cal:core")).rows,
     calStamp: async () => (await req("cal:stamp")).stamp ?? null,
     shutdown: async () => {
+      // ack는 서버가 파일 핸들을 놓기 전에 도착할 수 있다 — disconnect까지 기다려야
+      // 호출자가 곧바로 DB 디렉터리를 지워도 안전하다 (서버는 db.close 후 접속을 끊는다)
+      const gone = new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, 2000);
+        s.once("disconnect", () => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
       try {
         await req("mem:shutdown");
       } catch {
         /* 서버가 ack 전에 종료되면 연결이 끊긴다 — 그게 곧 성공 */
       }
+      await gone;
       s.close();
     },
     close: () => s.close(),
