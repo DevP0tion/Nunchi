@@ -100,6 +100,9 @@ if (doc !== null) {
   ].join("\n");
 }
 
+// 스킬 규약 문서 경로: Skill 도구가 없는 호스트(Codex CLI 등)에서도 규약 전문을 찾을 수 있게 명시
+context += `\n[nunchi] 기록 규약 전문(SKILL.md): ${fileURLToPath(new URL("../SKILL.md", import.meta.url))}`;
+
 // ponytail(고정 강도 정책) 공존: 우선순위가 결정돼 있으면 규칙 1줄, 미결정이면 질문 지시 1줄 주입
 if (isPonytailEnabled(projectDir)) {
   const priority = cfg["policy-priority"];
