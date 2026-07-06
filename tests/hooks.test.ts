@@ -53,3 +53,34 @@ test(
   },
   30000
 );
+
+test(
+  "session-start: 10k 상한선 — 코어가 크면 8k 슬라이스, 규약/ponytail 줄은 생존",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-10k-"));
+    await assignFreePort(dir);
+    const mem = await connectMemory(dir);
+    try {
+      // ~60개 엔트리 × 각 ~200자 = ~12k 생성 → 8k 슬라이스 후 규약 줄 추가 = 총 <10k
+      const longRule = "A".repeat(100); // 100자
+      const longEvidence = "E".repeat(100); // 100자
+      for (let i = 0; i < 60; i++) {
+        await mem.calAdd({
+          section: "punish",
+          area: `[area-${i}]`,
+          rule: longRule,
+          evidence: longEvidence,
+          confidence: 3,
+        });
+      }
+      const raw = await runHook("session-start.ts", dir, { source: "startup" });
+      const ctx = JSON.parse(raw).hookSpecificOutput.additionalContext as string;
+      expect(ctx.length).toBeLessThanOrEqual(10000);
+      expect(ctx).toContain("nunchi_search"); // 규약 줄 생존
+    } finally {
+      await mem.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);

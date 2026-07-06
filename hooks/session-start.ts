@@ -46,7 +46,9 @@ const lines = [
   "예측과 실제가 어긋나면(과잉/과소/환경 특이사항) nunchi_record로 기록한다. 기존 엔트리 재확인은 nunchi_update(action: confirm), '용서하는 것'을 따르다 사고가 나면 nunchi_update(action: reverse)로 즉시 반전한다.",
 ];
 if (core.length) {
-  lines.push("", "[확정 규칙 — '벌주는 것' 신뢰도 높음(3+). 항상 지킨다]", formatCalEntries(core));
+  const coreBlock = formatCalEntries(core).slice(0, 8000);
+  // ponytail: 하드 슬라이스 — 코어가 8천자를 넘는 비정상 상황에서만 잘리며, 규약·ponytail 줄이 항상 살아남는 것이 우선
+  lines.push("", "[확정 규칙 — '벌주는 것' 신뢰도 높음(3+). 항상 지킨다]", coreBlock);
 }
 if (note) lines.push("", note);
 lines.push(
