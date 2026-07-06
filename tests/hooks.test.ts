@@ -84,3 +84,28 @@ test(
   },
   30000
 );
+
+test(
+  "user-prompt-submit: 관련 엔트리 주입, 코어 제외, 무관련·서버다운은 무출력",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const hit = await runHook("user-prompt-submit.ts", dir, {
+        prompt: "일회성 스크립트에도 테스트가 필요할까?",
+      });
+      const ctx = JSON.parse(hit).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain("일회성 스크립트 테스트 생략 가능");
+      expect(ctx).not.toContain("배포 게이트"); // 코어는 SessionStart 몫 — 제외
+      // 무관련 프롬프트 → 무출력
+      expect(await runHook("user-prompt-submit.ts", dir, { prompt: "zzqq xxyy" })).toBe("");
+      // 빈 프롬프트 → 무출력
+      expect(await runHook("user-prompt-submit.ts", dir, { prompt: "" })).toBe("");
+    } finally {
+      await mem.shutdown();
+      // 서버 종료 후: noSpawn이므로 조용히 통과 (스폰 없음)
+      expect(await runHook("user-prompt-submit.ts", dir, { prompt: "테스트 스크립트" })).toBe("");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
