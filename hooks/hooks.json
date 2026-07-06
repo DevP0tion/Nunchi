@@ -1,5 +1,5 @@
 {
-  "description": "nunchi: 작업 강도 캘리브레이션 passive hooks",
+  "description": "nunchi: 작업 강도 보정 passive hooks",
   "hooks": {
     "SessionStart": [
       {
