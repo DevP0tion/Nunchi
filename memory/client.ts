@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { resolveMemoryPort } from "./server.ts";
 import { loadConfig } from "../hooks/config.ts";
+import type { CalEntry, CalSection, NewCalEntry } from "./calibration.ts";
 
 const SERVER_PATH = fileURLToPath(new URL("./server.ts", import.meta.url));
 
@@ -88,6 +89,18 @@ export interface MemoryClient {
   ): Promise<{ key: string; value: string; updated_at: string }[]>;
   /** 서버 프로젝트의 calibration 문서 전문 (없으면 null). 구버전 서버는 timeout 에러 */
   doc(): Promise<string | null>;
+  calAdd(e: NewCalEntry): Promise<number>;
+  calUpdate(id: number, fields: Partial<NewCalEntry> & { confirm?: boolean }): Promise<boolean>;
+  calRemove(id: number): Promise<boolean>;
+  calSearch(
+    queries: string[],
+    opts?: { section?: CalSection; limit?: number; excludeCore?: boolean }
+  ): Promise<CalEntry[]>;
+  calList(opts?: { section?: CalSection; minConfidence?: number }): Promise<CalEntry[]>;
+  /** 상시 주입 코어: 벌주는 것 신뢰도 높음(3+) */
+  calCore(): Promise<CalEntry[]>;
+  /** 마지막 기록 시각 — Stop hook 점검용 */
+  calStamp(): Promise<string | null>;
   /** 서버 프로세스 종료 (모든 클라이언트에 영향) */
   shutdown(): Promise<void>;
   close(): void;
@@ -109,7 +122,7 @@ function tryConnect(url: string, timeoutMs: number): Promise<Socket | null> {
 
 export async function connectMemory(
   projectDir: string = process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-  opts: { force?: boolean } = {}
+  opts: { force?: boolean; noSpawn?: boolean } = {}
 ): Promise<MemoryClient> {
   const cfg = loadConfig(projectDir);
   let socket: Socket | null;
@@ -129,6 +142,10 @@ export async function connectMemory(
     socket = await tryConnect(url, 1000);
 
     if (!socket) {
+      // 훅의 빠른 경로: 스폰 대기 없이 즉시 실패 (매 메시지 훅이 세션을 막지 않도록)
+      if (opts.noSpawn) {
+        throw new Error(`[nunchi] memory server 미기동 (port ${port}) — noSpawn 모드`);
+      }
       // 서버 미기동 → 스폰은 auto-start=true일 때만
       if (!cfg["auto-start"]) {
         throw new Error(
@@ -177,6 +194,13 @@ export async function connectMemory(
     search: async (query, limit = 20) =>
       (await req("mem:search", { query, limit })).rows,
     doc: async () => (await req("mem:doc")).doc ?? null,
+    calAdd: async (e) => (await req("cal:add", e)).id,
+    calUpdate: async (id, fields) => (await req("cal:update", { id, ...fields })).updated,
+    calRemove: async (id) => (await req("cal:remove", { id })).removed,
+    calSearch: async (queries, opts = {}) => (await req("cal:search", { queries, ...opts })).rows,
+    calList: async (opts = {}) => (await req("cal:list", opts)).rows,
+    calCore: async () => (await req("cal:core")).rows,
+    calStamp: async () => (await req("cal:stamp")).stamp ?? null,
     shutdown: async () => {
       try {
         await req("mem:shutdown");

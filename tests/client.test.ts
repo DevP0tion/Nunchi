@@ -41,20 +41,19 @@ test("sameProject: Windows는 대소문자 무시", () => {
 });
 
 test(
-  "mem:doc: 서버 프로젝트의 calibration 문서를 반환 (없으면 null)",
+  // v0.8.0: mem:doc은 파일을 직접 읽지 않고 DB(calibration 테이블)에서 렌더링한다
+  "mem:doc: DB의 calibration 엔트리를 렌더링 (없으면 null)",
   async () => {
     const A = mkdtempSync(join(tmpdir(), "nunchi-d-"));
     await assignFreePort(A);
     const a = await connectMemory(A);
     try {
       expect(await a.doc()).toBe(null);
-      // 서버 기동 후 생성된 문서도 요청 시점에 읽힌다
-      mkdirSync(join(A, ".claude", "nunchi"), { recursive: true });
-      writeFileSync(
-        join(A, ".claude", "nunchi", "calibration.md"),
-        "# Calibration — test\n"
-      );
-      expect(await a.doc()).toBe("# Calibration — test\n");
+      await a.calAdd({
+        section: "punish", area: "[테스트: mem:doc]", rule: "규칙",
+        evidence: "2026-07-06 근거", confidence: 3,
+      });
+      expect(await a.doc()).toContain("### [테스트: mem:doc]");
     } finally {
       await a.shutdown();
       cleanup(A);
