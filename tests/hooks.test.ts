@@ -109,3 +109,24 @@ test(
   },
   30000
 );
+
+test(
+  "subagent-start: 규약 + 코어 주입, 서버 다운이면 규약만",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const raw = await runHook("subagent-start.ts", dir, { agent_type: "general-purpose" });
+      const ctx = JSON.parse(raw).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain("nunchi_search"); // 규약 안내
+      expect(ctx).toContain("배포 게이트를 생략하지 않는다"); // 코어
+      expect(ctx).not.toContain("일회성 스크립트"); // 저신뢰는 프롬프트 없이는 주입 안 함
+    } finally {
+      await mem.shutdown();
+      // 서버 다운: 규약 1줄은 그래도 주입 (도구 사용 안내는 유효)
+      const raw = await runHook("subagent-start.ts", dir, { agent_type: "general-purpose" });
+      expect(JSON.parse(raw).hookSpecificOutput.additionalContext).toContain("nunchi_search");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
