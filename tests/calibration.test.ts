@@ -2,7 +2,10 @@
 // calibration 저장소 로직 검증 (소켓 계층 제외) — search.test.ts와 같은 패턴.
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { createCalStore } from "../memory/calibration.ts";
+import { createCalStore, parseCalibrationDoc, renderCalibrationDoc, importCalibrationDoc } from "../memory/calibration.ts";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const makeStore = () => createCalStore(new Database(":memory:"));
 
@@ -89,4 +92,80 @@ test("search: keywords 컬럼도 검색 대상", () => {
   const e = s.get(id)!;
   s.setKeywords(id, e.updated_at, "defensive, guard, 방어코드");
   expect(s.search(["defensive"], { limit: 5 }).map((r) => r.id)).toEqual([id]);
+});
+
+const SAMPLE_DOC = `# Calibration — my-project
+
+## 벌주는 것 (반드시 한다)
+
+### [배포: CI 캐시]
+- 규칙: lockfile 변경 시 CI 캐시 키를 반드시 확인한다
+- 근거: 2026-06-12 캐시 미스매치로 배포 2회 실패
+- 신뢰도: 높음(3)
+
+## 용서하는 것 (생략 가능)
+
+### [테스트: 내부 스크립트]
+- 규칙: scripts/ 하위 일회성 스크립트는 테스트 생략 가능
+- 근거: 2026-06-20 테스트 작성이 스크립트 본체보다 오래 걸렸음
+- 신뢰도: 중간(2)
+
+### [불량: 필드 누락]
+- 규칙: 근거가 없는 엔트리
+
+## 환경 특이사항
+
+### [윈도우: 인코딩]
+- 규칙: UTF-8 BOM 파일 파싱에 주의한다
+- 근거: 2026-06-25 nunchi.json BOM으로 파싱 실패
+- 신뢰도: 낮음(1)
+`;
+
+test("parseCalibrationDoc: 3섹션·신뢰도 숫자 추출·불량 엔트리 skip", () => {
+  const { entries, skipped } = parseCalibrationDoc(SAMPLE_DOC);
+  expect(entries.length).toBe(3);
+  expect(skipped).toBe(1);
+  expect(entries[0]).toEqual({
+    section: "punish", area: "[배포: CI 캐시]",
+    rule: "lockfile 변경 시 CI 캐시 키를 반드시 확인한다",
+    evidence: "2026-06-12 캐시 미스매치로 배포 2회 실패", confidence: 3,
+  });
+  expect(entries[1].section).toBe("forgive");
+  expect(entries[1].confidence).toBe(2);
+  expect(entries[2].section).toBe("env");
+  expect(entries[2].confidence).toBe(1);
+});
+
+test("parseCalibrationDoc: 빈 문서는 0건", () => {
+  expect(parseCalibrationDoc("")).toEqual({ entries: [], skipped: 0 });
+});
+
+test("renderCalibrationDoc: 3섹션 재구성, 빈 DB는 null", () => {
+  const s = makeStore();
+  expect(renderCalibrationDoc(s, "my-project")).toBe(null);
+  for (const e of parseCalibrationDoc(SAMPLE_DOC).entries) s.add(e);
+  const doc = renderCalibrationDoc(s, "my-project")!;
+  expect(doc).toContain("# Calibration — my-project");
+  expect(doc).toContain("## 벌주는 것 (반드시 한다)");
+  expect(doc).toContain("### [배포: CI 캐시]");
+  expect(doc).toContain("- 신뢰도: 높음(3)");
+  expect(doc).toContain("- 신뢰도: 중간(2)");
+  expect(doc).toContain("- 신뢰도: 낮음(1)");
+  // 렌더 → 파싱 왕복 보존
+  expect(parseCalibrationDoc(doc).entries.length).toBe(3);
+});
+
+test("importCalibrationDoc: 1회 임포트 + .imported 리네임, 재실행은 no-op", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nunchi-imp-"));
+  const docPath = join(dir, "calibration.md");
+  writeFileSync(docPath, SAMPLE_DOC);
+  const s = makeStore();
+  expect(importCalibrationDoc(s, docPath)).toBe(3);
+  expect(existsSync(docPath)).toBe(false);
+  expect(readFileSync(docPath + ".imported", "utf8")).toBe(SAMPLE_DOC);
+  expect(s.list({}).length).toBe(3);
+  // DB에 데이터가 있으면 임포트하지 않는다 (파일이 다시 생겨도)
+  writeFileSync(docPath, SAMPLE_DOC);
+  expect(importCalibrationDoc(s, docPath)).toBe(null);
+  rmSync(dir, { recursive: true, force: true });
 });

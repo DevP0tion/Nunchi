@@ -2,6 +2,7 @@
 // 보정 엔트리 테이블 + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
 // 소켓 계층(server.ts)과 테스트가 공유하는 저장소 로직 — memory store(createStore)와 같은 패턴.
 import type { Database } from "bun:sqlite";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 
 export type CalSection = "punish" | "forgive" | "env";
 
@@ -210,3 +211,84 @@ export function createCalStore(db: Database) {
 }
 
 export type CalStore = ReturnType<typeof createCalStore>;
+
+// ---- calibration.md 상호 변환 (임포트 원본 · mem:doc 내보내기 뷰) ----
+
+const SECTION_OF: [RegExp, CalSection][] = [
+  [/벌주는/, "punish"],
+  [/용서/, "forgive"],
+  [/특이사항/, "env"],
+];
+const SECTION_TITLE: Record<CalSection, string> = {
+  punish: "벌주는 것 (반드시 한다)",
+  forgive: "용서하는 것 (생략 가능)",
+  env: "환경 특이사항",
+};
+
+/** 기존 calibration.md → 엔트리 배열. 규칙/근거가 없는 엔트리는 skipped로 센다 */
+export function parseCalibrationDoc(md: string): { entries: NewCalEntry[]; skipped: number } {
+  const entries: NewCalEntry[] = [];
+  let skipped = 0;
+  let section: CalSection | null = null;
+  let cur: Partial<NewCalEntry> | null = null;
+
+  const flush = () => {
+    if (!cur) return;
+    if (section && cur.area && cur.rule && cur.evidence) {
+      entries.push({
+        section, area: cur.area, rule: cur.rule, evidence: cur.evidence,
+        confidence: cur.confidence ?? 1,
+      });
+    } else {
+      skipped += 1;
+    }
+    cur = null;
+  };
+
+  for (const raw of md.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("## ") && !line.startsWith("### ")) {
+      flush();
+      section = SECTION_OF.find(([re]) => re.test(line))?.[1] ?? null;
+    } else if (line.startsWith("### ")) {
+      flush();
+      cur = { area: line.slice(4).trim() };
+    } else if (cur && line.startsWith("- 규칙:")) {
+      cur.rule = line.slice("- 규칙:".length).trim();
+    } else if (cur && line.startsWith("- 근거:")) {
+      cur.evidence = line.slice("- 근거:".length).trim();
+    } else if (cur && line.startsWith("- 신뢰도:")) {
+      const n = parseInt(line.match(/\((\d+)\)/)?.[1] ?? "", 10);
+      cur.confidence = Number.isFinite(n) ? n : 1;
+    }
+  }
+  flush();
+  return { entries, skipped };
+}
+
+/** DB → 기존 3섹션 markdown. external-address 구버전 클라이언트(mem:doc)와 내보내기 겸용 */
+export function renderCalibrationDoc(store: CalStore, projectName: string): string | null {
+  const all = store.list({});
+  if (!all.length) return null;
+  const label = (c: number) => (c >= CORE_CONFIDENCE ? `높음(${c})` : c === 2 ? "중간(2)" : `낮음(${c})`);
+  const parts = [`# Calibration — ${projectName}`];
+  for (const sec of ["punish", "forgive", "env"] as CalSection[]) {
+    const rows = all.filter((e) => e.section === sec);
+    if (!rows.length) continue;
+    parts.push("", `## ${SECTION_TITLE[sec]}`);
+    for (const e of rows) {
+      parts.push("", `### ${e.area}`, `- 규칙: ${e.rule}`, `- 근거: ${e.evidence}`, `- 신뢰도: ${label(e.confidence)}`);
+    }
+  }
+  return parts.join("\n") + "\n";
+}
+
+/** 서버 기동 시 1회 마이그레이션: DB가 비어 있고 문서가 있으면 임포트 후 .imported로 보존 */
+export function importCalibrationDoc(store: CalStore, docPath: string): number | null {
+  if (store.stamp() !== null || !existsSync(docPath)) return null;
+  const { entries, skipped } = parseCalibrationDoc(readFileSync(docPath, "utf8"));
+  for (const e of entries) store.add(e);
+  if (skipped) console.error(`[nunchi] 임포트: 파싱 불가 엔트리 ${skipped}건 건너뜀 (원본 .imported 참조)`);
+  renameSync(docPath, docPath + ".imported"); // 0건이어도 리네임 — 기동마다 재파싱 방지
+  return entries.length;
+}
