@@ -127,3 +127,9 @@ hooks/hooks.json에 UserPromptSubmit·SubagentStart 등록 추가.
 - sqlite-vec·임베딩 도입 (스키마·인터페이스에 경로만 예약)
 - Codex 브랜치(codex-support) 반영
 - 기존 `memory` key/value API의 변경·정리
+
+## 구현 편차 (사용자 승인, 2026-07-06)
+
+- SessionStart/SubagentStart 코어 블록 8,000자 슬라이스 캡 — additionalContext 10,000자 플랫폼 상한 준수 (계획의 MAX_CHARS 삭제 문구보다 우선).
+- Stop 훅 recorded 판정은 기준선 `stamp`가 null이면 기록으로 치지 않음 — 과검(false positive) 우선 설계 보장.
+- SessionStart external-address 접속 실패 시 로컬 DB 폴백 제거 — 낡은 로컬 데이터 주입 방지, 규약만 주입.
