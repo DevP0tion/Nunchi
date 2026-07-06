@@ -54,6 +54,9 @@ export interface HookInput {
   source?: string;
   hook_event_name?: string;
   stop_hook_active?: boolean;
+  /** UserPromptSubmit: 사용자 프롬프트 (일부 버전은 user_input) */
+  prompt?: string;
+  user_input?: string;
 }
 
 export async function readStdinJson(): Promise<HookInput> {
@@ -148,4 +151,29 @@ export function resolveDocDir(projectDir: string, cfg: NunchiConfig): string {
 /** calibration 문서 절대 경로 (폴더 + 고정 파일명) */
 export function resolveDocPath(projectDir: string, cfg: NunchiConfig): string {
   return join(resolveDocDir(projectDir, cfg), DOC_FILENAME);
+}
+
+/** 훅 3종(session-start/user-prompt-submit/subagent-start)이 공유하는 엔트리 렌더링 */
+export interface CalEntryLite {
+  id: number;
+  section: string;
+  area: string;
+  rule: string;
+  evidence: string;
+  confidence: number;
+}
+
+export const SECTION_LABEL: Record<string, string> = {
+  punish: "벌주는 것",
+  forgive: "용서하는 것",
+  env: "환경 특이사항",
+};
+
+export function formatCalEntries(rows: CalEntryLite[]): string {
+  return rows
+    .map(
+      (r) =>
+        `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}·신뢰도${r.confidence}] ${r.area}: ${r.rule} (근거: ${r.evidence})`
+    )
+    .join("\n");
 }
