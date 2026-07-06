@@ -3,6 +3,7 @@
 // 프로젝트의 calibration 문서를 세션 컨텍스트에 조용히 주입한다.
 // startup / resume / clear / compact 모두에서 실행 (matcher 미지정 = 전체).
 // config: auto-start=true 면 memory server 자동 시작, path 로 문서 경로 변경 가능.
+import { spawn } from "node:child_process";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,13 +27,15 @@ const cfg = loadConfig(projectDir);
 // external-address 설정 시에는 외부 서버를 쓰므로 로컬 스폰을 건너뛴다
 if (cfg["auto-start"] && !cfg["external-address"]) {
   try {
-    Bun.spawn(
-      ["bun", fileURLToPath(new URL("../memory/server.ts", import.meta.url))],
+    // node:child_process + detached: Bun.spawn의 unref()는 이벤트 루프 분리만 할 뿐이라
+    // Windows에서 훅(부모) 종료 시 자식도 함께 죽는다 — detached만이 부모 종료 후 생존을 보장
+    spawn(
+      "bun",
+      [fileURLToPath(new URL("../memory/server.ts", import.meta.url))],
       {
         env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
+        detached: true,
+        stdio: "ignore",
       }
     ).unref();
   } catch {

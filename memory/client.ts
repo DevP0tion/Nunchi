@@ -2,6 +2,7 @@
 // 서버가 안 떠 있으면 스폰 후 재접속한다. 여러 MCP가 동시에 스폰해도
 // 서버 쪽 포트 락(EADDRINUSE 즉시 종료)으로 하나만 살아남으므로 안전하다.
 import { io, type Socket } from "socket.io-client";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -135,11 +136,11 @@ export async function connectMemory(
         );
       }
       // 스폰 후 재시도 (동시 스폰 경쟁은 서버 포트 락이 정리)
-      Bun.spawn(["bun", SERVER_PATH], {
+      // detached: Windows에서 부모(단명 클라이언트) 종료 시 자식이 함께 죽지 않도록
+      spawn("bun", [SERVER_PATH], {
         env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
+        detached: true,
+        stdio: "ignore",
       }).unref();
       for (let i = 0; i < 20 && !socket; i++) {
         await new Promise((r) => setTimeout(r, 250));
