@@ -34,24 +34,7 @@ claude --plugin-dir /path/to/nunchi
 
 ## Codex CLI (ChatGPT) 지원
 
-Codex CLI는 Claude Code와 호환되는 plugin/hooks 체계를 채택했다 (hooks.json 형식, `additionalContext` 주입, Stop `decision: block`, `CLAUDE_PLUGIN_ROOT` 호환 환경 변수까지 동일). 이 저장소는 `.codex-plugin/plugin.json` 매니페스트를 포함하므로 Codex에서도 설치된다.
-
-Codex 안에서:
-
-```
-/plugin marketplace add DevP0tion/DevP0tion
-/plugin install nunchi@devp0tion
-```
-
-설치 후 **`/hooks`에서 nunchi의 hook을 검토·신뢰(trust)해야 동작한다** — Codex는 plugin 번들 hook을 자동으로 신뢰하지 않는다.
-
-Claude Code와의 차이:
-
-- **userConfig(설정 UI) 없음** — 전역 설정 대신 프로젝트 `.claude/nunchi.json`을 사용한다 (경로는 두 도구 공통).
-- **calibration 공유** — 문서 경로가 `.claude/nunchi/calibration.md`로 동일하므로, 한 프로젝트를 Claude Code와 Codex로 번갈아 작업해도 학습이 하나로 쌓인다.
-- **SKILL.md 규약** — Codex에는 Skill 도구가 없으므로 SessionStart 주입 메시지에 SKILL.md 절대 경로가 포함된다. 모델이 기록 시 이 파일을 직접 읽는다.
-- **ponytail 감지·`model` 키워드 보강은 Claude Code 전용** — ponytail은 Claude Code plugin이고, 키워드 보강은 `claude` CLI를 호출한다. Codex 단독 환경에서는 자동으로 비활성 상태가 된다.
-- **Bun 요구사항 동일** — hooks가 `bun`으로 실행되므로 PATH에 있어야 한다.
+Codex CLI 지원은 **`codex-support` 브랜치**에서 제공한다 (`.codex-plugin/plugin.json` 매니페스트 포함 — main에는 Claude Code 설정만 둔다). 설치 방법과 Claude Code와의 차이는 해당 브랜치의 README를 참조.
 
 ## 왜 만들었나
 
@@ -102,9 +85,7 @@ nunchi/
 │   ├── client.test.ts        # 핸드셰이크·포트 재할당·mem:doc 통합 테스트
 │   └── search.test.ts        # FTS5 검색 테스트
 ├── .claude-plugin/
-│   └── plugin.json           # Claude Code plugin 매니페스트 + userConfig 선언 (전역 설정)
-├── .codex-plugin/
-│   └── plugin.json           # Codex CLI(ChatGPT) plugin 매니페스트
+│   └── plugin.json           # plugin 매니페스트 + userConfig 선언 (전역 설정)
 └── hooks/
     ├── hooks.json
     ├── config.ts             # 계층형 config 로더 + 공용 타입
