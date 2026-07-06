@@ -97,6 +97,17 @@ export function createCalStore(db: Database) {
     // updated_at 일치 조건 — 보강 중에 엔트리가 다시 바뀌었으면 낡은 키워드를 버린다
     `UPDATE calibration SET keywords = ? WHERE id = ? AND updated_at = ?`
   );
+  const ftsStmt = db.prepare(
+    `SELECT c.id, c.section, c.area, c.rule, c.evidence, c.confidence, c.updated_at,
+            f.rank AS rank
+     FROM calibration_fts f JOIN calibration c ON c.id = f.rowid
+     WHERE calibration_fts MATCH ? ORDER BY f.rank LIMIT 50`
+  );
+  const likeStmt = db.prepare(
+    `SELECT ${COLS} FROM calibration
+     WHERE area LIKE ? OR rule LIKE ? OR evidence LIKE ? OR keywords LIKE ?
+     ORDER BY updated_at DESC LIMIT 50`
+  );
 
   return {
     add(e: NewCalEntry): number {
@@ -153,6 +164,47 @@ export function createCalStore(db: Database) {
     },
     setKeywords(id: number, updatedAt: string, keywords: string): void {
       keywordsStmt.run(keywords, id, updatedAt);
+    },
+    /** 다중 쿼리 OR-병합 검색. FTS(BM25) 우선, 3글자 미만·무결과는 LIKE 폴백.
+     *  모델 쿼리 확장(nunchi_search)과 훅 자동 주입이 공유하는 유일한 검색 경로 */
+    search(
+      queries: string[],
+      opts: { section?: CalSection; limit?: number; excludeCore?: boolean } = {}
+    ): CalEntry[] {
+      const limit = opts.limit ?? 3;
+      const best = new Map<number, CalEntry & { rank: number }>();
+      let pseudo = 1e9; // LIKE 결과는 랭크가 없다 — FTS 결과 뒤에 도착 순으로
+      for (const raw of queries) {
+        const q = String(raw ?? "").trim();
+        if (!q) continue;
+        let rows: (CalEntry & { rank?: number })[] = [];
+        if ([...q].length >= 3) {
+          try {
+            const phrase = `"${q.replaceAll('"', '""')}"`;
+            rows = ftsStmt.all(phrase) as (CalEntry & { rank: number })[];
+          } catch {
+            /* FTS 질의 오류 → LIKE 폴백 */
+          }
+        }
+        if (!rows.length) {
+          const pat = `%${q}%`;
+          rows = (likeStmt.all(pat, pat, pat, pat) as CalEntry[]).map((r) => ({
+            ...r,
+            rank: pseudo++,
+          }));
+        }
+        for (const r of rows) {
+          const rank = r.rank ?? pseudo++;
+          const prev = best.get(r.id);
+          if (!prev || rank < prev.rank) best.set(r.id, { ...r, rank } as CalEntry & { rank: number });
+        }
+      }
+      let out = [...best.values()];
+      if (opts.section) out = out.filter((r) => r.section === opts.section);
+      if (opts.excludeCore)
+        out = out.filter((r) => !(r.section === "punish" && r.confidence >= CORE_CONFIDENCE));
+      out.sort((a, b) => a.rank - b.rank); // BM25 rank는 음수(낮을수록 관련) — 오름차순
+      return out.slice(0, limit).map(({ rank: _r, ...e }) => e);
     },
   };
 }

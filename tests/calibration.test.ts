@@ -50,3 +50,43 @@ test("remove/list/core/stamp", () => {
   expect(s.remove(c)).toBe(false);
   void b;
 });
+
+test("search: 다중 쿼리 OR-병합, 중복 제거, limit", () => {
+  const s = makeStore();
+  const a = s.add({ section: "punish", area: "[배포: CI]", rule: "배포 전 캐시 키 확인", evidence: "2026-06-12 배포 실패" });
+  const b = s.add({ section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략", evidence: "2026-06-20 과잉" });
+  s.add({ section: "env", area: "[윈도우: 인코딩]", rule: "BOM 주의", evidence: "2026-06-25 파싱 실패" });
+  // "배포"(2글자→LIKE), "테스트 생략"(FTS) 두 쿼리가 서로 다른 엔트리를 회수
+  const rows = s.search(["배포", "테스트 생략"], { limit: 5 });
+  expect(rows.map((r) => r.id).sort()).toEqual([a, b].sort());
+  // 같은 엔트리를 두 쿼리가 맞혀도 1건
+  expect(s.search(["배포", "캐시"], { limit: 5 }).length).toBe(1);
+  expect(s.search(["배포", "테스트 생략"], { limit: 1 }).length).toBe(1);
+});
+
+test("search: section 필터와 excludeCore", () => {
+  const s = makeStore();
+  const core = s.add({ section: "punish", area: "[배포: 게이트]", rule: "배포 게이트 유지", evidence: "e", confidence: 3 });
+  const low = s.add({ section: "punish", area: "[배포: 로그]", rule: "배포 로그 확인", evidence: "e" });
+  expect(s.search(["배포"], { limit: 5 }).length).toBe(2);
+  expect(s.search(["배포"], { limit: 5, excludeCore: true }).map((r) => r.id)).toEqual([low]);
+  expect(s.search(["배포"], { limit: 5, section: "punish" }).length).toBe(2);
+  expect(s.search(["배포"], { limit: 5, section: "env" }).length).toBe(0);
+  void core;
+});
+
+test("search: 빈 쿼리·특수문자는 안전하게 처리", () => {
+  const s = makeStore();
+  s.add({ section: "env", area: '[fts: "인용"]', rule: 'query "quoted" AND OR', evidence: "e" });
+  expect(s.search([], { limit: 5 })).toEqual([]);
+  expect(s.search(["", "  "], { limit: 5 })).toEqual([]);
+  expect(s.search(['"quoted"'], { limit: 5 }).length).toBe(1);
+});
+
+test("search: keywords 컬럼도 검색 대상", () => {
+  const s = makeStore();
+  const id = s.add({ section: "forgive", area: "[테스트: 헬퍼]", rule: "내부 헬퍼 방어 생략", evidence: "e" });
+  const e = s.get(id)!;
+  s.setKeywords(id, e.updated_at, "defensive, guard, 방어코드");
+  expect(s.search(["defensive"], { limit: 5 }).map((r) => r.id)).toEqual([id]);
+});
