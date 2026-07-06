@@ -130,3 +130,35 @@ test(
   },
   30000
 );
+
+test(
+  "stop-check: N턴째에 점검 강제, 구간 내 DB 기록이 있으면 생략",
+  async () => {
+    const { dir, mem } = await seeded();
+    const sid = `t${Date.now()}`;
+    const run = (id: string) => runHook("stop-check.ts", dir, { session_id: id, cwd: dir });
+    try {
+      process.env.NUNCHI_CHECK_EVERY = "2"; // 최소 주기로 단축
+      // 1턴: 통과, 2턴: 점검(block)
+      expect(await run(sid)).toBe("");
+      const out = await run(sid);
+      const parsed = JSON.parse(out);
+      expect(parsed.decision).toBe("block");
+      expect(parsed.reason).toContain("nunchi_record"); // 기록 지시가 도구 기준
+      // 다음 구간: 1턴째에 기록 발생 → 2턴째 점검 생략
+      expect(await run(sid)).toBe("");
+      await mem.calAdd({ section: "env", area: "[x]", rule: "r", evidence: "2026-07-06 e" });
+      expect(await run(sid)).toBe("");
+      // stop_hook_active 가드
+      const guarded = await runHook("stop-check.ts", dir, {
+        session_id: sid, cwd: dir, stop_hook_active: true,
+      });
+      expect(guarded).toBe("");
+    } finally {
+      delete process.env.NUNCHI_CHECK_EVERY;
+      await mem.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
