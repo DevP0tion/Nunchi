@@ -1,4 +1,4 @@
-// bun test memory/client.test.ts
+// bun test tests/client.test.ts
 // 핸드셰이크(프로젝트 소유 검증)와 포트 재할당 검증. 실제 서버를 스폰하는 통합 테스트.
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import {
   connectMemory,
   ProjectMismatchError,
   sameProject,
-} from "./client.ts";
+} from "../memory/client.ts";
 
 const cleanup = (...dirs: string[]) => {
   for (const d of dirs) {
@@ -39,6 +39,29 @@ test("sameProject: Windows는 대소문자 무시", () => {
   }
   expect(sameProject("C:\\proj-a", "C:\\proj-b")).toBe(false);
 });
+
+test(
+  "mem:doc: 서버 프로젝트의 calibration 문서를 반환 (없으면 null)",
+  async () => {
+    const A = mkdtempSync(join(tmpdir(), "nunchi-d-"));
+    await assignFreePort(A);
+    const a = await connectMemory(A);
+    try {
+      expect(await a.doc()).toBe(null);
+      // 서버 기동 후 생성된 문서도 요청 시점에 읽힌다
+      mkdirSync(join(A, ".claude", "nunchi"), { recursive: true });
+      writeFileSync(
+        join(A, ".claude", "nunchi", "calibration.md"),
+        "# Calibration — test\n"
+      );
+      expect(await a.doc()).toBe("# Calibration — test\n");
+    } finally {
+      await a.shutdown();
+      cleanup(A);
+    }
+  },
+  20000
+);
 
 test(
   "핸드셰이크: 같은 포트의 타 프로젝트 서버는 거부, force로만 연결",

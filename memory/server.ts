@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig, resolveDocDir } from "../hooks/config.ts";
+import { loadConfig, resolveDocDir, resolveDocPath } from "../hooks/config.ts";
 
 export const DB_FILENAME = "memory.db";
 export const MEMORY_CONFIG_FILENAME = "memory-config.json";
@@ -199,7 +199,10 @@ if (import.meta.main) {
   const { db, dbPath, port, memoryConfig } = initMemory(projectDir);
   const store = createStore(db);
   // 보강 모델 — 기동 시 1회 로드. 변경은 memory server 재시작 후 반영
-  const model = loadConfig(projectDir).model;
+  const pluginCfg = loadConfig(projectDir);
+  const model = pluginCfg.model;
+  // calibration 문서 경로 — mem:doc으로 외부 클라이언트에게 전문을 서비스한다
+  const calibrationPath = resolveDocPath(projectDir, pluginCfg);
 
   const ENRICH_TIMEOUT_MS = 60_000;
   /** mem:set 후 백그라운드로 claude -p를 돌려 검색 키워드를 생성 (model 설정 시에만) */
@@ -272,6 +275,14 @@ if (import.meta.main) {
     );
     socket.on("mem:get", (p, ack) =>
       handle(() => ({ value: store.get(String(p.key)) }))(ack)
+    );
+    // calibration 문서 요청 — 매 요청마다 읽는다 (모델이 세션 중 문서를 갱신하므로)
+    socket.on("mem:doc", (ack) =>
+      handle(() => ({
+        doc: existsSync(calibrationPath)
+          ? readFileSync(calibrationPath, "utf8")
+          : null,
+      }))(ack)
     );
     socket.on("mem:search", (p, ack) =>
       handle(() => ({

@@ -85,6 +85,8 @@ export interface MemoryClient {
     query: string,
     limit?: number
   ): Promise<{ key: string; value: string; updated_at: string }[]>;
+  /** 서버 프로젝트의 calibration 문서 전문 (없으면 null). 구버전 서버는 timeout 에러 */
+  doc(): Promise<string | null>;
   /** 서버 프로세스 종료 (모든 클라이언트에 영향) */
   shutdown(): Promise<void>;
   close(): void;
@@ -173,6 +175,7 @@ export async function connectMemory(
     get: async (key) => (await req("mem:get", { key })).value,
     search: async (query, limit = 20) =>
       (await req("mem:search", { query, limit })).rows,
+    doc: async () => (await req("mem:doc")).doc ?? null,
     shutdown: async () => {
       try {
         await req("mem:shutdown");

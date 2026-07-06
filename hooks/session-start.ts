@@ -11,6 +11,7 @@ import {
   resolveDocDir,
   resolveDocPath,
   readStdinJson,
+  isPonytailEnabled,
   DOC_FILENAME,
 } from "./config.ts";
 
@@ -49,20 +50,43 @@ try {
   /* 생성 실패해도 주입은 계속 — 기록 시점에 다시 시도된다 */
 }
 
-let context: string;
-if (existsSync(docPath)) {
-  let doc = "";
+// external-address 설정 시 외부 memory server의 calibration 문서를 우선 사용.
+// 접속 실패·구버전 서버(mem:doc 미지원)·문서 없음이면 로컬 문서로 폴백.
+let doc: string | null = null;
+let docSource = `보정 문서(${docRel})`;
+if (cfg["external-address"]) {
+  try {
+    // 동적 import: 로컬 경로에서는 socket.io-client를 로드하지 않는다
+    const { connectMemory } = await import("../memory/client.ts");
+    const mem = await connectMemory(projectDir);
+    try {
+      doc = await mem.doc();
+    } finally {
+      mem.close();
+    }
+    if (doc !== null) {
+      docSource = `외부 memory server(${cfg["external-address"]})의 보정 문서`;
+    }
+  } catch {
+    /* 외부 서버 실패 → 로컬 문서 폴백 */
+  }
+}
+if (doc === null && existsSync(docPath)) {
   try {
     doc = readFileSync(docPath, "utf8");
   } catch {
     process.exit(0);
   }
+}
+
+let context: string;
+if (doc !== null) {
   if (doc.length > MAX_CHARS) {
     doc = doc.slice(0, MAX_CHARS) + "\n...(truncated: 문서가 상한을 초과함. 정제 필요)";
   }
   context = [
     "[nunchi] 이 프로젝트는 작업 강도 보정 규약을 사용한다.",
-    `아래는 이 환경에서 학습된 보정 문서(${docRel}) 전문이다. 작업 강도(검증 깊이, 테스트 여부, 리서치 범위, 리팩토링 범위) 결정 시 이 문서가 기준이 된다.`,
+    `아래는 이 환경에서 학습된 ${docSource} 전문이다. 작업 강도(검증 깊이, 테스트 여부, 리서치 범위, 리팩토링 범위) 결정 시 이 문서가 기준이 된다.`,
     `작업 중 예측과 실제가 어긋나는 경우(과잉 대응 / 과소 대응으로 인한 문제 / 환경 특이사항 발견)에는 nunchi 스킬 규약대로 이 문서(${docRel})에 1-3줄을 추가한다.`,
     "",
     "---",
@@ -74,6 +98,21 @@ if (existsSync(docPath)) {
     `[nunchi] 이 프로젝트는 작업 강도 보정 규약을 사용한다. 보정 문서(${docRel})는 아직 없다.`,
     `작업 중 예측과 실제가 어긋나는 경우(과잉 대응 / 과소 대응으로 인한 문제 / 환경 특이사항)를 처음 발견하면 nunchi 스킬을 참조해 ${docRel} 를 생성하고 기록한다.`,
   ].join("\n");
+}
+
+// ponytail(고정 강도 정책) 공존: 우선순위가 결정돼 있으면 규칙 1줄, 미결정이면 질문 지시 1줄 주입
+if (isPonytailEnabled(projectDir)) {
+  const priority = cfg["policy-priority"];
+  if (priority === "calibration") {
+    context +=
+      "\n[nunchi] ponytail 활성 (사용자 결정: calibration 우선). 작업 강도 판단이 충돌하면 calibration 문서가 ponytail의 최소화 규칙보다 우선한다. 특히 '벌주는 것' 엔트리는 항상 지킨다.";
+  } else if (priority === "ponytail") {
+    context +=
+      "\n[nunchi] ponytail 활성 (사용자 결정: ponytail 우선). 작업 강도 판단이 충돌하면 ponytail의 최소화 규칙을 따른다. 단 신뢰도 높음(3+)의 '벌주는 것' 엔트리는 실제 사고 기록이므로 예외로 지키고, 생략이 사고로 이어지면 반전 규칙대로 기록한다.";
+  } else {
+    context +=
+      '\n[nunchi] ponytail 활성 감지 — calibration과의 우선순위 미결정. 이번 세션에서 작업 강도 판단이 처음 충돌하면(ponytail은 생략을 권하는데 calibration은 반대, 또는 그 역) AskUserQuestion으로 어느 쪽을 우선할지 물어보고, 답을 프로젝트 .claude/nunchi.json 의 "policy-priority" 키에 "calibration" 또는 "ponytail" 로 저장한다. 다음 세션부터 자동 반영된다. 충돌이 없으면 묻지 않는다.';
+  }
 }
 
 process.stdout.write(

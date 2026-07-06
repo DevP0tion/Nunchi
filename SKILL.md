@@ -85,7 +85,16 @@ description: 작업 강도 보정("적당히") 규약. 프로젝트별 .claude/n
 | `auto_start` | `CLAUDE_PLUGIN_OPTION_AUTO_START` | `auto-start` | `true` | `true`면 SessionStart 시 memory server 자동 시작 |
 | `path` | `CLAUDE_PLUGIN_OPTION_PATH` | `path` | `.claude/nunchi` | calibration.md가 저장될 폴더 (프로젝트 루트 기준 상대 또는 절대). 초기화 시 없으면 생성 |
 | `port` | `CLAUDE_PLUGIN_OPTION_PORT` | `port` | `null` | memory server(Socket.IO) 포트. 미설정 시 memory-config.json의 port(기본 41720) 사용 |
-| `external_address` | `CLAUDE_PLUGIN_OPTION_EXTERNAL_ADDRESS` | `external-address` | `null` | 설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결. 로컬 자동 스폰 생략 |
+| `external_address` | `CLAUDE_PLUGIN_OPTION_EXTERNAL_ADDRESS` | `external-address` | `null` | 설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결. 로컬 자동 스폰 생략. SessionStart는 외부 서버의 calibration 문서를 우선 주입 (실패 시 로컬 폴백) |
+| `policy_priority` | `CLAUDE_PLUGIN_OPTION_POLICY_PRIORITY` | `policy-priority` | `null` | ponytail 활성 시 calibration과 충돌하면 우선할 쪽 (`calibration` \| `ponytail`). 미결정(null)이면 첫 충돌 시 사용자에게 질문 |
+
+## 고정 강도 정책(ponytail) 공존
+
+SessionStart hook이 `enabledPlugins`에서 ponytail 활성 여부를 감지하고, `policy-priority` 상태에 따라 컨텍스트에 한 줄을 주입한다:
+
+- **미결정(null)**: 이번 세션에서 작업 강도 판단이 처음 충돌하면(ponytail은 생략을 권하는데 calibration은 반대, 또는 그 역) `AskUserQuestion`으로 어느 쪽을 우선할지 묻는다. 답을 프로젝트 `.claude/nunchi.json`의 `policy-priority`에 `"calibration"` 또는 `"ponytail"`로 저장하고 사용자에게 저장 사실을 한 줄로 알린다. **충돌이 없으면 묻지 않는다.**
+- **`calibration`**: 충돌 시 calibration 문서가 우선. '벌주는 것' 엔트리는 항상 지킨다.
+- **`ponytail`**: 충돌 시 최소화 규칙이 우선. 단 신뢰도 높음(3+)의 '벌주는 것' 엔트리는 실제 사고 기록이므로 예외로 지킨다. 생략이 사고로 이어지면 반전 규칙대로 기록한다 — 사용자 결정도 calibration 축적을 멈추지 않는다.
 
 ## 하지 말 것
 

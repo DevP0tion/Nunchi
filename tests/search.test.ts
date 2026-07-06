@@ -1,8 +1,8 @@
-// bun test memory/search.test.ts
+// bun test tests/search.test.ts
 // 검색 경로(FTS/LIKE 폴백)와 키워드 보강의 저장소 로직 검증. socket 계층은 제외.
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { createStore, pickKeywordsLine } from "./server.ts";
+import { createStore, pickKeywordsLine } from "../memory/server.ts";
 
 const makeStore = () => createStore(new Database(":memory:"));
 const keys = (rows: { key: string }[]) => rows.map((r) => r.key);

@@ -3,6 +3,7 @@
 // userConfig는 plugin.json에 선언되고 Claude Code가 환경 변수로 주입한다.
 import { readFileSync, existsSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
+import { homedir } from "node:os";
 
 // zero-dependency 실행을 위한 최소 ambient 선언.
 // 에디터에서 타입을 제대로 보려면 `bun add -d @types/bun` 후 이 블록을 제거해도 된다.
@@ -29,6 +30,9 @@ export interface NunchiConfig {
   /** 설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결 (예: "http://192.168.0.10:41720").
    *  스킴 생략 시 http:// 로 간주. 로컬 스폰·프로젝트 핸드셰이크는 생략된다 */
   "external-address": string | null;
+  /** ponytail(고정 강도 정책) 활성 시 calibration과 충돌하면 어느 쪽을 우선할지.
+   *  null = 미결정 — SessionStart가 첫 충돌 시 사용자에게 질문하라는 지시를 주입한다 */
+  "policy-priority": "calibration" | "ponytail" | null;
 }
 
 export const DEFAULTS: NunchiConfig = {
@@ -37,6 +41,7 @@ export const DEFAULTS: NunchiConfig = {
   port: null,
   model: null,
   "external-address": null,
+  "policy-priority": null,
 };
 
 /** path 폴더 안의 calibration 문서 파일명 (고정) */
@@ -83,6 +88,9 @@ function envConfig(): Partial<NunchiConfig> {
   if (model) cfg.model = model;
   const external = process.env.CLAUDE_PLUGIN_OPTION_EXTERNAL_ADDRESS;
   if (external) cfg["external-address"] = external;
+  const priority = process.env.CLAUDE_PLUGIN_OPTION_POLICY_PRIORITY;
+  if (priority === "calibration" || priority === "ponytail")
+    cfg["policy-priority"] = priority;
   return cfg;
 }
 
@@ -106,7 +114,30 @@ export function loadConfig(projectDir: string): NunchiConfig {
       typeof merged["external-address"] === "string" && merged["external-address"].trim()
         ? merged["external-address"].trim()
         : null,
+    "policy-priority":
+      merged["policy-priority"] === "calibration" || merged["policy-priority"] === "ponytail"
+        ? merged["policy-priority"]
+        : null,
   };
+}
+
+/** enabledPlugins에서 ponytail 활성 여부.
+ *  user settings < 프로젝트 settings < 프로젝트 settings.local 순으로 나중에 정의된 값이 이긴다.
+ *  키는 "<plugin>@<marketplace>" 형태이고 marketplace 이름은 사용자마다 다를 수 있어 prefix로 매칭한다 */
+export function isPonytailEnabled(projectDir: string): boolean {
+  let enabled = false;
+  for (const p of [
+    join(homedir(), ".claude", "settings.json"),
+    join(projectDir, ".claude", "settings.json"),
+    join(projectDir, ".claude", "settings.local.json"),
+  ]) {
+    const plugins = (readJson(p) as { enabledPlugins?: Record<string, boolean> })
+      .enabledPlugins;
+    for (const [key, value] of Object.entries(plugins ?? {})) {
+      if (key.startsWith("ponytail@") && typeof value === "boolean") enabled = value;
+    }
+  }
+  return enabled;
 }
 
 /** calibration 폴더 절대 경로 */

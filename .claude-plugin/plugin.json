@@ -37,6 +37,12 @@
       "description": "설정 시 mem:set마다 claude -p --model <값>으로 검색 키워드를 비동기 생성 (예: haiku). 미설정 시 비활성. 변경은 memory server 재시작 후 반영",
       "type": "string",
       "required": false
+    },
+    "policy_priority": {
+      "title": "Policy Priority",
+      "description": "ponytail(고정 강도 정책) 활성 시 calibration과 충돌하면 우선할 쪽: calibration 또는 ponytail. 미설정 시 첫 충돌 시점에 사용자에게 질문하고 프로젝트 .claude/nunchi.json에 저장",
+      "type": "string",
+      "required": false
     }
   }
 }
