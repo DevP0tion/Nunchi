@@ -1,0 +1,2007 @@
+# nunchi v0.8.0 보정 DB 전환 구현 계획
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** calibration.md 전문 주입을 폐기하고, 보정 엔트리를 memory.db 전용 테이블에 저장 + 이벤트별 검색 회수(훅 자동 주입) + MCP 도구(모델 재량 검색·기록)로 전환한다.
+
+**Architecture:** 저장소 로직(`memory/calibration.ts`)은 기존 `createStore` 패턴을 따라 소켓 계층과 분리. memory server(`server.ts`)가 `cal:*` 소켓 이벤트로 노출하고, MCP 서버(`mcp/server.ts`)와 훅 4종은 전부 `client.ts`(`connectMemory`) 경유로 접속 — SQLite 단일 소유 유지. 스펙: `docs/superpowers/specs/2026-07-06-calibration-db-design.md`.
+
+**Tech Stack:** Bun, bun:sqlite(FTS5 trigram), socket.io 4.8.3, @modelcontextprotocol/sdk(신규), zod(신규)
+
+## Global Constraints
+
+- 주석·문서·커밋 메시지는 한국어 (기존 코드 스타일 유지, 의도적 단순화는 `// ponytail:` 주석)
+- 기존 `memory` 테이블·`mem:set/get/search`·핸드셰이크·포트 재할당은 변경 금지
+- section 값은 `'punish' | 'forgive' | 'env'` (punish=벌주는 것, forgive=용서하는 것, env=환경 특이사항)
+- 상시 주입 코어 기준: `section='punish' AND confidence >= 3` (상수 `CORE_CONFIDENCE = 3`)
+- 훅은 서버 미접속 시 조용히 통과해야 한다 (사용자 세션을 절대 막지 않는다) — 단 Stop 점검 메시지는 예외적으로 항상 나감
+- 검증된 훅 스키마: SubagentStart stdin에는 서브에이전트 프롬프트가 **없다** (`agent_type`/`agent_id`만). additionalContext 상한 10,000자
+- 버전: plugin.json / MCP 서버 선언 모두 `0.8.0`
+- 테스트 실행: `bun test` (전체), 개별은 `bun test tests/<파일>`
+
+## 파일 구조
+
+| 파일 | 책임 |
+|---|---|
+| `memory/calibration.ts` (신규) | calibration 테이블 스키마·CRUD·다중 쿼리 검색·파서·렌더러·임포트 |
+| `memory/server.ts` (수정) | `cal:*` 소켓 노출, `mem:doc` DB 렌더링 전환, 기동 시 임포트, 키워드 보강 일반화 |
+| `memory/client.ts` (수정) | `cal*` 클라이언트 메서드, `noSpawn` 옵션 |
+| `mcp/server.ts` (신규) | MCP stdio 서버 — 도구 4종 |
+| `hooks/config.ts` (수정) | `HookInput.prompt`, `formatCalEntries` 공용 헬퍼 |
+| `hooks/session-start.ts` (개정) | 규약 요약 + 코어 주입 |
+| `hooks/user-prompt-submit.ts` (신규) | 프롬프트 검색 → 상위 3건 주입 |
+| `hooks/subagent-start.ts` (신규) | 서브에이전트에 규약 + 코어 주입 |
+| `hooks/stop-check.ts` (개정) | mtime → `cal:stamp` 점검 |
+| `hooks/hooks.json` (수정) | UserPromptSubmit·SubagentStart 등록 |
+| `.claude-plugin/plugin.json` (수정) | 0.8.0, `mcpServers` |
+| `package.json` (수정) | MCP SDK·zod 의존성 |
+| `tests/calibration.test.ts` (신규) | 저장소·검색·파서 단위 테스트 |
+| `tests/cal-socket.test.ts` (신규) | 소켓 왕복 통합 테스트 |
+| `tests/mcp.test.ts` (신규) | MCP 핸드셰이크·tools/list 스모크 |
+| `tests/hooks.test.ts` (신규) | 훅 4종 stdin/stdout 스모크 |
+| `SKILL.md` / `README.md` (개정) | 규약·문서 갱신 |
+
+---
+
+### Task 1: calibration 저장소 코어 (스키마 + CRUD + core/stamp)
+
+**Files:**
+- Create: `memory/calibration.ts`
+- Test: `tests/calibration.test.ts`
+
+**Interfaces:**
+- Consumes: `bun:sqlite`의 `Database`
+- Produces (이후 전 태스크가 사용):
+  - `type CalSection = "punish" | "forgive" | "env"`
+  - `interface CalEntry { id: number; section: CalSection; area: string; rule: string; evidence: string; confidence: number; updated_at: string }`
+  - `interface NewCalEntry { section: CalSection; area: string; rule: string; evidence: string; confidence?: number }`
+  - `const CORE_CONFIDENCE = 3`
+  - `createCalStore(db)` → `{ add(e: NewCalEntry): number; get(id): CalEntry | null; update(id, fields: Partial<NewCalEntry>): boolean; confirm(id): boolean; remove(id): boolean; list(opts?: {section?, minConfidence?}): CalEntry[]; core(): CalEntry[]; stamp(): string | null; setKeywords(id, updatedAt, keywords): void; search(...) }` (search는 Task 2)
+  - `type CalStore = ReturnType<typeof createCalStore>`
+
+- [ ] **Step 1: 실패하는 테스트 작성**
+
+`tests/calibration.test.ts` 생성:
+
+```ts
+// bun test tests/calibration.test.ts
+// calibration 저장소 로직 검증 (소켓 계층 제외) — search.test.ts와 같은 패턴.
+import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { createCalStore } from "../memory/calibration.ts";
+
+const makeStore = () => createCalStore(new Database(":memory:"));
+
+test("add/get: 엔트리 추가와 조회, 기본 신뢰도 1", () => {
+  const s = makeStore();
+  const id = s.add({ section: "punish", area: "[배포: CI 캐시]", rule: "lockfile 변경 시 캐시 키 확인", evidence: "2026-06-12 캐시 미스매치로 배포 2회 실패" });
+  const e = s.get(id);
+  expect(e?.section).toBe("punish");
+  expect(e?.confidence).toBe(1);
+  expect(s.get(9999)).toBe(null);
+});
+
+test("confirm: 신뢰도 +1, 없는 id는 false", () => {
+  const s = makeStore();
+  const id = s.add({ section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략 가능", evidence: "2026-06-20 테스트가 본체보다 오래 걸림" });
+  expect(s.confirm(id)).toBe(true);
+  expect(s.get(id)?.confidence).toBe(2);
+  expect(s.confirm(9999)).toBe(false);
+});
+
+test("update: 부분 갱신 — 반전(섹션 이동+신뢰도 리셋+근거 교체)", () => {
+  const s = makeStore();
+  const id = s.add({ section: "forgive", area: "[테스트: 생략]", rule: "테스트 생략 가능", evidence: "2026-06-20 무사고", confidence: 3 });
+  expect(s.update(id, { section: "punish", confidence: 1, evidence: "2026-07-06 생략했다가 회귀 발생" })).toBe(true);
+  const e = s.get(id)!;
+  expect(e.section).toBe("punish");
+  expect(e.confidence).toBe(1);
+  expect(e.rule).toBe("테스트 생략 가능"); // 미지정 필드는 보존
+  expect(s.update(9999, { rule: "x" })).toBe(false);
+});
+
+test("remove/list/core/stamp", () => {
+  const s = makeStore();
+  expect(s.stamp()).toBe(null);
+  const a = s.add({ section: "punish", area: "[a]", rule: "r1", evidence: "e1", confidence: 3 });
+  const b = s.add({ section: "punish", area: "[b]", rule: "r2", evidence: "e2" });
+  const c = s.add({ section: "env", area: "[c]", rule: "r3", evidence: "e3" });
+  expect(s.stamp()).not.toBe(null);
+  expect(s.list({}).length).toBe(3);
+  expect(s.list({ section: "punish" }).length).toBe(2);
+  expect(s.list({ minConfidence: 3 }).map((e) => e.id)).toEqual([a]);
+  expect(s.core().map((e) => e.id)).toEqual([a]); // punish AND confidence>=3
+  expect(s.remove(c)).toBe(true);
+  expect(s.list({}).length).toBe(2);
+  expect(s.remove(c)).toBe(false);
+  void b;
+});
+```
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `bun test tests/calibration.test.ts`
+Expected: FAIL — `Cannot find module '../memory/calibration.ts'`
+
+- [ ] **Step 3: 최소 구현**
+
+`memory/calibration.ts` 생성:
+
+```ts
+// nunchi calibration store (Bun)
+// 보정 엔트리 테이블 + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
+// 소켓 계층(server.ts)과 테스트가 공유하는 저장소 로직 — memory store(createStore)와 같은 패턴.
+import type { Database } from "bun:sqlite";
+
+export type CalSection = "punish" | "forgive" | "env";
+
+export interface CalEntry {
+  id: number;
+  section: CalSection;
+  area: string;
+  rule: string;
+  evidence: string;
+  confidence: number;
+  updated_at: string;
+}
+
+export interface NewCalEntry {
+  section: CalSection;
+  area: string;
+  rule: string;
+  evidence: string;
+  /** 미지정 시 낮음(1) — 임포트가 기존 신뢰도를 보존할 때만 지정한다 */
+  confidence?: number;
+}
+
+/** 상시 주입 코어 기준: punish AND confidence >= 3 (SKILL.md의 '높음') */
+export const CORE_CONFIDENCE = 3;
+
+const COLS = "id, section, area, rule, evidence, confidence, updated_at";
+
+/** 테이블 + FTS5 인덱스 초기화 (멱등) — memory_fts와 동일 패턴 */
+export function applyCalSchema(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS calibration (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      section TEXT NOT NULL CHECK (section IN ('punish','forgive','env')),
+      area TEXT NOT NULL,
+      rule TEXT NOT NULL,
+      evidence TEXT NOT NULL,
+      confidence INTEGER NOT NULL DEFAULT 1,
+      keywords TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  db.run(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS calibration_fts USING fts5(
+      area, rule, evidence, keywords,
+      content='calibration', content_rowid='id', tokenize='trigram'
+    )
+  `);
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS calibration_fts_ai AFTER INSERT ON calibration BEGIN
+      INSERT INTO calibration_fts(rowid, area, rule, evidence, keywords)
+      VALUES (new.id, new.area, new.rule, new.evidence, new.keywords);
+    END
+  `);
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS calibration_fts_ad AFTER DELETE ON calibration BEGIN
+      INSERT INTO calibration_fts(calibration_fts, rowid, area, rule, evidence, keywords)
+      VALUES ('delete', old.id, old.area, old.rule, old.evidence, old.keywords);
+    END
+  `);
+  db.run(`
+    CREATE TRIGGER IF NOT EXISTS calibration_fts_au AFTER UPDATE ON calibration BEGIN
+      INSERT INTO calibration_fts(calibration_fts, rowid, area, rule, evidence, keywords)
+      VALUES ('delete', old.id, old.area, old.rule, old.evidence, old.keywords);
+      INSERT INTO calibration_fts(rowid, area, rule, evidence, keywords)
+      VALUES (new.id, new.area, new.rule, new.evidence, new.keywords);
+    END
+  `);
+  // 시작 시 재구축: 백필 + 드리프트 자가 치유 (수백 행 규모 — ms 단위)
+  db.run(`INSERT INTO calibration_fts(calibration_fts) VALUES ('rebuild')`);
+}
+
+export function createCalStore(db: Database) {
+  applyCalSchema(db);
+  const insStmt = db.prepare(
+    `INSERT INTO calibration (section, area, rule, evidence, confidence)
+     VALUES (?, ?, ?, ?, ?) RETURNING id`
+  );
+  const getStmt = db.prepare(`SELECT ${COLS}, keywords FROM calibration WHERE id = ?`);
+  const updStmt = db.prepare(
+    `UPDATE calibration SET section = ?, area = ?, rule = ?, evidence = ?,
+     confidence = ?, keywords = ?, updated_at = datetime('now') WHERE id = ?`
+  );
+  const confirmStmt = db.prepare(
+    `UPDATE calibration SET confidence = confidence + 1, updated_at = datetime('now') WHERE id = ?`
+  );
+  const delStmt = db.prepare(`DELETE FROM calibration WHERE id = ?`);
+  const stampStmt = db.prepare(`SELECT max(updated_at) AS m FROM calibration`);
+  const coreStmt = db.prepare(
+    `SELECT ${COLS} FROM calibration WHERE section = 'punish' AND confidence >= ?
+     ORDER BY confidence DESC, updated_at DESC`
+  );
+  const keywordsStmt = db.prepare(
+    // updated_at 일치 조건 — 보강 중에 엔트리가 다시 바뀌었으면 낡은 키워드를 버린다
+    `UPDATE calibration SET keywords = ? WHERE id = ? AND updated_at = ?`
+  );
+
+  return {
+    add(e: NewCalEntry): number {
+      return (insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1) as { id: number }).id;
+    },
+    get(id: number): CalEntry | null {
+      const row = getStmt.get(id) as (CalEntry & { keywords: string }) | null;
+      if (!row) return null;
+      const { keywords: _k, ...e } = row;
+      return e;
+    },
+    /** 부분 갱신 — 내용(area/rule/evidence)이 바뀌면 keywords를 비운다 (보강이 다시 채움) */
+    update(id: number, fields: Partial<NewCalEntry>): boolean {
+      const cur = getStmt.get(id) as (CalEntry & { keywords: string }) | null;
+      if (!cur) return false;
+      const next = {
+        section: fields.section ?? cur.section,
+        area: fields.area ?? cur.area,
+        rule: fields.rule ?? cur.rule,
+        evidence: fields.evidence ?? cur.evidence,
+        confidence: fields.confidence ?? cur.confidence,
+      };
+      const contentChanged =
+        next.area !== cur.area || next.rule !== cur.rule || next.evidence !== cur.evidence;
+      updStmt.run(next.section, next.area, next.rule, next.evidence, next.confidence,
+        contentChanged ? "" : cur.keywords, id);
+      return true;
+    },
+    /** 신뢰도 +1 (재확인) — 규약의 승격 연산 */
+    confirm(id: number): boolean {
+      return confirmStmt.run(id).changes > 0;
+    },
+    remove(id: number): boolean {
+      return delStmt.run(id).changes > 0;
+    },
+    list(opts: { section?: CalSection; minConfidence?: number } = {}): CalEntry[] {
+      // ponytail: 필터 2개뿐이라 동적 WHERE — 쿼리 빌더 불필요
+      const where: string[] = [];
+      const args: (string | number)[] = [];
+      if (opts.section) { where.push("section = ?"); args.push(opts.section); }
+      if (opts.minConfidence) { where.push("confidence >= ?"); args.push(opts.minConfidence); }
+      const sql = `SELECT ${COLS} FROM calibration
+        ${where.length ? "WHERE " + where.join(" AND ") : ""}
+        ORDER BY section, confidence DESC, updated_at DESC`;
+      return db.prepare(sql).all(...args) as CalEntry[];
+    },
+    /** 상시 주입 대상: 벌주는 것 고신뢰 */
+    core(): CalEntry[] {
+      return coreStmt.all(CORE_CONFIDENCE) as CalEntry[];
+    },
+    /** 마지막 기록 시각 — Stop hook 점검용. 엔트리가 없으면 null */
+    stamp(): string | null {
+      return (stampStmt.get() as { m: string | null }).m;
+    },
+    setKeywords(id: number, updatedAt: string, keywords: string): void {
+      keywordsStmt.run(keywords, id, updatedAt);
+    },
+  };
+}
+
+export type CalStore = ReturnType<typeof createCalStore>;
+```
+
+- [ ] **Step 4: 통과 확인**
+
+Run: `bun test tests/calibration.test.ts`
+Expected: PASS (4 tests)
+
+- [ ] **Step 5: 커밋**
+
+```bash
+git add memory/calibration.ts tests/calibration.test.ts
+git commit -m "feat: calibration 저장소 코어 — 스키마·CRUD·core·stamp (v0.8.0 1/10)"
+```
+
+---
+
+### Task 2: 다중 쿼리 검색 (FTS OR-병합 + excludeCore)
+
+**Files:**
+- Modify: `memory/calibration.ts` (createCalStore 반환 객체에 search 추가)
+- Test: `tests/calibration.test.ts` (테스트 추가)
+
+**Interfaces:**
+- Produces: `search(queries: string[], opts?: { section?: CalSection; limit?: number; excludeCore?: boolean }): CalEntry[]` — limit 기본 3. 각 쿼리를 FTS(3글자 미만·무결과 시 LIKE 폴백)로 검색, id 중복 제거(최고 랭크 유지), BM25 랭크 오름차순 정렬
+
+- [ ] **Step 1: 실패하는 테스트 추가**
+
+`tests/calibration.test.ts` 끝에 추가:
+
+```ts
+test("search: 다중 쿼리 OR-병합, 중복 제거, limit", () => {
+  const s = makeStore();
+  const a = s.add({ section: "punish", area: "[배포: CI]", rule: "배포 전 캐시 키 확인", evidence: "2026-06-12 배포 실패" });
+  const b = s.add({ section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략", evidence: "2026-06-20 과잉" });
+  s.add({ section: "env", area: "[윈도우: 인코딩]", rule: "BOM 주의", evidence: "2026-06-25 파싱 실패" });
+  // "배포"(2글자→LIKE), "테스트 생략"(FTS) 두 쿼리가 서로 다른 엔트리를 회수
+  const rows = s.search(["배포", "테스트 생략"], { limit: 5 });
+  expect(rows.map((r) => r.id).sort()).toEqual([a, b].sort());
+  // 같은 엔트리를 두 쿼리가 맞혀도 1건
+  expect(s.search(["배포", "캐시"], { limit: 5 }).length).toBe(1);
+  expect(s.search(["배포", "테스트 생략"], { limit: 1 }).length).toBe(1);
+});
+
+test("search: section 필터와 excludeCore", () => {
+  const s = makeStore();
+  const core = s.add({ section: "punish", area: "[배포: 게이트]", rule: "배포 게이트 유지", evidence: "e", confidence: 3 });
+  const low = s.add({ section: "punish", area: "[배포: 로그]", rule: "배포 로그 확인", evidence: "e" });
+  expect(s.search(["배포"], { limit: 5 }).length).toBe(2);
+  expect(s.search(["배포"], { limit: 5, excludeCore: true }).map((r) => r.id)).toEqual([low]);
+  expect(s.search(["배포"], { limit: 5, section: "punish" }).length).toBe(2);
+  expect(s.search(["배포"], { limit: 5, section: "env" }).length).toBe(0);
+  void core;
+});
+
+test("search: 빈 쿼리·특수문자는 안전하게 처리", () => {
+  const s = makeStore();
+  s.add({ section: "env", area: '[fts: "인용"]', rule: 'query "quoted" AND OR', evidence: "e" });
+  expect(s.search([], { limit: 5 })).toEqual([]);
+  expect(s.search(["", "  "], { limit: 5 })).toEqual([]);
+  expect(s.search(['"quoted"'], { limit: 5 }).length).toBe(1);
+});
+
+test("search: keywords 컬럼도 검색 대상", () => {
+  const s = makeStore();
+  const id = s.add({ section: "forgive", area: "[테스트: 헬퍼]", rule: "내부 헬퍼 방어 생략", evidence: "e" });
+  const e = s.get(id)!;
+  s.setKeywords(id, e.updated_at, "defensive, guard, 방어코드");
+  expect(s.search(["defensive"], { limit: 5 }).map((r) => r.id)).toEqual([id]);
+});
+```
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `bun test tests/calibration.test.ts`
+Expected: FAIL — `s.search is not a function`
+
+- [ ] **Step 3: 구현**
+
+`createCalStore` 내부에 prepared statement 2개 추가 (keywordsStmt 아래):
+
+```ts
+  const ftsStmt = db.prepare(
+    `SELECT c.id, c.section, c.area, c.rule, c.evidence, c.confidence, c.updated_at,
+            f.rank AS rank
+     FROM calibration_fts f JOIN calibration c ON c.id = f.rowid
+     WHERE calibration_fts MATCH ? ORDER BY f.rank LIMIT 50`
+  );
+  const likeStmt = db.prepare(
+    `SELECT ${COLS} FROM calibration
+     WHERE area LIKE ? OR rule LIKE ? OR evidence LIKE ? OR keywords LIKE ?
+     ORDER BY updated_at DESC LIMIT 50`
+  );
+```
+
+반환 객체에 search 추가 (setKeywords 아래):
+
+```ts
+    /** 다중 쿼리 OR-병합 검색. FTS(BM25) 우선, 3글자 미만·무결과는 LIKE 폴백.
+     *  모델 쿼리 확장(nunchi_search)과 훅 자동 주입이 공유하는 유일한 검색 경로 */
+    search(
+      queries: string[],
+      opts: { section?: CalSection; limit?: number; excludeCore?: boolean } = {}
+    ): CalEntry[] {
+      const limit = opts.limit ?? 3;
+      const best = new Map<number, CalEntry & { rank: number }>();
+      let pseudo = 1e9; // LIKE 결과는 랭크가 없다 — FTS 결과 뒤에 도착 순으로
+      for (const raw of queries) {
+        const q = String(raw ?? "").trim();
+        if (!q) continue;
+        let rows: (CalEntry & { rank?: number })[] = [];
+        if ([...q].length >= 3) {
+          try {
+            const phrase = `"${q.replaceAll('"', '""')}"`;
+            rows = ftsStmt.all(phrase) as (CalEntry & { rank: number })[];
+          } catch {
+            /* FTS 질의 오류 → LIKE 폴백 */
+          }
+        }
+        if (!rows.length) {
+          const pat = `%${q}%`;
+          rows = (likeStmt.all(pat, pat, pat, pat) as CalEntry[]).map((r) => ({
+            ...r,
+            rank: pseudo++,
+          }));
+        }
+        for (const r of rows) {
+          const rank = r.rank ?? pseudo++;
+          const prev = best.get(r.id);
+          if (!prev || rank < prev.rank) best.set(r.id, { ...r, rank } as CalEntry & { rank: number });
+        }
+      }
+      let out = [...best.values()];
+      if (opts.section) out = out.filter((r) => r.section === opts.section);
+      if (opts.excludeCore)
+        out = out.filter((r) => !(r.section === "punish" && r.confidence >= CORE_CONFIDENCE));
+      out.sort((a, b) => a.rank - b.rank); // BM25 rank는 음수(낮을수록 관련) — 오름차순
+      return out.slice(0, limit).map(({ rank: _r, ...e }) => e);
+    },
+```
+
+- [ ] **Step 4: 통과 확인**
+
+Run: `bun test tests/calibration.test.ts`
+Expected: PASS (8 tests)
+
+- [ ] **Step 5: 커밋**
+
+```bash
+git add memory/calibration.ts tests/calibration.test.ts
+git commit -m "feat: cal 다중 쿼리 검색 — FTS OR-병합·excludeCore (v0.8.0 2/10)"
+```
+
+---
+
+### Task 3: calibration.md 파서·렌더러·임포트
+
+**Files:**
+- Modify: `memory/calibration.ts` (파일 끝에 함수 3개 추가)
+- Test: `tests/calibration.test.ts`
+
+**Interfaces:**
+- Produces:
+  - `parseCalibrationDoc(md: string): { entries: NewCalEntry[]; skipped: number }`
+  - `renderCalibrationDoc(store: CalStore, projectName: string): string | null` — 엔트리 없으면 null, 있으면 기존 3섹션 markdown
+  - `importCalibrationDoc(store: CalStore, docPath: string): number | null` — DB 비어 있고(`stamp()===null`) 파일 존재 시에만 임포트 후 `<docPath>.imported`로 리네임. 임포트 안 하면 null, 했으면 건수
+
+- [ ] **Step 1: 실패하는 테스트 추가**
+
+`tests/calibration.test.ts` 끝에 추가 (import 문에 `parseCalibrationDoc, renderCalibrationDoc, importCalibrationDoc` 추가, 파일 상단에 `import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"; import { tmpdir } from "node:os"; import { join } from "node:path";` 추가):
+
+```ts
+const SAMPLE_DOC = `# Calibration — my-project
+
+## 벌주는 것 (반드시 한다)
+
+### [배포: CI 캐시]
+- 규칙: lockfile 변경 시 CI 캐시 키를 반드시 확인한다
+- 근거: 2026-06-12 캐시 미스매치로 배포 2회 실패
+- 신뢰도: 높음(3)
+
+## 용서하는 것 (생략 가능)
+
+### [테스트: 내부 스크립트]
+- 규칙: scripts/ 하위 일회성 스크립트는 테스트 생략 가능
+- 근거: 2026-06-20 테스트 작성이 스크립트 본체보다 오래 걸렸음
+- 신뢰도: 중간(2)
+
+### [불량: 필드 누락]
+- 규칙: 근거가 없는 엔트리
+
+## 환경 특이사항
+
+### [윈도우: 인코딩]
+- 규칙: UTF-8 BOM 파일 파싱에 주의한다
+- 근거: 2026-06-25 nunchi.json BOM으로 파싱 실패
+- 신뢰도: 낮음(1)
+`;
+
+test("parseCalibrationDoc: 3섹션·신뢰도 숫자 추출·불량 엔트리 skip", () => {
+  const { entries, skipped } = parseCalibrationDoc(SAMPLE_DOC);
+  expect(entries.length).toBe(3);
+  expect(skipped).toBe(1);
+  expect(entries[0]).toEqual({
+    section: "punish", area: "[배포: CI 캐시]",
+    rule: "lockfile 변경 시 CI 캐시 키를 반드시 확인한다",
+    evidence: "2026-06-12 캐시 미스매치로 배포 2회 실패", confidence: 3,
+  });
+  expect(entries[1].section).toBe("forgive");
+  expect(entries[1].confidence).toBe(2);
+  expect(entries[2].section).toBe("env");
+  expect(entries[2].confidence).toBe(1);
+});
+
+test("parseCalibrationDoc: 빈 문서는 0건", () => {
+  expect(parseCalibrationDoc("")).toEqual({ entries: [], skipped: 0 });
+});
+
+test("renderCalibrationDoc: 3섹션 재구성, 빈 DB는 null", () => {
+  const s = makeStore();
+  expect(renderCalibrationDoc(s, "my-project")).toBe(null);
+  for (const e of parseCalibrationDoc(SAMPLE_DOC).entries) s.add(e);
+  const doc = renderCalibrationDoc(s, "my-project")!;
+  expect(doc).toContain("# Calibration — my-project");
+  expect(doc).toContain("## 벌주는 것 (반드시 한다)");
+  expect(doc).toContain("### [배포: CI 캐시]");
+  expect(doc).toContain("- 신뢰도: 높음(3)");
+  expect(doc).toContain("- 신뢰도: 중간(2)");
+  expect(doc).toContain("- 신뢰도: 낮음(1)");
+  // 렌더 → 파싱 왕복 보존
+  expect(parseCalibrationDoc(doc).entries.length).toBe(3);
+});
+
+test("importCalibrationDoc: 1회 임포트 + .imported 리네임, 재실행은 no-op", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nunchi-imp-"));
+  const docPath = join(dir, "calibration.md");
+  writeFileSync(docPath, SAMPLE_DOC);
+  const s = makeStore();
+  expect(importCalibrationDoc(s, docPath)).toBe(3);
+  expect(existsSync(docPath)).toBe(false);
+  expect(readFileSync(docPath + ".imported", "utf8")).toBe(SAMPLE_DOC);
+  expect(s.list({}).length).toBe(3);
+  // DB에 데이터가 있으면 임포트하지 않는다 (파일이 다시 생겨도)
+  writeFileSync(docPath, SAMPLE_DOC);
+  expect(importCalibrationDoc(s, docPath)).toBe(null);
+  rmSync(dir, { recursive: true, force: true });
+});
+```
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `bun test tests/calibration.test.ts`
+Expected: FAIL — `parseCalibrationDoc` export 없음
+
+- [ ] **Step 3: 구현**
+
+`memory/calibration.ts` 상단 import에 추가:
+
+```ts
+import { existsSync, readFileSync, renameSync } from "node:fs";
+```
+
+파일 끝에 추가:
+
+```ts
+// ---- calibration.md 상호 변환 (임포트 원본 · mem:doc 내보내기 뷰) ----
+
+const SECTION_OF: [RegExp, CalSection][] = [
+  [/벌주는/, "punish"],
+  [/용서/, "forgive"],
+  [/특이사항/, "env"],
+];
+const SECTION_TITLE: Record<CalSection, string> = {
+  punish: "벌주는 것 (반드시 한다)",
+  forgive: "용서하는 것 (생략 가능)",
+  env: "환경 특이사항",
+};
+
+/** 기존 calibration.md → 엔트리 배열. 규칙/근거가 없는 엔트리는 skipped로 센다 */
+export function parseCalibrationDoc(md: string): { entries: NewCalEntry[]; skipped: number } {
+  const entries: NewCalEntry[] = [];
+  let skipped = 0;
+  let section: CalSection | null = null;
+  let cur: Partial<NewCalEntry> | null = null;
+
+  const flush = () => {
+    if (!cur) return;
+    if (section && cur.area && cur.rule && cur.evidence) {
+      entries.push({
+        section, area: cur.area, rule: cur.rule, evidence: cur.evidence,
+        confidence: cur.confidence ?? 1,
+      });
+    } else {
+      skipped += 1;
+    }
+    cur = null;
+  };
+
+  for (const raw of md.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("## ") && !line.startsWith("### ")) {
+      flush();
+      section = SECTION_OF.find(([re]) => re.test(line))?.[1] ?? null;
+    } else if (line.startsWith("### ")) {
+      flush();
+      cur = { area: line.slice(4).trim() };
+    } else if (cur && line.startsWith("- 규칙:")) {
+      cur.rule = line.slice("- 규칙:".length).trim();
+    } else if (cur && line.startsWith("- 근거:")) {
+      cur.evidence = line.slice("- 근거:".length).trim();
+    } else if (cur && line.startsWith("- 신뢰도:")) {
+      const n = parseInt(line.match(/\((\d+)\)/)?.[1] ?? "", 10);
+      cur.confidence = Number.isFinite(n) ? n : 1;
+    }
+  }
+  flush();
+  return { entries, skipped };
+}
+
+/** DB → 기존 3섹션 markdown. external-address 구버전 클라이언트(mem:doc)와 내보내기 겸용 */
+export function renderCalibrationDoc(store: CalStore, projectName: string): string | null {
+  const all = store.list({});
+  if (!all.length) return null;
+  const label = (c: number) => (c >= CORE_CONFIDENCE ? `높음(${c})` : c === 2 ? "중간(2)" : `낮음(${c})`);
+  const parts = [`# Calibration — ${projectName}`];
+  for (const sec of ["punish", "forgive", "env"] as CalSection[]) {
+    const rows = all.filter((e) => e.section === sec);
+    if (!rows.length) continue;
+    parts.push("", `## ${SECTION_TITLE[sec]}`);
+    for (const e of rows) {
+      parts.push("", `### ${e.area}`, `- 규칙: ${e.rule}`, `- 근거: ${e.evidence}`, `- 신뢰도: ${label(e.confidence)}`);
+    }
+  }
+  return parts.join("\n") + "\n";
+}
+
+/** 서버 기동 시 1회 마이그레이션: DB가 비어 있고 문서가 있으면 임포트 후 .imported로 보존 */
+export function importCalibrationDoc(store: CalStore, docPath: string): number | null {
+  if (store.stamp() !== null || !existsSync(docPath)) return null;
+  const { entries, skipped } = parseCalibrationDoc(readFileSync(docPath, "utf8"));
+  for (const e of entries) store.add(e);
+  if (skipped) console.error(`[nunchi] 임포트: 파싱 불가 엔트리 ${skipped}건 건너뜀 (원본 .imported 참조)`);
+  renameSync(docPath, docPath + ".imported"); // 0건이어도 리네임 — 기동마다 재파싱 방지
+  return entries.length;
+}
+```
+
+- [ ] **Step 4: 통과 확인**
+
+Run: `bun test tests/calibration.test.ts`
+Expected: PASS (12 tests)
+
+- [ ] **Step 5: 커밋**
+
+```bash
+git add memory/calibration.ts tests/calibration.test.ts
+git commit -m "feat: calibration.md 파서·렌더러·1회 임포트 (v0.8.0 3/10)"
+```
+
+---
+
+### Task 4: 소켓 노출 + 클라이언트 메서드 (`cal:*`, `mem:doc` 전환, `noSpawn`)
+
+**Files:**
+- Modify: `memory/server.ts`
+- Modify: `memory/client.ts`
+- Test: `tests/cal-socket.test.ts`
+
+**Interfaces:**
+- Consumes: Task 1-3의 `createCalStore`, `importCalibrationDoc`, `renderCalibrationDoc`
+- Produces:
+  - 소켓 이벤트: `cal:add {section,area,rule,evidence,confidence?}` → `{id}`, `cal:update {id, confirm?, section?, area?, rule?, evidence?, confidence?}` → `{updated}`, `cal:remove {id}` → `{removed}`, `cal:search {queries, section?, limit?, excludeCore?}` → `{rows}`, `cal:list {section?, minConfidence?}` → `{rows}`, `cal:core` → `{rows}`, `cal:stamp` → `{stamp}`
+  - `MemoryClient`에 추가: `calAdd(e): Promise<number>`, `calUpdate(id, fields: Partial<NewCalEntry> & {confirm?: boolean}): Promise<boolean>`, `calRemove(id): Promise<boolean>`, `calSearch(queries: string[], opts?): Promise<CalEntry[]>`, `calList(opts?): Promise<CalEntry[]>`, `calCore(): Promise<CalEntry[]>`, `calStamp(): Promise<string | null>`
+  - `connectMemory(projectDir, { force?, noSpawn? })` — `noSpawn: true`면 서버 미기동 시 스폰 없이 즉시 throw (훅의 빠른 경로)
+
+- [ ] **Step 1: 실패하는 테스트 작성**
+
+`tests/cal-socket.test.ts` 생성:
+
+```ts
+// bun test tests/cal-socket.test.ts
+// cal:* 소켓 왕복 + mem:doc DB 렌더링 + noSpawn. 실제 서버를 스폰하는 통합 테스트.
+import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { assignFreePort, connectMemory } from "../memory/client.ts";
+
+test(
+  "cal:* 왕복 — add/search/core/stamp/update/remove, mem:doc 렌더링",
+  async () => {
+    const A = mkdtempSync(join(tmpdir(), "nunchi-cal-"));
+    await assignFreePort(A);
+    const mem = await connectMemory(A);
+    try {
+      expect(await mem.calStamp()).toBe(null);
+      expect(await mem.doc()).toBe(null); // 빈 DB — mem:doc도 null
+      const id = await mem.calAdd({
+        section: "punish", area: "[배포: CI]", rule: "배포 전 캐시 키 확인",
+        evidence: "2026-06-12 배포 실패", confidence: 3,
+      });
+      const low = await mem.calAdd({
+        section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 테스트 생략",
+        evidence: "2026-06-20 과잉",
+      });
+      expect(await mem.calStamp()).not.toBe(null);
+      expect((await mem.calCore()).map((e) => e.id)).toEqual([id]);
+      expect((await mem.calSearch(["배포"], { excludeCore: true })).length).toBe(0);
+      expect((await mem.calSearch(["테스트 생략"])).map((e) => e.id)).toEqual([low]);
+      expect((await mem.calList({ section: "punish" })).length).toBe(1);
+      expect(await mem.doc()).toContain("### [배포: CI]"); // mem:doc이 DB에서 렌더링
+      expect(await mem.calUpdate(low, { confirm: true })).toBe(true);
+      expect((await mem.calList({ minConfidence: 2 })).length).toBe(2);
+      expect(await mem.calRemove(low)).toBe(true);
+      expect((await mem.calList({})).length).toBe(1);
+    } finally {
+      await mem.shutdown();
+      rmSync(A, { recursive: true, force: true });
+    }
+  },
+  20000
+);
+
+test(
+  "기동 임포트: 기존 calibration.md가 DB로 이관되고 .imported로 리네임",
+  async () => {
+    const A = mkdtempSync(join(tmpdir(), "nunchi-imp2-"));
+    await assignFreePort(A);
+    const dir = join(A, ".claude", "nunchi");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "calibration.md"), [
+      "# Calibration — t", "", "## 벌주는 것 (반드시 한다)", "",
+      "### [a]", "- 규칙: r", "- 근거: 2026-07-01 e", "- 신뢰도: 높음(3)", "",
+    ].join("\n"));
+    const mem = await connectMemory(A); // 스폰 시 서버가 임포트 수행
+    try {
+      expect((await mem.calCore()).length).toBe(1);
+      expect(existsSync(join(dir, "calibration.md"))).toBe(false);
+      expect(existsSync(join(dir, "calibration.md.imported"))).toBe(true);
+    } finally {
+      await mem.shutdown();
+      rmSync(A, { recursive: true, force: true });
+    }
+  },
+  20000
+);
+
+test("noSpawn: 서버 미기동이면 스폰하지 않고 즉시 실패", async () => {
+  const A = mkdtempSync(join(tmpdir(), "nunchi-ns-"));
+  await assignFreePort(A); // 빈 포트 배정 — 서버 없음
+  await expect(connectMemory(A, { noSpawn: true })).rejects.toThrow("noSpawn");
+  rmSync(A, { recursive: true, force: true });
+});
+```
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `bun test tests/cal-socket.test.ts`
+Expected: FAIL — `mem.calAdd is not a function`
+
+- [ ] **Step 3: server.ts 구현**
+
+`memory/server.ts` 수정 4곳:
+
+(1) import에 추가:
+
+```ts
+import { basename, join } from "node:path"; // 기존 join import 줄을 교체
+import {
+  createCalStore,
+  importCalibrationDoc,
+  renderCalibrationDoc,
+  type NewCalEntry,
+} from "./calibration.ts";
+```
+
+(2) `if (import.meta.main)` 블록에서 store 생성 직후 cal store + 임포트 추가:
+
+```ts
+  const store = createStore(db);
+  const cal = createCalStore(db);
+```
+
+`const calibrationPath = resolveDocPath(projectDir, pluginCfg);` 줄 아래에:
+
+```ts
+  const imported = importCalibrationDoc(cal, calibrationPath);
+  if (imported !== null)
+    console.log(`[nunchi] calibration.md 임포트: ${imported}건 → DB (원본은 .imported로 보존)`);
+```
+
+(3) `enrich` 함수를 일반화 — 기존 `enrich(key, value)` 전체를 다음으로 교체:
+
+```ts
+  const ENRICH_TIMEOUT_MS = 60_000;
+  /** claude -p로 검색 키워드 생성 (model 설정 시에만 호출됨). 실패 시 빈 문자열 */
+  async function generateKeywords(label: string, body: string): Promise<string> {
+    const prompt = [
+      "다음 작업 기록을 나중에 검색할 때 쓸 키워드를 생성하라.",
+      "원문에 없는 유의어·관련어 위주로 한국어/영어 키워드 10개 이내.",
+      "쉼표로 구분된 한 줄만 출력하고 다른 텍스트는 출력하지 마라.",
+      "",
+      `key: ${label}`,
+      `value: ${body}`,
+    ].join("\n");
+    // 프롬프트는 stdin으로 전달 — Windows cmd 인용 문제를 피한다
+    const cmd =
+      process.platform === "win32"
+        ? ["cmd", "/c", "claude", "-p", "--model", model!]
+        : ["claude", "-p", "--model", model!];
+    const proc = Bun.spawn(cmd, {
+      stdin: new TextEncoder().encode(prompt),
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const timer = setTimeout(() => proc.kill(), ENRICH_TIMEOUT_MS);
+    try {
+      return pickKeywordsLine(await new Response(proc.stdout).text());
+    } catch (e) {
+      console.error(`[nunchi] keyword 보강 실패 (${label}): ${e}`);
+      return "";
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  /** mem:set 후 백그라운드 보강 */
+  async function enrich(key: string, value: string): Promise<void> {
+    const keywords = await generateKeywords(key, value);
+    if (keywords) store.setKeywords(key, value, keywords);
+  }
+  /** cal:add/update 후 백그라운드 보강 — updated_at 가드로 낡은 키워드 폐기 */
+  async function enrichCal(id: number): Promise<void> {
+    const e = cal.get(id);
+    if (!e) return;
+    const keywords = await generateKeywords(e.area, `${e.rule} / ${e.evidence}`);
+    if (keywords) cal.setKeywords(id, e.updated_at, keywords);
+  }
+```
+
+(4) `io.on("connection", ...)` 안에서 `mem:doc` 핸들러를 교체하고 `cal:*` 핸들러를 추가 (`mem:search` 핸들러 아래):
+
+```ts
+    // calibration 문서 — DB에서 렌더링 (external-address 구버전 클라이언트·내보내기 겸용)
+    socket.on("mem:doc", (ack) =>
+      handle(() => ({ doc: renderCalibrationDoc(cal, basename(projectDir)) }))(ack)
+    );
+    socket.on("cal:add", (p, ack) =>
+      handle(() => {
+        const id = cal.add({
+          section: p.section, area: String(p.area), rule: String(p.rule),
+          evidence: String(p.evidence),
+          confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined,
+        } as NewCalEntry);
+        if (model) void enrichCal(id);
+        return { id };
+      })(ack)
+    );
+    socket.on("cal:update", (p, ack) =>
+      handle(() => {
+        const id = Number(p.id);
+        if (p.confirm) return { updated: cal.confirm(id) };
+        const fields: Partial<NewCalEntry> = {};
+        if (p.section !== undefined) fields.section = p.section;
+        if (p.area !== undefined) fields.area = String(p.area);
+        if (p.rule !== undefined) fields.rule = String(p.rule);
+        if (p.evidence !== undefined) fields.evidence = String(p.evidence);
+        if (p.confidence !== undefined) fields.confidence = Number(p.confidence);
+        const updated = cal.update(id, fields);
+        if (updated && model && (fields.area ?? fields.rule ?? fields.evidence) !== undefined)
+          void enrichCal(id);
+        return { updated };
+      })(ack)
+    );
+    socket.on("cal:remove", (p, ack) =>
+      handle(() => ({ removed: cal.remove(Number(p.id)) }))(ack)
+    );
+    socket.on("cal:search", (p, ack) =>
+      handle(() => ({
+        rows: cal.search(Array.isArray(p.queries) ? p.queries.map(String) : [], {
+          section: p.section, limit: Number(p.limit) || undefined,
+          excludeCore: Boolean(p.excludeCore),
+        }),
+      }))(ack)
+    );
+    socket.on("cal:list", (p, ack) =>
+      handle(() => ({
+        rows: cal.list({
+          section: p?.section,
+          minConfidence: Number(p?.minConfidence) || undefined,
+        }),
+      }))(ack)
+    );
+    socket.on("cal:core", (ack) => handle(() => ({ rows: cal.core() }))(ack));
+    socket.on("cal:stamp", (ack) => handle(() => ({ stamp: cal.stamp() }))(ack));
+```
+
+주의: 기존 `mem:doc` 핸들러(파일 읽기)와 `readFileSync`/`existsSync`의 calibration 용도 사용은 제거하되, `initMemory`의 다른 사용처는 유지. `cal:list`는 페이로드 없이 호출될 수 있어 `p?.` 접근.
+
+- [ ] **Step 4: client.ts 구현**
+
+(1) import에 타입 추가:
+
+```ts
+import type { CalEntry, CalSection, NewCalEntry } from "./calibration.ts";
+```
+
+(2) `MemoryClient` 인터페이스에 추가 (doc() 아래):
+
+```ts
+  calAdd(e: NewCalEntry): Promise<number>;
+  calUpdate(id: number, fields: Partial<NewCalEntry> & { confirm?: boolean }): Promise<boolean>;
+  calRemove(id: number): Promise<boolean>;
+  calSearch(
+    queries: string[],
+    opts?: { section?: CalSection; limit?: number; excludeCore?: boolean }
+  ): Promise<CalEntry[]>;
+  calList(opts?: { section?: CalSection; minConfidence?: number }): Promise<CalEntry[]>;
+  /** 상시 주입 코어: 벌주는 것 신뢰도 높음(3+) */
+  calCore(): Promise<CalEntry[]>;
+  /** 마지막 기록 시각 — Stop hook 점검용 */
+  calStamp(): Promise<string | null>;
+```
+
+(3) `connectMemory` 시그니처의 opts를 `{ force?: boolean; noSpawn?: boolean } = {}`로 바꾸고, 스폰 분기 최상단에 추가:
+
+```ts
+    if (!socket) {
+      // 훅의 빠른 경로: 스폰 대기 없이 즉시 실패 (매 메시지 훅이 세션을 막지 않도록)
+      if (opts.noSpawn) {
+        throw new Error(`[nunchi] memory server 미기동 (port ${port}) — noSpawn 모드`);
+      }
+      if (!cfg["auto-start"]) {
+```
+
+(4) 반환 객체에 구현 추가 (doc 아래):
+
+```ts
+    calAdd: async (e) => (await req("cal:add", e)).id,
+    calUpdate: async (id, fields) => (await req("cal:update", { id, ...fields })).updated,
+    calRemove: async (id) => (await req("cal:remove", { id })).removed,
+    calSearch: async (queries, opts = {}) => (await req("cal:search", { queries, ...opts })).rows,
+    calList: async (opts = {}) => (await req("cal:list", opts)).rows,
+    calCore: async () => (await req("cal:core")).rows,
+    calStamp: async () => (await req("cal:stamp")).stamp ?? null,
+```
+
+- [ ] **Step 5: 통과 확인 (기존 테스트 포함 전체)**
+
+Run: `bun test`
+Expected: PASS — cal-socket 3건 + 기존 client/search/calibration 전부
+
+- [ ] **Step 6: 커밋**
+
+```bash
+git add memory/server.ts memory/client.ts tests/cal-socket.test.ts
+git commit -m "feat: cal:* 소켓 노출·mem:doc DB 렌더링·noSpawn·기동 임포트 (v0.8.0 4/10)"
+```
+
+---
+
+### Task 5: MCP 서버 (도구 4종) + plugin.json 등록
+
+**Files:**
+- Create: `mcp/server.ts`
+- Modify: `.claude-plugin/plugin.json`, `package.json`
+- Test: `tests/mcp.test.ts`
+
+**Interfaces:**
+- Consumes: Task 4의 `connectMemory`, `MemoryClient.cal*`
+- Produces: MCP 도구 `nunchi_record`, `nunchi_update`, `nunchi_search`, `nunchi_list` (stdio, 서버명 `nunchi`, 버전 `0.8.0`)
+
+- [ ] **Step 1: 의존성 추가**
+
+`package.json`을 다음으로 교체:
+
+```json
+{
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "socket.io": "4.8.3",
+    "socket.io-client": "4.8.3",
+    "zod": "^3.24.1"
+  }
+}
+```
+
+Run: `bun install`
+Expected: 정상 설치 (lockfile 갱신)
+
+- [ ] **Step 2: 실패하는 테스트 작성**
+
+`tests/mcp.test.ts` 생성:
+
+```ts
+// bun test tests/mcp.test.ts
+// MCP 핸드셰이크 + tools/list 스모크. stdio는 개행 구분 JSON-RPC.
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const SERVER = fileURLToPath(new URL("../mcp/server.ts", import.meta.url));
+
+test(
+  "MCP: initialize → tools/list에 도구 4종",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-mcp-"));
+    const proc = Bun.spawn(["bun", SERVER], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
+      stdin: "pipe", stdout: "pipe", stderr: "ignore",
+    });
+    const send = (msg: object) => proc.stdin.write(JSON.stringify(msg) + "\n");
+    send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+      protocolVersion: "2025-03-26", capabilities: {},
+      clientInfo: { name: "test", version: "0" },
+    }});
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+    await proc.stdin.flush();
+
+    const names: string[] = [];
+    const reader = proc.stdout.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline && !names.length) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value);
+      for (const line of buf.split("\n")) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.id === 2) names.push(...msg.result.tools.map((t: { name: string }) => t.name));
+        } catch { /* 불완전한 줄 */ }
+      }
+    }
+    proc.kill();
+    expect(names.sort()).toEqual(["nunchi_list", "nunchi_record", "nunchi_search", "nunchi_update"]);
+    rmSync(dir, { recursive: true, force: true });
+  },
+  20000
+);
+```
+
+- [ ] **Step 3: 실패 확인**
+
+Run: `bun test tests/mcp.test.ts`
+Expected: FAIL — `mcp/server.ts` 없음 (spawn 즉시 종료 → names 빈 배열)
+
+- [ ] **Step 4: 구현**
+
+`mcp/server.ts` 생성:
+
+```ts
+#!/usr/bin/env bun
+// nunchi MCP server (stdio, Bun)
+// 보정 DB 기록·검색 도구를 모델에 노출한다. 저장은 전부 memory server 경유 —
+// sqlite 단일 소유(server.ts)를 유지하므로 MCP가 여럿 떠도 동시 접근 문제가 없다.
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { connectMemory, type MemoryClient } from "../memory/client.ts";
+
+const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+let memP: Promise<MemoryClient> | null = null;
+/** 접속은 첫 도구 호출 시 1회 — 실패하면 다음 호출이 재시도 */
+function mem(): Promise<MemoryClient> {
+  memP ??= connectMemory(projectDir).catch((e) => {
+    memP = null;
+    throw e; // ProjectMismatchError 안내문도 그대로 도구 에러로 전달된다
+  });
+  return memP;
+}
+
+const ok = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
+const fail = (e: unknown) => ({
+  content: [{ type: "text" as const, text: String(e) }],
+  isError: true as const,
+});
+
+const section = z
+  .enum(["punish", "forgive", "env"])
+  .describe("punish=벌주는 것(반드시 한다), forgive=용서하는 것(생략 가능), env=환경 특이사항");
+
+const server = new McpServer({ name: "nunchi", version: "0.8.0" });
+
+server.registerTool(
+  "nunchi_record",
+  {
+    description:
+      "surprise(예측-실제 불일치)를 보정 DB에 신규 기록한다. 과잉이었음→forgive, 과소였음→punish, 환경 특이사항→env. 근거는 반드시 실제 사건 1줄(YYYY-MM-DD 포함) — 일반론 금지. 같은 규칙이 이미 있으면 대신 nunchi_update(confirm)를 쓸 것.",
+    inputSchema: {
+      section,
+      area: z.string().describe('"[영역: 짧은 상황 서술]" 형식'),
+      rule: z.string().describe("무엇을 한다 / 생략해도 된다"),
+      evidence: z.string().describe("YYYY-MM-DD 실제로 있었던 일 1줄"),
+    },
+  },
+  async (a) => {
+    try {
+      return ok({ id: await (await mem()).calAdd(a) });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
+server.registerTool(
+  "nunchi_update",
+  {
+    description:
+      "기존 엔트리 갱신. confirm=재확인(신뢰도 +1, 날짜 갱신), reverse=반전 규칙('용서하는 것'을 따르다 사고 → punish로 이동+신뢰도 1 리셋+근거 교체, evidence 필수), edit=필드 수정, remove=정제 삭제('벌주는 것'은 사용자 확인 없이 삭제 금지).",
+    inputSchema: {
+      id: z.number().int(),
+      action: z.enum(["confirm", "reverse", "edit", "remove"]),
+      section: section.optional(),
+      area: z.string().optional(),
+      rule: z.string().optional(),
+      evidence: z.string().optional(),
+      confidence: z.number().int().min(1).optional(),
+    },
+  },
+  async ({ id, action, ...f }) => {
+    try {
+      const m = await mem();
+      if (action === "confirm") return ok({ updated: await m.calUpdate(id, { confirm: true }) });
+      if (action === "remove") return ok({ removed: await m.calRemove(id) });
+      if (action === "reverse") {
+        if (!f.evidence) return fail("reverse에는 evidence(새 사건 1줄)가 필수다");
+        return ok({
+          updated: await m.calUpdate(id, { section: "punish", confidence: 1, evidence: f.evidence }),
+        });
+      }
+      return ok({ updated: await m.calUpdate(id, f) });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
+server.registerTool(
+  "nunchi_search",
+  {
+    description:
+      "보정 엔트리 검색. 시맨틱 매칭은 호출자가 담당한다 — 원문 어휘에 얽매이지 말고 유의어·관련어·한/영 변형 쿼리를 2-5개 만들어 배열로 전달할 것 (서버는 FTS OR-병합). 결과가 부족하면 nunchi_list로 전량을 읽고 직접 선별한다.",
+    inputSchema: {
+      queries: z.array(z.string()).min(1).describe("확장 쿼리 2-5개 권장"),
+      section: section.optional(),
+      limit: z.number().int().min(1).max(20).optional().describe("기본 3"),
+    },
+  },
+  async ({ queries, ...opts }) => {
+    try {
+      return ok({ rows: await (await mem()).calSearch(queries, opts) });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
+server.registerTool(
+  "nunchi_list",
+  {
+    description:
+      "보정 엔트리 전량/필터 조회. 엔트리 전체가 몇 KB 규모이므로 판단이 중요할 때는 전량을 읽고 인컨텍스트에서 직접 선별하는 것이 가장 정확하다 (recall 100%).",
+    inputSchema: {
+      section: section.optional(),
+      minConfidence: z.number().int().min(1).optional(),
+    },
+  },
+  async (opts) => {
+    try {
+      return ok({ rows: await (await mem()).calList(opts) });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
+await server.connect(new StdioServerTransport());
+```
+
+- [ ] **Step 5: plugin.json 등록**
+
+`.claude-plugin/plugin.json`에서 `"version": "0.7.0"`을 `"version": "0.8.0"`으로 바꾸고, `"author"` 블록 아래에 추가:
+
+```json
+  "mcpServers": {
+    "nunchi": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.ts"]
+    }
+  },
+```
+
+- [ ] **Step 6: 통과 확인**
+
+Run: `bun test tests/mcp.test.ts`
+Expected: PASS (1 test)
+
+- [ ] **Step 7: 커밋**
+
+```bash
+git add mcp/server.ts .claude-plugin/plugin.json package.json bun.lock tests/mcp.test.ts
+git commit -m "feat: MCP 서버 — nunchi_record/update/search/list 도구 (v0.8.0 5/10)"
+```
+
+---
+
+### Task 6: config 헬퍼 + SessionStart 개정 (전문 주입 → 규약 + 코어)
+
+**Files:**
+- Modify: `hooks/config.ts` (HookInput 확장, formatCalEntries 추가)
+- Modify: `hooks/session-start.ts` (전면 개정)
+- Test: `tests/hooks.test.ts` (신규)
+
+**Interfaces:**
+- Consumes: `connectMemory`, `calCore`
+- Produces:
+  - `hooks/config.ts`: `HookInput`에 `prompt?: string; user_input?: string` 추가. `interface CalEntryLite { id: number; section: string; area: string; rule: string; evidence: string; confidence: number }`, `formatCalEntries(rows: CalEntryLite[]): string` — `- (#id) [라벨·신뢰도N] area: rule (근거: evidence)` 형식 (id는 nunchi_update 대상 지정용)
+  - session-start 출력: `hookSpecificOutput.additionalContext` — 규약 3줄 + (코어 있으면) 확정 규칙 블록 + (기존과 동일한) ponytail 블록 + SKILL.md 경로
+
+- [ ] **Step 1: config.ts 수정**
+
+`HookInput` 인터페이스에 추가:
+
+```ts
+  /** UserPromptSubmit: 사용자 프롬프트 (일부 버전은 user_input) */
+  prompt?: string;
+  user_input?: string;
+```
+
+파일 끝에 추가:
+
+```ts
+/** 훅 3종(session-start/user-prompt-submit/subagent-start)이 공유하는 엔트리 렌더링 */
+export interface CalEntryLite {
+  id: number;
+  section: string;
+  area: string;
+  rule: string;
+  evidence: string;
+  confidence: number;
+}
+
+export const SECTION_LABEL: Record<string, string> = {
+  punish: "벌주는 것",
+  forgive: "용서하는 것",
+  env: "환경 특이사항",
+};
+
+export function formatCalEntries(rows: CalEntryLite[]): string {
+  return rows
+    .map(
+      (r) =>
+        `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}·신뢰도${r.confidence}] ${r.area}: ${r.rule} (근거: ${r.evidence})`
+    )
+    .join("\n");
+}
+```
+
+- [ ] **Step 2: 실패하는 테스트 작성**
+
+`tests/hooks.test.ts` 생성:
+
+```ts
+// bun test tests/hooks.test.ts
+// 훅 4종 스모크: stdin에 hook JSON을 넣고 stdout을 검증한다. 실서버를 시드해서 사용.
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { assignFreePort, connectMemory, type MemoryClient } from "../memory/client.ts";
+
+const hookPath = (name: string) => fileURLToPath(new URL(`../hooks/${name}`, import.meta.url));
+
+async function runHook(name: string, dir: string, input: object): Promise<string> {
+  const proc = Bun.spawn(["bun", hookPath(name)], {
+    env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
+    stdin: new TextEncoder().encode(JSON.stringify(input)),
+    stdout: "pipe", stderr: "ignore",
+  });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  return out;
+}
+
+/** 코어 1건 + 저신뢰 1건이 시드된 프로젝트와 열린 클라이언트 */
+async function seeded(): Promise<{ dir: string; mem: MemoryClient }> {
+  const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-"));
+  await assignFreePort(dir);
+  const mem = await connectMemory(dir);
+  await mem.calAdd({
+    section: "punish", area: "[배포: 게이트]", rule: "배포 게이트를 생략하지 않는다",
+    evidence: "2026-06-12 생략으로 장애", confidence: 3,
+  });
+  await mem.calAdd({
+    section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략 가능",
+    evidence: "2026-06-20 과잉이었음",
+  });
+  return { dir, mem };
+}
+
+test(
+  "session-start: 규약 + 코어(확정 규칙)만 주입, 전문 주입 없음",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const raw = await runHook("session-start.ts", dir, { source: "startup" });
+      const ctx = JSON.parse(raw).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain("nunchi_search");
+      expect(ctx).toContain("배포 게이트를 생략하지 않는다"); // 코어는 주입
+      expect(ctx).not.toContain("일회성 스크립트"); // 저신뢰는 주입 안 함
+    } finally {
+      await mem.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
+```
+
+- [ ] **Step 3: 실패 확인**
+
+Run: `bun test tests/hooks.test.ts`
+Expected: FAIL — 현재 session-start는 문서 전문/부트스트랩 안내를 주입하므로 `nunchi_search` 문자열 없음
+
+- [ ] **Step 4: session-start.ts 전면 교체**
+
+```ts
+#!/usr/bin/env bun
+// nunchi SessionStart hook (Bun)
+// 보정 DB의 규약 요약 + 코어('벌주는 것' 신뢰도 3+)를 세션 컨텍스트에 조용히 주입한다.
+// startup / resume / clear / compact 모두에서 실행 (matcher 미지정 = 전체).
+// 서버 스폰·external-address·핸드셰이크는 전부 connectMemory가 담당한다.
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import {
+  loadConfig,
+  resolveDocDir,
+  readStdinJson,
+  isPonytailEnabled,
+  formatCalEntries,
+} from "./config.ts";
+
+const input = await readStdinJson();
+const projectDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
+const cfg = loadConfig(projectDir);
+
+// 초기화: path 폴더(db 위치)가 없으면 생성
+try {
+  mkdirSync(resolveDocDir(projectDir, cfg), { recursive: true });
+} catch {
+  /* 생성 실패해도 주입은 계속 */
+}
+
+// 코어 조회 — auto-start면 connectMemory가 서버를 스폰한다 (기존 스폰 블록 대체)
+let core: import("./config.ts").CalEntryLite[] = [];
+let note: string | null = null;
+try {
+  const { connectMemory } = await import("../memory/client.ts");
+  const mem = await connectMemory(projectDir);
+  try {
+    core = await mem.calCore();
+  } finally {
+    mem.close();
+  }
+} catch (e) {
+  // 미접속이어도 규약 주입은 계속. 포트 충돌 안내는 모델이 사용자에게 전달하도록 남긴다
+  if (e instanceof Error && e.name === "ProjectMismatchError") note = e.message;
+}
+
+const lines = [
+  "[nunchi] 이 프로젝트는 작업 강도 보정 규약을 사용한다 (보정 DB — 검색 회수 방식).",
+  "작업 강도(검증 깊이, 테스트 여부, 리서치 범위, 리팩토링 범위) 판단 시: 자동 주입된 엔트리로 부족하면 nunchi_search(유의어·한/영 확장 쿼리 2-5개), 그래도 애매하거나 판단이 중요하면 nunchi_list로 전량을 읽고 직접 선별한다.",
+  "예측과 실제가 어긋나면(과잉/과소/환경 특이사항) nunchi_record로 기록한다. 기존 엔트리 재확인은 nunchi_update(action: confirm), '용서하는 것'을 따르다 사고가 나면 nunchi_update(action: reverse)로 즉시 반전한다.",
+];
+if (core.length) {
+  lines.push("", "[확정 규칙 — '벌주는 것' 신뢰도 높음(3+). 항상 지킨다]", formatCalEntries(core));
+}
+if (note) lines.push("", note);
+lines.push(
+  "",
+  `[nunchi] 기록 규약 전문(SKILL.md): ${fileURLToPath(new URL("../SKILL.md", import.meta.url))}`
+);
+
+// ponytail(고정 강도 정책) 공존: 우선순위가 결정돼 있으면 규칙 1줄, 미결정이면 질문 지시 1줄 주입
+if (isPonytailEnabled(projectDir)) {
+  const priority = cfg["policy-priority"];
+  if (priority === "calibration") {
+    lines.push(
+      "[nunchi] ponytail 활성 (사용자 결정: calibration 우선). 작업 강도 판단이 충돌하면 보정 DB가 ponytail의 최소화 규칙보다 우선한다. 특히 '벌주는 것' 엔트리는 항상 지킨다."
+    );
+  } else if (priority === "ponytail") {
+    lines.push(
+      "[nunchi] ponytail 활성 (사용자 결정: ponytail 우선). 작업 강도 판단이 충돌하면 ponytail의 최소화 규칙을 따른다. 단 신뢰도 높음(3+)의 '벌주는 것' 엔트리는 실제 사고 기록이므로 예외로 지키고, 생략이 사고로 이어지면 반전 규칙대로 기록한다."
+    );
+  } else {
+    lines.push(
+      '[nunchi] ponytail 활성 감지 — calibration과의 우선순위 미결정. 이번 세션에서 작업 강도 판단이 처음 충돌하면(ponytail은 생략을 권하는데 calibration은 반대, 또는 그 역) AskUserQuestion으로 어느 쪽을 우선할지 물어보고, 답을 프로젝트 .claude/nunchi.json 의 "policy-priority" 키에 "calibration" 또는 "ponytail" 로 저장한다. 다음 세션부터 자동 반영된다. 충돌이 없으면 묻지 않는다.'
+    );
+  }
+}
+
+process.stdout.write(
+  JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: lines.join("\n"),
+    },
+  })
+);
+process.exit(0);
+```
+
+주의: 기존 파일의 독립 서버 스폰 블록·문서 읽기·MAX_CHARS는 삭제된다 (connectMemory가 스폰을 대체). `resolveDocPath`, `DOC_FILENAME` import도 제거.
+
+- [ ] **Step 5: 통과 확인**
+
+Run: `bun test tests/hooks.test.ts`
+Expected: PASS (1 test)
+
+- [ ] **Step 6: 커밋**
+
+```bash
+git add hooks/config.ts hooks/session-start.ts tests/hooks.test.ts
+git commit -m "feat: SessionStart 개정 — 전문 주입 제거, 규약+코어 주입 (v0.8.0 6/10)"
+```
+
+---
+
+### Task 7: UserPromptSubmit 훅 (자동 검색-주입)
+
+**Files:**
+- Create: `hooks/user-prompt-submit.ts`
+- Modify: `hooks/hooks.json`
+- Test: `tests/hooks.test.ts`
+
+**Interfaces:**
+- Consumes: `connectMemory({noSpawn: true})`, `calSearch(tokens, {limit: 3, excludeCore: true})`, `formatCalEntries`
+- Produces: 프롬프트 관련 엔트리가 있을 때만 `hookSpecificOutput.additionalContext` 출력, 없으면 출력 없음
+
+- [ ] **Step 1: 실패하는 테스트 추가**
+
+`tests/hooks.test.ts` 끝에 추가:
+
+```ts
+test(
+  "user-prompt-submit: 관련 엔트리 주입, 코어 제외, 무관련·서버다운은 무출력",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const hit = await runHook("user-prompt-submit.ts", dir, {
+        prompt: "일회성 스크립트에도 테스트가 필요할까?",
+      });
+      const ctx = JSON.parse(hit).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain("일회성 스크립트 테스트 생략 가능");
+      expect(ctx).not.toContain("배포 게이트"); // 코어는 SessionStart 몫 — 제외
+      // 무관련 프롬프트 → 무출력
+      expect(await runHook("user-prompt-submit.ts", dir, { prompt: "zzqq xxyy" })).toBe("");
+      // 빈 프롬프트 → 무출력
+      expect(await runHook("user-prompt-submit.ts", dir, { prompt: "" })).toBe("");
+    } finally {
+      await mem.shutdown();
+      // 서버 종료 후: noSpawn이므로 조용히 통과 (스폰 없음)
+      expect(await runHook("user-prompt-submit.ts", dir, { prompt: "테스트 스크립트" })).toBe("");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
+```
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `bun test tests/hooks.test.ts`
+Expected: FAIL — `hooks/user-prompt-submit.ts` 없음
+
+- [ ] **Step 3: 구현**
+
+`hooks/user-prompt-submit.ts` 생성:
+
+```ts
+#!/usr/bin/env bun
+// nunchi UserPromptSubmit hook (Bun)
+// 프롬프트 어절로 보정 DB를 검색해 관련 엔트리만 조용히 주입한다.
+// 매 메시지 경로 — 서버 미기동이면 스폰하지 않고 즉시 통과한다 (noSpawn).
+// 코어(벌주는 것 3+)는 SessionStart가 이미 주입했으므로 제외(excludeCore).
+import { readStdinJson, formatCalEntries } from "./config.ts";
+
+const input = await readStdinJson();
+const prompt = String(input.prompt ?? input.user_input ?? "").trim();
+if (!prompt) process.exit(0);
+
+// 토큰화: 문자·숫자 연속만, 2자 이상, 중복 제거, 등장 순 최대 8개
+const tokens = [...new Set(prompt.split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= 2))].slice(0, 8);
+if (!tokens.length) process.exit(0);
+
+const projectDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
+try {
+  const { connectMemory } = await import("../memory/client.ts");
+  const mem = await connectMemory(projectDir, { noSpawn: true });
+  try {
+    const rows = await mem.calSearch(tokens, { limit: 3, excludeCore: true });
+    if (rows.length) {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "UserPromptSubmit",
+            additionalContext: `[nunchi] 이번 요청 관련 보정 엔트리:\n${formatCalEntries(rows)}`,
+          },
+        })
+      );
+    }
+  } finally {
+    mem.close();
+  }
+} catch {
+  /* 서버 미기동·타임아웃 — 조용히 통과, 세션을 막지 않는다 */
+}
+process.exit(0);
+```
+
+- [ ] **Step 4: hooks.json에 등록**
+
+`hooks/hooks.json`의 `"hooks"` 객체에 추가 (SessionStart와 Stop 사이):
+
+```json
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+```
+
+- [ ] **Step 5: 통과 확인**
+
+Run: `bun test tests/hooks.test.ts`
+Expected: PASS (2 tests)
+
+- [ ] **Step 6: 커밋**
+
+```bash
+git add hooks/user-prompt-submit.ts hooks/hooks.json tests/hooks.test.ts
+git commit -m "feat: UserPromptSubmit 훅 — 프롬프트 검색 자동 주입 (v0.8.0 7/10)"
+```
+
+---
+
+### Task 8: SubagentStart 훅
+
+**Files:**
+- Create: `hooks/subagent-start.ts`
+- Modify: `hooks/hooks.json`
+- Test: `tests/hooks.test.ts`
+
+**Interfaces:**
+- Consumes: `connectMemory({noSpawn: true})`, `calCore`, `calSearch`, `formatCalEntries`
+- Produces: 규약 1줄 + 코어 주입. stdin에 `prompt` 필드가 있으면(문서상 없음 — 기회적) 관련 엔트리 검색도 추가
+
+- [ ] **Step 1: 실패하는 테스트 추가**
+
+`tests/hooks.test.ts` 끝에 추가:
+
+```ts
+test(
+  "subagent-start: 규약 + 코어 주입, 서버 다운이면 규약만",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const raw = await runHook("subagent-start.ts", dir, { agent_type: "general-purpose" });
+      const ctx = JSON.parse(raw).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain("nunchi_search"); // 규약 안내
+      expect(ctx).toContain("배포 게이트를 생략하지 않는다"); // 코어
+      expect(ctx).not.toContain("일회성 스크립트"); // 저신뢰는 프롬프트 없이는 주입 안 함
+    } finally {
+      await mem.shutdown();
+      // 서버 다운: 규약 1줄은 그래도 주입 (도구 사용 안내는 유효)
+      const raw = await runHook("subagent-start.ts", dir, { agent_type: "general-purpose" });
+      expect(JSON.parse(raw).hookSpecificOutput.additionalContext).toContain("nunchi_search");
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
+```
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `bun test tests/hooks.test.ts`
+Expected: FAIL — `hooks/subagent-start.ts` 없음
+
+- [ ] **Step 3: 구현**
+
+`hooks/subagent-start.ts` 생성:
+
+```ts
+#!/usr/bin/env bun
+// nunchi SubagentStart hook (Bun)
+// 서브에이전트는 SessionStart 주입을 받지 못한다 — 규약 1줄 + 코어를 대신 주입한다.
+// 공식 스키마상 stdin에 서브에이전트 프롬프트는 없다(agent_type/agent_id만).
+// prompt 필드가 있으면(향후 추가 대비) 기회적으로 관련 엔트리도 검색한다.
+import { readStdinJson, formatCalEntries, type CalEntryLite } from "./config.ts";
+
+const input = await readStdinJson();
+const projectDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
+
+const lines = [
+  "[nunchi] 이 프로젝트는 작업 강도 보정 규약을 사용한다. 작업 강도 판단이 애매하면 nunchi_search(유의어 확장 쿼리)·nunchi_list 도구로 보정 엔트리를 조회하고, 예측-실제 불일치(surprise)는 nunchi_record로 기록한다.",
+];
+
+try {
+  const { connectMemory } = await import("../memory/client.ts");
+  const mem = await connectMemory(projectDir, { noSpawn: true });
+  try {
+    const core: CalEntryLite[] = await mem.calCore();
+    if (core.length) {
+      lines.push("", "[확정 규칙 — '벌주는 것' 신뢰도 높음(3+). 항상 지킨다]", formatCalEntries(core));
+    }
+    const prompt = String(input.prompt ?? "").trim();
+    if (prompt) {
+      const tokens = [...new Set(prompt.split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= 2))].slice(0, 8);
+      const rows = tokens.length ? await mem.calSearch(tokens, { limit: 3, excludeCore: true }) : [];
+      if (rows.length) lines.push("", "[이번 작업 관련 보정 엔트리]", formatCalEntries(rows));
+    }
+  } finally {
+    mem.close();
+  }
+} catch {
+  /* 서버 미기동 — 규약 안내만 주입 */
+}
+
+process.stdout.write(
+  JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "SubagentStart",
+      additionalContext: lines.join("\n"),
+    },
+  })
+);
+process.exit(0);
+```
+
+- [ ] **Step 4: hooks.json에 등록**
+
+`"UserPromptSubmit"` 블록 아래에 추가:
+
+```json
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-start.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+```
+
+- [ ] **Step 5: 통과 확인**
+
+Run: `bun test tests/hooks.test.ts`
+Expected: PASS (3 tests)
+
+- [ ] **Step 6: 커밋**
+
+```bash
+git add hooks/subagent-start.ts hooks/hooks.json tests/hooks.test.ts
+git commit -m "feat: SubagentStart 훅 — 서브에이전트에 규약+코어 주입 (v0.8.0 8/10)"
+```
+
+---
+
+### Task 9: Stop 훅 개정 (mtime → cal:stamp)
+
+**Files:**
+- Modify: `hooks/stop-check.ts`
+- Test: `tests/hooks.test.ts`
+
+**Interfaces:**
+- Consumes: `connectMemory({noSpawn: true})`, `calStamp`
+- Produces: 기존과 동일한 `{decision: "block", reason}` 출력 — 단 기록 감지가 DB stamp 기준, 기록 지시가 MCP 도구 기준
+
+- [ ] **Step 1: 실패하는 테스트 추가**
+
+`tests/hooks.test.ts` 끝에 추가:
+
+```ts
+test(
+  "stop-check: N턴째에 점검 강제, 구간 내 DB 기록이 있으면 생략",
+  async () => {
+    const { dir, mem } = await seeded();
+    const sid = `t${Date.now()}`;
+    const run = (id: string) => runHook("stop-check.ts", dir, { session_id: id, cwd: dir });
+    try {
+      process.env.NUNCHI_CHECK_EVERY = "2"; // 최소 주기로 단축
+      // 1턴: 통과, 2턴: 점검(block)
+      expect(await run(sid)).toBe("");
+      const out = await run(sid);
+      const parsed = JSON.parse(out);
+      expect(parsed.decision).toBe("block");
+      expect(parsed.reason).toContain("nunchi_record"); // 기록 지시가 도구 기준
+      // 다음 구간: 1턴째에 기록 발생 → 2턴째 점검 생략
+      expect(await run(sid)).toBe("");
+      await mem.calAdd({ section: "env", area: "[x]", rule: "r", evidence: "2026-07-06 e" });
+      expect(await run(sid)).toBe("");
+      // stop_hook_active 가드
+      const guarded = await runHook("stop-check.ts", dir, {
+        session_id: sid, cwd: dir, stop_hook_active: true,
+      });
+      expect(guarded).toBe("");
+    } finally {
+      delete process.env.NUNCHI_CHECK_EVERY;
+      await mem.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
+```
+
+주의: `runHook`은 `process.env` 전체를 자식에 넘기므로 `NUNCHI_CHECK_EVERY` 설정이 전달된다.
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `bun test tests/hooks.test.ts`
+Expected: FAIL — 현행 reason은 "calibration.md에 기록" 문구라 `nunchi_record` 미포함
+
+- [ ] **Step 3: stop-check.ts 전면 교체**
+
+```ts
+#!/usr/bin/env bun
+// nunchi Stop hook (Bun)
+// 매 응답 종료 시 카운트를 올리고, CHECK_EVERY 턴마다 한 번
+// "이번 구간에 surprise 있었나?" 점검을 강제한다 (decision: block).
+// - stop_hook_active 가드로 무한 루프 방지
+// - 구간 내에 보정 DB 기록이 이미 있었으면 점검 생략 (중복 잔소리 방지)
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { readStdinJson } from "./config.ts";
+
+const CHECK_EVERY = Math.max(
+  2,
+  parseInt(process.env.NUNCHI_CHECK_EVERY || "10", 10) || 10
+);
+
+const input = await readStdinJson();
+
+// 직전 Stop hook이 이미 진행을 막은 상태면 즉시 통과 (루프 가드)
+if (input.stop_hook_active) process.exit(0);
+
+const projectDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
+
+const sessionId = String(input.session_id || "unknown").replace(/[^\w-]/g, "");
+const stateDir = join(tmpdir(), "nunchi");
+const statePath = join(stateDir, `${sessionId}.json`);
+
+interface State {
+  count: number;
+  /** 구간 시작 시점의 cal:stamp — null이면 서버 미접속 또는 엔트리 없음 */
+  stamp: string | null;
+}
+
+let state: State = { count: 0, stamp: null };
+try {
+  state = { ...state, ...JSON.parse(readFileSync(statePath, "utf8")) };
+} catch {
+  /* 첫 실행 */
+}
+
+state.count += 1;
+
+// 보정 DB의 마지막 기록 시각 — 서버 미기동이면 null (스폰하지 않는다)
+let stamp: string | null = null;
+try {
+  const { connectMemory } = await import("../memory/client.ts");
+  const mem = await connectMemory(projectDir, { noSpawn: true });
+  try {
+    stamp = await mem.calStamp();
+  } finally {
+    mem.close();
+  }
+} catch {
+  /* 서버 미접속 — 점검 자체는 그대로 진행 */
+}
+
+// 구간 첫 턴에 stamp 기준선 기록
+if (state.count === 1) state.stamp = stamp;
+
+let block = false;
+if (state.count >= CHECK_EVERY) {
+  // ponytail: 서버 단절 구간의 stamp 비교는 근사 — 오검(생략)보다 과검(한 번 더 점검)을 택한다
+  const recorded = stamp !== null && stamp !== state.stamp;
+  block = !recorded;
+  state.count = 0;
+  state.stamp = null;
+}
+
+try {
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(statePath, JSON.stringify(state));
+} catch {
+  /* 상태 저장 실패는 치명적이지 않음 */
+}
+
+if (block) {
+  process.stdout.write(
+    JSON.stringify({
+      decision: "block",
+      reason:
+        `[nunchi] 주기 점검(${CHECK_EVERY}턴): 이번 구간에 예측과 실제가 어긋난 경우가 있었는가? ` +
+        `(1) 과잉 대응 — 한 검증/리서치/방어 코드가 불필요했음 (2) 과소 대응 — 생략한 것 때문에 문제 발생 (3) 환경 특이사항 발견. ` +
+        `있었다면 nunchi_record(신규) 또는 nunchi_update(action: confirm 재확인 / reverse 반전)로 기록할 것. ` +
+        `없었다면 "보정 특이사항 없음" 한 줄만 답하고 종료할 것.`,
+    })
+  );
+}
+process.exit(0);
+```
+
+주의: `loadConfig`, `resolveDocPath`, `DOC_FILENAME`, `statSync`, `existsSync` import는 제거된다.
+
+- [ ] **Step 4: 통과 확인 (전체)**
+
+Run: `bun test`
+Expected: PASS — 전 테스트 파일
+
+- [ ] **Step 5: 커밋**
+
+```bash
+git add hooks/stop-check.ts tests/hooks.test.ts
+git commit -m "feat: Stop 훅 — mtime 점검을 cal:stamp 기준으로 전환 (v0.8.0 9/10)"
+```
+
+---
+
+### Task 10: 문서 개정 (SKILL.md·README) + 마무리
+
+**Files:**
+- Modify: `SKILL.md`, `README.md`
+
+**Interfaces:**
+- Consumes: 전 태스크의 도구·훅 이름 (nunchi_record/update/search/list, cal:*)
+
+- [ ] **Step 1: SKILL.md 개정**
+
+다음 절들을 교체한다 (엔트리 포맷·신뢰도와 반전·ponytail 공존·하지 말 것 절의 원칙은 유지하되 표현을 DB 기준으로):
+
+frontmatter description 교체:
+
+```markdown
+description: 작업 강도 보정("적당히") 규약. 프로젝트별 보정 DB(memory.db calibration 테이블)에 예측-실제 불일치(surprise)를 기록하고 재귀 개선한다. 다음 상황에서 반드시 이 스킬을 사용할 것 - 사용자가 "눈치", "적당히", "보정", "캘리브레이션", "calibration"을 언급할 때, 과잉/과소 대응(over/under-engineering) 판단이 필요할 때, 보정 엔트리의 기록·갱신·정제(pruning)가 필요할 때, Stop hook 점검([nunchi] 주기 점검)에 응답할 때, 검증 깊이·테스트 범위·리서치 강도를 어느 수준으로 할지 애매할 때.
+```
+
+"문서 위치와 구조" 절을 "저장소와 회수" 절로 교체:
+
+```markdown
+## 저장소와 회수
+
+- 저장소: `{path 폴더}/memory.db`의 `calibration` 테이블 (프로젝트별 독립, memory server가 단일 소유). 엔트리 필드: section(punish=벌주는 것 / forgive=용서하는 것 / env=환경 특이사항), area("[영역: 짧은 상황 서술]"), rule, evidence, confidence.
+- 회수 3계층:
+  1. **자동 주입** — SessionStart가 규약 요약 + 코어('벌주는 것' 신뢰도 3+)를, UserPromptSubmit이 프롬프트 관련 상위 3건을, SubagentStart가 서브에이전트에 규약+코어를 주입한다. 모델 개입 없음.
+  2. **`nunchi_search`** — 주입으로 부족할 때. 원문 어휘에 얽매이지 말고 유의어·관련어·한/영 변형 쿼리 2-5개를 배열로 전달한다 (시맨틱 매칭은 쿼리를 만드는 쪽의 몫).
+  3. **`nunchi_list`** — 판단이 중요하거나 검색이 애매할 때. 전량(몇 KB)을 읽고 인컨텍스트에서 직접 선별한다 — recall 100%.
+- 기존 calibration.md는 서버 기동 시 1회 자동 임포트되고 `.imported`로 보존된다. 내보내기가 필요하면 memory client의 `doc()`이 DB에서 markdown을 렌더링한다.
+```
+
+"엔트리 포맷" 절을 도구 기준으로 교체:
+
+```markdown
+## 엔트리 포맷 (nunchi_record 입력)
+
+- `section`: punish(벌주는 것) | forgive(용서하는 것) | env(환경 특이사항)
+- `area`: "[영역: 짧은 상황 서술]"
+- `rule`: 무엇을 한다 / 생략해도 된다
+- `evidence`: "YYYY-MM-DD 실제로 있었던 일 1줄" — 반드시 실제 사건. 일반론("보통 테스트는 중요하다")은 기록하지 않는다.
+- 신뢰도(confidence)는 규칙을 따라서 무사고였던 관측 횟수. 같은 규칙이 재확인되면 새 엔트리를 만들지 말고 `nunchi_update(action: confirm)`으로 +1 한다 (날짜 자동 갱신). 주입·조회 결과의 `(#id)`가 갱신 대상 id다.
+```
+
+"기록 절차" 절 교체:
+
+```markdown
+## 기록 절차
+
+1. surprise 인지 시점에 현재 작업 단락을 먼저 마무리한다 (작업 흐름을 끊지 않는다).
+2. 단락이 끝나면 즉시 기록한다: 신규는 `nunchi_record`, 기존 엔트리 재확인은 `nunchi_update(action: confirm)`.
+3. 기록 사실을 사용자에게 한 줄로 알린다: `[nunchi] 기록: {규칙 요약}`
+4. Stop hook의 `[nunchi] 주기 점검` 메시지를 받으면: 이번 구간의 surprise 유무를 점검하고, 있으면 기록, 없으면 "보정 특이사항 없음" 한 줄로 종료한다.
+```
+
+"신뢰도와 반전" 절의 반전 규칙 1문장만 교체:
+
+```markdown
+- **반전 규칙**: "용서하는 것" 엔트리를 따르다 문제가 발생하면, 즉시 `nunchi_update(action: reverse, evidence: 새 사건)`으로 반전한다 — punish로 이동 + 신뢰도 낮음(1) 리셋 + 근거 교체. 예외 없음.
+```
+
+"정제 (pruning)" 절 교체:
+
+```markdown
+## 정제 (pruning) — `/nunchi` 수동 호출 시
+
+엔트리가 60건을 초과했거나 사용자가 정제를 요청하면 `nunchi_list`로 전량을 읽고:
+
+1. 동일 영역의 유사 엔트리를 하나로 통합한다 (`nunchi_update(edit)` + `nunchi_update(remove)`, 신뢰도는 합산하지 않고 최댓값 유지).
+2. 신뢰도 낮음(1) 상태로 6주 이상 갱신이 없는 엔트리를 삭제한다.
+3. 신뢰도 높음(3+) 엔트리는 보존한다. 단 근거 사건이 리팩토링 등으로 무효화되었으면 사용자에게 확인 후 삭제한다.
+4. 정제 결과(통합 n건, 삭제 n건)를 사용자에게 보고한다.
+```
+
+"하지 말 것" 절의 첫 항목만 교체:
+
+```markdown
+- 보정 DB에 코드 스타일 가이드, TODO, 아키텍처 문서를 넣지 않는다 (그건 CLAUDE.md 와 docs 의 몫이다). 이 저장소는 오직 **작업 강도 다이얼**만 다룬다.
+```
+
+- [ ] **Step 2: README.md 개정**
+
+"동작" 절 교체:
+
+```markdown
+## 동작
+
+1. **SessionStart** (startup/resume/clear/compact): 규약 요약 + 코어('벌주는 것' 신뢰도 3+)를 additionalContext로 조용히 주입. `auto-start: true`면 memory server 자동 기동. 기존 calibration.md는 서버 첫 기동 시 DB로 자동 임포트(`.imported`로 보존).
+2. **UserPromptSubmit** (매 메시지): 프롬프트 어절로 보정 DB를 검색해 관련 엔트리 상위 3건만 주입. 결과 0건이면 비용 0. 서버 미기동이면 조용히 통과.
+3. **SubagentStart**: 서브에이전트에 규약 + 코어 주입 (SessionStart 주입을 못 받으므로).
+4. **모델 재량 (MCP 도구)**: `nunchi_search`(유의어 확장 쿼리 검색) · `nunchi_list`(전량 선별) · `nunchi_record`(surprise 기록) · `nunchi_update`(재확인·반전·정제).
+5. **Stop hook** (백업): 10턴마다 1회 "이번 구간 surprise 있었나?" 점검을 강제. 구간 내에 DB 기록이 이미 있으면 자동 생략.
+6. **`/nunchi`**: 수동 호출 시 엔트리 정제(pruning) 모드.
+```
+
+"구조" 절의 트리 교체:
+
+```markdown
+nunchi/
+├── SKILL.md                  # 방법론 (기록·신뢰도·반전·정제 규약)
+├── memory/
+│   ├── server.ts             # memory server: sqlite 단일 소유 + Socket.IO 노출 (mem:* / cal:*)
+│   ├── calibration.ts        # 보정 엔트리 저장소: 스키마·검색·파서·임포트
+│   └── client.ts             # Socket.IO 클라이언트 (서버 미기동 시 자동 스폰, noSpawn 옵션)
+├── mcp/
+│   └── server.ts             # MCP stdio 서버: nunchi_record/update/search/list
+├── tests/
+├── .claude-plugin/
+│   └── plugin.json           # plugin 매니페스트 + userConfig + mcpServers
+└── hooks/
+    ├── hooks.json
+    ├── config.ts             # 계층형 config 로더 + 공용 타입·렌더링
+    ├── session-start.ts      # 세션 시작: 규약 + 코어 주입
+    ├── user-prompt-submit.ts # 매 메시지: 관련 엔트리 자동 회수
+    ├── subagent-start.ts     # 서브에이전트: 규약 + 코어 주입
+    └── stop-check.ts         # N턴마다: surprise 점검 강제 (백업 루프)
+```
+
+"Memory server" 절에 다음 불릿 추가 (API 불릿 교체 + 신규 불릿):
+
+```markdown
+- **API**: `set(key, value)` / `get(key)` / `search(query, limit)` / `doc()` / `shutdown()` + 보정 전용 `calAdd` / `calUpdate` / `calRemove` / `calSearch(queries[], {section, limit, excludeCore})` / `calList` / `calCore` / `calStamp`
+- **보정 검색**: `cal:search`는 다중 쿼리 OR-병합 (FTS5 BM25, 3글자 미만·무결과는 LIKE 폴백). 시맨틱 매칭은 쿼리를 확장하는 모델 쪽이 담당한다 — 임베딩 불필요. 필요해지면 `calibration` 테이블에 embedding 컬럼을 추가하는 업그레이드 경로가 예약되어 있다.
+- **문서 요청**: `doc()`(`mem:doc`)은 보정 DB에서 3섹션 markdown을 렌더링해 반환한다 (없으면 `null`) — external-address 구버전 클라이언트·내보내기 겸용.
+```
+
+"튜닝" 절 교체:
+
+```markdown
+## 튜닝
+
+- 점검 주기: 환경변수 `NUNCHI_CHECK_EVERY` (기본 10, 최소 2)
+- 정제 기준: SKILL.md 정제 규칙의 60건 기준을 직접 수정
+- 자동 주입 건수: `hooks/user-prompt-submit.ts`의 `limit: 3`
+```
+
+"요구사항" 절의 두 번째 불릿 교체 (훅도 이제 socket.io-client를 쓴다):
+
+```markdown
+- hooks·memory server·MCP의 의존성(socket.io, @modelcontextprotocol/sdk 등)은 Bun auto-install이 실행 시점에 자동 해석하므로 별도 `bun install`이 필요 없다. 단 첫 기동 시 Bun 전역 캐시가 비어 있으면 네트워크가 필요하며, 오프라인 환경에서는 미리 `bun install`을 실행해 둔다.
+```
+
+응용 4개 절(gstack/bkit/superpowers/ponytail)에서 "calibration.md 전문 상시 주입" 계열 문구를 검색해 "보정 DB(코어 상시 주입 + 관련 엔트리 자동 회수)"로 정정한다. 대상 문구: "calibration.md — surprise만, 전문 상시 주입"(gstack 표), "calibration.md 전문을 상시 주입"(superpowers 표), 그 외 "calibration.md에 기록" 계열은 "보정 DB에 기록"으로.
+
+- [ ] **Step 3: 전체 테스트 + 훅 수동 스모크**
+
+Run: `bun test`
+Expected: PASS 전체
+
+Run (수동 스모크 — 실제 프로젝트 디렉터리에서 세션 시작 재현):
+
+```bash
+echo '{"source":"startup"}' | CLAUDE_PROJECT_DIR="$PWD" bun hooks/session-start.ts
+```
+
+Expected: `hookSpecificOutput.additionalContext`에 규약 3줄 포함 JSON 1줄
+
+- [ ] **Step 4: 커밋**
+
+```bash
+git add SKILL.md README.md
+git commit -m "docs: v0.8.0 — 보정 DB 규약·README 갱신 (v0.8.0 10/10)"
+```
+
+---
+
+## 계획 셀프 리뷰 결과
+
+- **스펙 커버리지**: 데이터 모델(T1), cal:search·excludeCore(T2), 파서·렌더·임포트(T3), 소켓 API·mem:doc 전환·키워드 보강(T4), MCP 4도구·plugin.json(T5), SessionStart(T6), UserPromptSubmit(T7), SubagentStart(T8), Stop(T9), 문서(T10) — 스펙 전 절 대응 확인.
+- **스펙과 다른 점 (검증된 사실 반영)**: SubagentStart stdin에 서브에이전트 프롬프트가 없음이 공식 문서로 확인됨 → T8은 규약+코어 주입이 기본, 프롬프트 검색은 기회적(`prompt` 필드 존재 시). `cal:stamp` 이벤트는 스펙과 동일. `cal:search`의 `excludeCore`는 서버 옵션으로 구현(스펙 정정판과 동일).
+- **타입 일관성**: `CalEntry`/`NewCalEntry`/`CalSection`/`CORE_CONFIDENCE`(T1) ← client.ts(T4) ← mcp(T5)·훅(T6-9) 사용 이름 일치 확인. `formatCalEntries`는 T6에서 정의, T7·T8이 소비.
