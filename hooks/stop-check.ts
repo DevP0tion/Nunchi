@@ -60,7 +60,8 @@ if (state.count === 1) state.stamp = stamp;
 let block = false;
 if (state.count >= CHECK_EVERY) {
   // ponytail: 서버 단절 구간의 stamp 비교는 근사 — 오검(생략)보다 과검(한 번 더 점검)을 택한다
-  const recorded = stamp !== null && stamp !== state.stamp;
+  // — 기준선 미상(null)은 기록으로 치지 않는다
+  const recorded = state.stamp !== null && stamp !== null && stamp !== state.stamp;
   block = !recorded;
   state.count = 0;
   state.stamp = null;

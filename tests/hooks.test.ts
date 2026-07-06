@@ -162,3 +162,42 @@ test(
   },
   30000
 );
+
+test(
+  "stop-check: null 기준선(서버 미접속 턴1) → 서버 접속(턴2) 시 과검 강제",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-null-baseline-"));
+    const sid = `null-baseline-${Date.now()}`;
+    const run = (id: string) => runHook("stop-check.ts", dir, { session_id: id, cwd: dir });
+    let mem: MemoryClient | null = null;
+    try {
+      process.env.NUNCHI_CHECK_EVERY = "2"; // 최소 주기
+      await assignFreePort(dir); // 포트 할당
+
+      // Turn 1: 서버 미접속 → stamp=null, state.stamp=null
+      expect(await run(sid)).toBe("");
+
+      // 서버 기동: 기존 엔트리 1개 있음 (DB 구성하되 서버는 계속 켜 둠)
+      mem = await connectMemory(dir);
+      await mem.calAdd({
+        section: "punish", area: "[setup]", rule: "baseline-entry",
+        evidence: "2026-07-06 pre-exist", confidence: 2,
+      });
+
+      // Turn 2: 서버는 접속 가능하지만 baseline은 여전히 null
+      // stamp는 변하지 않음 (새 엔트리 없음), 하지만 state.stamp=null이므로
+      // 기록이 없다고 판단 → block=true (과검)
+      const out = await run(sid);
+      const parsed = JSON.parse(out);
+      expect(parsed.decision).toBe("block");
+      expect(parsed.reason).toContain("nunchi_record");
+    } finally {
+      delete process.env.NUNCHI_CHECK_EVERY;
+      if (mem) await mem.shutdown();
+      // Allow server process to fully release file handles
+      await new Promise(resolve => setTimeout(resolve, 200));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
