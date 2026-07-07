@@ -25,8 +25,6 @@ export interface NunchiConfig {
   path: string;
   /** memory server(Socket.IO) 포트. 미설정(null) 시 memory-config.json의 port(기본 41720) 사용 */
   port: number | null;
-  /** 설정 시 보정 기록(cal:add/update)마다 `claude -p --model <값>`으로 검색 키워드를 비동기 생성. null이면 비활성 */
-  model: string | null;
   /** 설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결 (예: "http://192.168.0.10:41720").
    *  스킴 생략 시 http:// 로 간주. 로컬 스폰·프로젝트 핸드셰이크는 생략된다 */
   "external-address": string | null;
@@ -39,7 +37,6 @@ export const DEFAULTS: NunchiConfig = {
   "auto-start": true,
   path: ".claude/nunchi",
   port: null,
-  model: null,
   "external-address": null,
   "policy-priority": null,
 };
@@ -87,8 +84,6 @@ function envConfig(): Partial<NunchiConfig> {
   if (path) cfg.path = path;
   const port = parseInt(process.env.CLAUDE_PLUGIN_OPTION_PORT ?? "", 10);
   if (Number.isFinite(port)) cfg.port = port;
-  const model = process.env.CLAUDE_PLUGIN_OPTION_MODEL;
-  if (model) cfg.model = model;
   const external = process.env.CLAUDE_PLUGIN_OPTION_EXTERNAL_ADDRESS;
   if (external) cfg["external-address"] = external;
   const priority = process.env.CLAUDE_PLUGIN_OPTION_POLICY_PRIORITY;
@@ -109,10 +104,6 @@ export function loadConfig(projectDir: string): NunchiConfig {
         ? merged.path.trim()
         : DEFAULTS.path,
     port: Number.isFinite(merged.port as number) ? (merged.port as number) : null,
-    model:
-      typeof merged.model === "string" && merged.model.trim()
-        ? merged.model.trim()
-        : null,
     "external-address":
       typeof merged["external-address"] === "string" && merged["external-address"].trim()
         ? merged["external-address"].trim()

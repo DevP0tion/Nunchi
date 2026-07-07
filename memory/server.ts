@@ -33,6 +33,9 @@ export interface MemoryConfig {
   /** 바인딩 주소. 기본 루프백. 외부 클라이언트(external-address)에게 서비스하려면
    *  "0.0.0.0" 등으로 변경 — 인증이 없으므로 신뢰할 수 있는 네트워크에서만 열 것 */
   host: string;
+  /** 설정 시(예: "haiku") 보정 기록(cal:add/update)마다 `claude -p --model <값>`으로
+   *  검색 키워드를 비동기 생성. null이면 비활성. 기동 시 1회 로드 — 변경은 서버 재시작 후 반영 */
+  model: string | null;
 }
 
 const MEMORY_CONFIG_DEFAULTS: MemoryConfig = {
@@ -40,6 +43,7 @@ const MEMORY_CONFIG_DEFAULTS: MemoryConfig = {
   db: DB_FILENAME,
   port: DEFAULT_PORT,
   host: "127.0.0.1",
+  model: null,
 };
 
 /** memory-config.json 로드 — 없거나 손상이면 기본값과 병합 (키 단위) */
@@ -94,9 +98,9 @@ export function pickKeywordsLine(raw: string): string {
 if (import.meta.main) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const { dbPath, port, memoryConfig } = initMemory(projectDir);
-  // 보강 모델 — 기동 시 1회 로드. 변경은 memory server 재시작 후 반영
-  const pluginCfg = loadConfig(projectDir);
-  const model = pluginCfg.model;
+  const pluginCfg = loadConfig(projectDir); // calibration.md 임포트 경로(path) 해석용
+  // 보강 모델 — memory-config.json에서 기동 시 1회 로드. 변경은 memory server 재시작 후 반영
+  const model = memoryConfig.model;
 
   const ENRICH_TIMEOUT_MS = 60_000;
   /** claude -p로 검색 키워드 생성 (model 설정 시에만 호출됨). 실패 시 빈 문자열 */
