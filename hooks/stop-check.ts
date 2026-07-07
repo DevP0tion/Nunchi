@@ -27,7 +27,7 @@ const statePath = join(stateDir, `${sessionId}.json`);
 
 interface State {
   count: number;
-  /** 구간 시작 시점의 cal:stamp — null이면 서버 미접속 또는 항목 없음 */
+  /** 구간 시작 시점의 mem:stamp — null이면 서버 미접속 또는 항목 없음 */
   stamp: string | null;
 }
 
@@ -46,7 +46,7 @@ try {
   const { connectMemory } = await import("../memory/client.ts");
   const mem = await connectMemory(projectDir, { noSpawn: true });
   try {
-    stamp = await mem.calStamp();
+    stamp = await mem.stamp();
   } finally {
     mem.close();
   }

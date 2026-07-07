@@ -26,11 +26,11 @@ async function seeded(): Promise<{ dir: string; mem: MemoryClient }> {
   const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-"));
   await assignFreePort(dir);
   const mem = await connectMemory(dir);
-  await mem.calAdd({
+  await mem.add({
     section: "punish", area: "[배포: 게이트]", rule: "배포 게이트를 생략하지 않는다",
     evidence: "2026-06-12 생략으로 장애", confidence: 3,
   });
-  await mem.calAdd({
+  await mem.add({
     section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략 가능",
     evidence: "2026-06-20 과잉이었음",
   });
@@ -66,7 +66,7 @@ test(
       const longRule = "A".repeat(100); // 100자
       const longEvidence = "E".repeat(100); // 100자
       for (let i = 0; i < 60; i++) {
-        await mem.calAdd({
+        await mem.add({
           section: "punish",
           area: `[area-${i}]`,
           rule: longRule,
@@ -148,7 +148,7 @@ test(
       expect(parsed.reason).toContain("nunchi_record"); // 기록 지시가 도구 기준
       // 다음 구간: 1턴째에 기록 발생 → 2턴째 점검 생략
       expect(await run(sid)).toBe("");
-      await mem.calAdd({ section: "env", area: "[x]", rule: "r", evidence: "2026-07-06 e" });
+      await mem.add({ section: "env", area: "[x]", rule: "r", evidence: "2026-07-06 e" });
       expect(await run(sid)).toBe("");
       // stop_hook_active 가드
       const guarded = await runHook("stop-check.ts", dir, {
@@ -180,7 +180,7 @@ test(
 
       // 서버 기동: 기존 항목 1개 있음 (DB 구성하되 서버는 계속 켜 둠)
       mem = await connectMemory(dir);
-      await mem.calAdd({
+      await mem.add({
         section: "punish", area: "[setup]", rule: "baseline-entry",
         evidence: "2026-07-06 pre-exist", confidence: 2,
       });

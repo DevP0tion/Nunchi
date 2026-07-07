@@ -3,7 +3,7 @@
 // 프롬프트 어절로 보정 DB를 검색해 관련 항목만 조용히 주입한다.
 // 매 메시지 경로 — 서버 미기동이면 스폰하지 않고 즉시 통과한다 (noSpawn).
 // 코어(벌주는 것 3+)는 SessionStart가 이미 주입했으므로 제외(excludeCore).
-import { readStdinJson, formatCalEntries } from "./config.ts";
+import { readStdinJson, formatMemoryEntries } from "./config.ts";
 
 const input = await readStdinJson();
 const prompt = String(input.prompt ?? input.user_input ?? "").trim();
@@ -18,13 +18,13 @@ try {
   const { connectMemory } = await import("../memory/client.ts");
   const mem = await connectMemory(projectDir, { noSpawn: true });
   try {
-    const rows = await mem.calSearch(tokens, { limit: 3, excludeCore: true });
+    const rows = await mem.search(tokens, { limit: 3, excludeCore: true });
     if (rows.length) {
       process.stdout.write(
         JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "UserPromptSubmit",
-            additionalContext: `[nunchi] 이번 요청 관련 보정 항목:\n${formatCalEntries(rows)}`,
+            additionalContext: `[nunchi] 이번 요청 관련 보정 항목:\n${formatMemoryEntries(rows)}`,
           },
         })
       );

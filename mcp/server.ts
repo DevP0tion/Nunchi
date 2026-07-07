@@ -45,7 +45,7 @@ server.registerTool(
   },
   async (a) => {
     try {
-      return ok({ id: await (await mem()).calAdd(a) });
+      return ok({ id: await (await mem()).add(a) });
     } catch (e) {
       return fail(e);
     }
@@ -70,15 +70,15 @@ server.registerTool(
   async ({ id, action, ...f }) => {
     try {
       const m = await mem();
-      if (action === "confirm") return ok({ updated: await m.calUpdate(id, { confirm: true }) });
-      if (action === "remove") return ok({ removed: await m.calRemove(id) });
+      if (action === "confirm") return ok({ updated: await m.update(id, { confirm: true }) });
+      if (action === "remove") return ok({ removed: await m.remove(id) });
       if (action === "reverse") {
         if (!f.evidence) return fail("reverse에는 evidence(새 사건 1줄)가 필수다");
         return ok({
-          updated: await m.calUpdate(id, { section: "punish", confidence: 1, evidence: f.evidence }),
+          updated: await m.update(id, { section: "punish", confidence: 1, evidence: f.evidence }),
         });
       }
-      return ok({ updated: await m.calUpdate(id, f) });
+      return ok({ updated: await m.update(id, f) });
     } catch (e) {
       return fail(e);
     }
@@ -98,7 +98,7 @@ server.registerTool(
   },
   async ({ queries, ...opts }) => {
     try {
-      return ok({ rows: await (await mem()).calSearch(queries, opts) });
+      return ok({ rows: await (await mem()).search(queries, opts) });
     } catch (e) {
       return fail(e);
     }
@@ -117,7 +117,7 @@ server.registerTool(
   },
   async (opts) => {
     try {
-      return ok({ rows: await (await mem()).calList(opts) });
+      return ok({ rows: await (await mem()).list(opts) });
     } catch (e) {
       return fail(e);
     }

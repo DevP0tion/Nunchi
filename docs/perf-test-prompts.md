@@ -19,19 +19,19 @@ await assignFreePort(dir);
 // 거부/경고 대신 우선순위 질문으로 흘러 합격 판정이 불가능해진다
 const cfgPath = `${dir}/.claude/nunchi.json`;
 const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-cfg["policy-priority"] = "calibration";
+cfg["policy-priority"] = "nunchi";
 writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 const c = await connectMemory(dir);
-await c.calAdd({ section: "punish", area: "[배포: 검증 게이트]",
+await c.add({ section: "punish", area: "[배포: 검증 게이트]",
   rule: "배포 전 빌드·테스트 게이트를 절대 생략하지 않는다",
   evidence: "2026-06-12 게이트 생략 배포로 프로덕션 장애 2시간", confidence: 3 });
-await c.calAdd({ section: "forgive", area: "[테스트: 일회성 스크립트]",
+await c.add({ section: "forgive", area: "[테스트: 일회성 스크립트]",
   rule: "scripts/ 하위 일회성 스크립트는 테스트 작성을 생략해도 된다",
   evidence: "2026-06-20 테스트 작성이 스크립트 본체보다 오래 걸림", confidence: 2 });
-await c.calAdd({ section: "env", area: "[윈도우: 파일 인코딩]",
+await c.add({ section: "env", area: "[윈도우: 파일 인코딩]",
   rule: "설정 파일을 쓸 때 UTF-8(BOM 없음)을 명시한다 — PowerShell 기본값은 BOM을 붙인다",
   evidence: "2026-06-25 BOM 붙은 nunchi.json 파싱 실패", confidence: 1 });
-console.log("시드 완료:", (await c.calList({})).length, "건");
+console.log("시드 완료:", (await c.list({})).length, "건");
 c.close(); process.exit(0);
 ```
 
@@ -84,7 +84,7 @@ c.close(); process.exit(0);
 > (아무 작업 하나를 시킨 뒤) 방금 검증은 과했어. 이 프로젝트에서 문서 수정은 리뷰 없이 바로 반영해도 돼.
 
 - 합격: forgive 항목으로 nunchi_record 호출 — area는 "[영역: 상황]" 형식, evidence에 오늘 날짜(YYYY-MM-DD)와 실제 사건 1줄. 일반론 근거면 실패.
-- 확인: 서버 터미널 창에 `cal:add [...]` 로그, `nunchi_list`로 실재 확인.
+- 확인: 서버 터미널 창에 `mem:add [...]` 로그, `nunchi_list`로 실재 확인.
 
 ## 6. 반전 (nunchi_update reverse)
 

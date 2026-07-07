@@ -1,5 +1,5 @@
 // bun test tests/search.test.ts
-// 키워드 보강 유틸 검증. 검색 경로(FTS/LIKE 폴백)는 calibration.test.ts가 담당.
+// 키워드 보강 유틸 검증. 검색 경로(FTS/LIKE 폴백)는 store.test.ts가 담당.
 import { expect, test } from "bun:test";
 import { pickKeywordsLine } from "../memory/server.ts";
 

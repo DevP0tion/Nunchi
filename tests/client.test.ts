@@ -36,7 +36,7 @@ test("sameProject: Windows는 대소문자 무시", () => {
 });
 
 test(
-  // v0.8.0: mem:doc은 파일을 직접 읽지 않고 DB(calibration 테이블)에서 렌더링한다
+  // v0.8.0부터 mem:doc은 파일을 직접 읽지 않고 DB에서 렌더링한다
   "mem:doc: DB의 보정 항목을 렌더링 (없으면 null)",
   async () => {
     const A = mkdtempSync(join(tmpdir(), "nunchi-d-"));
@@ -44,7 +44,7 @@ test(
     const a = await connectMemory(A);
     try {
       expect(await a.doc()).toBe(null);
-      await a.calAdd({
+      await a.add({
         section: "punish", area: "[테스트: mem:doc]", rule: "규칙",
         evidence: "2026-07-06 근거", confidence: 3,
       });
@@ -69,14 +69,14 @@ test(
 
     const a = await connectMemory(A); // 서버 스폰 + 자기 프로젝트 검증 통과
     try {
-      const id = await a.calAdd({
+      const id = await a.add({
         section: "punish", area: "[from-A]", rule: "r", evidence: "2026-07-07 e",
       });
       // B의 연결은 A 소유 서버 → ProjectMismatchError
       await expect(connectMemory(B)).rejects.toBeInstanceOf(ProjectMismatchError);
       // 강제 연결은 허용되고 A의 db를 공유한다
       const b = await connectMemory(B, { force: true });
-      expect((await b.calList({})).map((e) => e.id)).toEqual([id]);
+      expect((await b.list({})).map((e) => e.id)).toEqual([id]);
       b.close();
       // external-address: 스킴 생략 주소로 접속, 핸드셰이크 생략 (타 프로젝트 서버라도 연결)
       writeFileSync(
@@ -84,7 +84,7 @@ test(
         JSON.stringify({ "external-address": `127.0.0.1:${port}` })
       );
       const ext = await connectMemory(B);
-      expect((await ext.calList({})).map((e) => e.id)).toEqual([id]);
+      expect((await ext.list({})).map((e) => e.id)).toEqual([id]);
       ext.close();
     } finally {
       await a.shutdown();

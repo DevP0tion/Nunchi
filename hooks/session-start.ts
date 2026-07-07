@@ -10,7 +10,7 @@ import {
   resolveDocDir,
   readStdinJson,
   isPonytailEnabled,
-  formatCalEntries,
+  formatMemoryEntries,
 } from "./config.ts";
 
 const input = await readStdinJson();
@@ -25,13 +25,13 @@ try {
 }
 
 // 코어 조회 — auto-start면 connectMemory가 서버를 스폰한다 (기존 스폰 블록 대체)
-let core: import("./config.ts").CalEntryLite[] = [];
+let core: import("./config.ts").MemoryEntryLite[] = [];
 let note: string | null = null;
 try {
   const { connectMemory } = await import("../memory/client.ts");
   const mem = await connectMemory(projectDir);
   try {
-    core = await mem.calCore();
+    core = await mem.core();
   } finally {
     mem.close();
   }
@@ -46,7 +46,7 @@ const lines = [
   "예측과 실제가 어긋나면(과잉/과소/환경 특이사항) nunchi_record로 기록한다. 기존 항목 재확인은 nunchi_update(action: confirm), '용서하는 것'을 따르다 사고가 나면 nunchi_update(action: reverse)로 즉시 반전한다.",
 ];
 if (core.length) {
-  const coreBlock = formatCalEntries(core).slice(0, 8000);
+  const coreBlock = formatMemoryEntries(core).slice(0, 8000);
   // ponytail: 하드 슬라이스 — 코어가 8천자를 넘는 비정상 상황에서만 잘리며, 규약·ponytail 줄이 항상 살아남는 것이 우선
   lines.push("", "[확정 규칙 — '벌주는 것' 신뢰도 높음(3+). 항상 지킨다]", coreBlock);
 }
@@ -59,9 +59,9 @@ lines.push(
 // ponytail(고정 강도 정책) 공존: 우선순위가 결정돼 있으면 규칙 1줄, 미결정이면 질문 지시 1줄 주입
 if (isPonytailEnabled(projectDir)) {
   const priority = cfg["policy-priority"];
-  if (priority === "calibration") {
+  if (priority === "nunchi") {
     lines.push(
-      "[nunchi] ponytail 활성 (사용자 결정: calibration 우선). 작업 강도 판단이 충돌하면 보정 DB가 ponytail의 최소화 규칙보다 우선한다. 특히 '벌주는 것' 항목은 항상 지킨다."
+      "[nunchi] ponytail 활성 (사용자 결정: nunchi 우선). 작업 강도 판단이 충돌하면 보정 DB가 ponytail의 최소화 규칙보다 우선한다. 특히 '벌주는 것' 항목은 항상 지킨다."
     );
   } else if (priority === "ponytail") {
     lines.push(
@@ -69,7 +69,7 @@ if (isPonytailEnabled(projectDir)) {
     );
   } else {
     lines.push(
-      '[nunchi] ponytail 활성 감지 — 보정 DB와의 우선순위 미결정. 이번 세션에서 작업 강도 판단이 처음 충돌하면(ponytail은 생략을 권하는데 보정 DB는 반대, 또는 그 역) AskUserQuestion으로 어느 쪽을 우선할지 물어보고, 답을 프로젝트 .claude/nunchi.json 의 "policy-priority" 키에 "calibration" 또는 "ponytail" 로 저장한다. 다음 세션부터 자동 반영된다. 충돌이 없으면 묻지 않는다.'
+      '[nunchi] ponytail 활성 감지 — 보정 DB와의 우선순위 미결정. 이번 세션에서 작업 강도 판단이 처음 충돌하면(ponytail은 생략을 권하는데 보정 DB는 반대, 또는 그 역) AskUserQuestion으로 어느 쪽을 우선할지 물어보고, 답을 프로젝트 .claude/nunchi.json 의 "policy-priority" 키에 "nunchi" 또는 "ponytail" 로 저장한다. 다음 세션부터 자동 반영된다. 충돌이 없으면 묻지 않는다.'
     );
   }
 }
