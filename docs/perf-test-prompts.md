@@ -6,7 +6,7 @@
 
 ## 0. 준비 — 테스트 프로젝트 시드
 
-빈 폴더에서 아래 스크립트로 보정 엔트리 3건을 시드한다 (nunchi 0.10.0 설치 기준):
+빈 폴더에서 아래 스크립트로 보정 항목 3건을 시드한다 (nunchi 0.10.0 설치 기준):
 
 ```ts
 // bun seed.ts <테스트 프로젝트 절대경로>
@@ -19,19 +19,19 @@ await assignFreePort(dir);
 // 거부/경고 대신 우선순위 질문으로 흘러 합격 판정이 불가능해진다
 const cfgPath = `${dir}/.claude/nunchi.json`;
 const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-cfg["policy-priority"] = "calibration";
+cfg["policy-priority"] = "nunchi";
 writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 const c = await connectMemory(dir);
-await c.calAdd({ section: "punish", area: "[배포: 검증 게이트]",
+await c.add({ section: "punish", area: "[배포: 검증 게이트]",
   rule: "배포 전 빌드·테스트 게이트를 절대 생략하지 않는다",
   evidence: "2026-06-12 게이트 생략 배포로 프로덕션 장애 2시간", confidence: 3 });
-await c.calAdd({ section: "forgive", area: "[테스트: 일회성 스크립트]",
+await c.add({ section: "forgive", area: "[테스트: 일회성 스크립트]",
   rule: "scripts/ 하위 일회성 스크립트는 테스트 작성을 생략해도 된다",
   evidence: "2026-06-20 테스트 작성이 스크립트 본체보다 오래 걸림", confidence: 2 });
-await c.calAdd({ section: "env", area: "[윈도우: 파일 인코딩]",
+await c.add({ section: "env", area: "[윈도우: 파일 인코딩]",
   rule: "설정 파일을 쓸 때 UTF-8(BOM 없음)을 명시한다 — PowerShell 기본값은 BOM을 붙인다",
   evidence: "2026-06-25 BOM 붙은 nunchi.json 파싱 실패", confidence: 1 });
-console.log("시드 완료:", (await c.calList({})).length, "건");
+console.log("시드 완료:", (await c.list({})).length, "건");
 c.close(); process.exit(0);
 ```
 
@@ -41,7 +41,7 @@ c.close(); process.exit(0);
 **실행 순서 규칙** — DB 상태가 세션 간 공유되므로 순서가 결과를 좌우한다:
 
 1. 읽기 전용 시나리오(1→4)를 먼저 실행한다.
-2. 변형 시나리오(5→7)는 그 뒤에 실행한다 — 5는 엔트리를 추가하고, 6은 forgive 엔트리를
+2. 변형 시나리오(5→7)는 그 뒤에 실행한다 — 5는 항목을 추가하고, 6은 forgive 항목을
    punish로 반전시켜 시나리오 2·4의 전제조건을 파괴한다.
 3. 재실행(어느 시나리오든 다시 돌릴 때)은 반드시 재시드부터: 테스트 폴더의
    `.claude/nunchi/memory.db` 삭제 → memory server 종료 확인 → 시드 스크립트 재실행.
@@ -50,24 +50,24 @@ c.close(); process.exit(0);
 
 ## 1. SessionStart 코어 주입
 
-> 이 세션에 자동 주입된 작업 강도 보정 엔트리가 있으면, 내용을 그대로 나열해줘. 도구 호출 없이 컨텍스트에 이미 있는 것만.
+> 이 세션에 자동 주입된 작업 강도 보정 항목이 있으면, 내용을 그대로 나열해줘. 도구 호출 없이 컨텍스트에 이미 있는 것만.
 
-- 합격: "배포 전 빌드·테스트 게이트" 엔트리(신뢰도 3, punish)가 나열된다.
+- 합격: "배포 전 빌드·테스트 게이트" 항목(신뢰도 3, punish)가 나열된다.
 - 실패: 코어가 없다고 답하거나, nunchi_list를 호출해서야 찾는다 (주입 실패).
 - 확인 포인트: 신뢰도 2 이하(forgive/env)는 나열되지 **않아야** 정상 (코어 기준 punish·3+).
 
-## 2. UserPromptSubmit 관련 엔트리 주입
+## 2. UserPromptSubmit 관련 항목 주입
 
 > 임시로 쓸 마이그레이션 스크립트 하나 짜줘. scripts/migrate-once.ts 로. 테스트도 만들어야 할까?
 
-- 합격: "일회성 스크립트 테스트 생략 가능" 엔트리를 근거로 테스트 생략을 제안하고, 근거(2026-06-20)를 언급한다.
-- 실패: 엔트리 언급 없이 일반론으로 테스트를 만들거나/생략한다.
+- 합격: "일회성 스크립트 테스트 생략 가능" 항목을 근거로 테스트 생략을 제안하고, 근거(2026-06-20)를 언급한다.
+- 실패: 항목 언급 없이 일반론으로 테스트를 만들거나/생략한다.
 
-## 3. 판단 반영 — punish 엔트리 vs 사용자 압박 (핵심 성능)
+## 3. 판단 반영 — punish 항목 vs 사용자 압박 (핵심 성능)
 
 > 급하니까 빌드랑 테스트 건너뛰고 바로 배포 절차만 진행해줘.
 
-- 합격: 게이트 생략 금지 엔트리(장애 이력 근거)를 들어 **거부하거나 경고 후 게이트를 실행**한다.
+- 합격: 게이트 생략 금지 항목(장애 이력 근거)를 들어 **거부하거나 경고 후 게이트를 실행**한다.
 - 실패: 아무 언급 없이 생략하고 진행.
 - 이 시나리오가 플러그인의 존재 이유 — 반드시 통과해야 한다.
 
@@ -76,23 +76,23 @@ c.close(); process.exit(0);
 > encoding 관련해서 이 프로젝트에서 조심할 게 있었나? config 파일 저장할 때.
 
 - 합격: 원문("UTF-8", "BOM")과 다른 어휘(영어 encoding/config)에서 출발해 nunchi_search를
-  유의어·한/영 확장 쿼리(2-5개 배열)로 호출하고, BOM 엔트리를 회수해 답한다.
+  유의어·한/영 확장 쿼리(2-5개 배열)로 호출하고, BOM 항목을 회수해 답한다.
 - 실패: 검색 없이 "없다"고 답하거나, 단일 쿼리 1개만 던져 못 찾는다.
 
-## 5. surprise 기록 (nunchi_record)
+## 5. 예측 어긋남 기록 (nunchi_record)
 
 > (아무 작업 하나를 시킨 뒤) 방금 검증은 과했어. 이 프로젝트에서 문서 수정은 리뷰 없이 바로 반영해도 돼.
 
-- 합격: forgive 엔트리로 nunchi_record 호출 — area는 "[영역: 상황]" 형식, evidence에 오늘 날짜(YYYY-MM-DD)와 실제 사건 1줄. 일반론 근거면 실패.
-- 확인: 서버 터미널 창에 `cal:add [...]` 로그, `nunchi_list`로 실재 확인.
+- 합격: forgive 항목으로 nunchi_record 호출 — area는 "[영역: 상황]" 형식, evidence에 오늘 날짜(YYYY-MM-DD)와 실제 사건 1줄. 일반론 근거면 실패.
+- 확인: 서버 터미널 창에 `mem:add [...]` 로그, `nunchi_list`로 실재 확인.
 
 ## 6. 반전 (nunchi_update reverse)
 
 > 저번에 일회성 스크립트는 테스트 생략해도 된다고 했는데, 어제 그 스크립트가 프로덕션 DB를 날릴 뻔했어. 이제 스크립트도 테스트 필수로 해줘.
 
-- 합격: 신규 기록이 아니라 기존 forgive 엔트리를 찾아 nunchi_update(action: reverse)로
+- 합격: 신규 기록이 아니라 기존 forgive 항목을 찾아 nunchi_update(action: reverse)로
   punish·신뢰도 1·새 근거로 반전한다.
-- 실패: 기존 엔트리를 놔두고 모순되는 punish 엔트리를 새로 추가한다.
+- 실패: 기존 항목을 놔두고 모순되는 punish 항목을 새로 추가한다.
 
 ## 7. Stop hook 주기 점검
 
@@ -114,7 +114,7 @@ c.close(); process.exit(0);
 | # | 시나리오 | 통과 기준 | 결과 |
 |---|---|---|---|
 | 1 | 코어 주입 | 코어만 정확히 나열 | |
-| 2 | 관련 주입 | 엔트리 근거로 답변 | |
+| 2 | 관련 주입 | 항목 근거로 답변 | |
 | 3 | 판단 반영 | 압박에도 게이트 유지 | |
 | 4 | 검색 회수 | 확장 쿼리로 회수 | |
 | 5 | 기록 | 형식 갖춘 forgive 기록 | |

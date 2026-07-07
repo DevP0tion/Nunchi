@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // nunchi Stop hook (Bun)
 // 매 응답 종료 시 카운트를 올리고, CHECK_EVERY 턴마다 한 번
-// "이번 구간에 surprise 있었나?" 점검을 강제한다 (decision: block).
+// "이번 구간에 예측 어긋남이 있었나?" 점검을 강제한다 (decision: block).
 // - stop_hook_active 가드로 무한 루프 방지
 // - 구간 내에 보정 DB 기록이 이미 있었으면 점검 생략 (중복 잔소리 방지)
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -27,7 +27,7 @@ const statePath = join(stateDir, `${sessionId}.json`);
 
 interface State {
   count: number;
-  /** 구간 시작 시점의 cal:stamp — null이면 서버 미접속 또는 엔트리 없음 */
+  /** 구간 시작 시점의 mem:stamp — null이면 서버 미접속 또는 항목 없음 */
   stamp: string | null;
 }
 
@@ -46,7 +46,7 @@ try {
   const { connectMemory } = await import("../memory/client.ts");
   const mem = await connectMemory(projectDir, { noSpawn: true });
   try {
-    stamp = await mem.calStamp();
+    stamp = await mem.stamp();
   } finally {
     mem.close();
   }

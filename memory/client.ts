@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { resolveMemoryPort } from "./server.ts";
 import { loadConfig } from "../hooks/config.ts";
-import type { CalEntry, CalSection, NewCalEntry } from "./calibration.ts";
+import type { MemoryEntry, MemorySection, NewMemoryEntry } from "./store.ts";
 
 const SERVER_PATH = fileURLToPath(new URL("./server.ts", import.meta.url));
 
@@ -81,20 +81,20 @@ export async function assignFreePort(
 }
 
 export interface MemoryClient {
-  /** 서버 프로젝트의 calibration 문서 전문 (없으면 null). 구버전 서버는 timeout 에러 */
+  /** 서버 프로젝트의 보정 문서 전문 (없으면 null). 구버전 서버는 timeout 에러 */
   doc(): Promise<string | null>;
-  calAdd(e: NewCalEntry): Promise<number>;
-  calUpdate(id: number, fields: Partial<NewCalEntry> & { confirm?: boolean }): Promise<boolean>;
-  calRemove(id: number): Promise<boolean>;
-  calSearch(
+  add(e: NewMemoryEntry): Promise<number>;
+  update(id: number, fields: Partial<NewMemoryEntry> & { confirm?: boolean }): Promise<boolean>;
+  remove(id: number): Promise<boolean>;
+  search(
     queries: string[],
-    opts?: { section?: CalSection; limit?: number; excludeCore?: boolean }
-  ): Promise<CalEntry[]>;
-  calList(opts?: { section?: CalSection; minConfidence?: number }): Promise<CalEntry[]>;
+    opts?: { section?: MemorySection; limit?: number; excludeCore?: boolean }
+  ): Promise<MemoryEntry[]>;
+  list(opts?: { section?: MemorySection; minConfidence?: number }): Promise<MemoryEntry[]>;
   /** 상시 주입 코어: 벌주는 것 신뢰도 높음(3+) */
-  calCore(): Promise<CalEntry[]>;
+  core(): Promise<MemoryEntry[]>;
   /** 마지막 기록 시각 — Stop hook 점검용 */
-  calStamp(): Promise<string | null>;
+  stamp(): Promise<string | null>;
   /** 서버 프로세스 종료 (모든 클라이언트에 영향) */
   shutdown(): Promise<void>;
   close(): void;
@@ -133,7 +133,7 @@ export async function connectMemory(
     const port = resolveMemoryPort(projectDir);
     const url = `http://127.0.0.1:${port}`;
     // auto-start와 무관하게: 포트에 서버가 실행 중이면 그대로 연결.
-    // 2초: 풀스위트 부하 시 루프백 핸드셰이크가 1초를 넘는다 — noSpawn은 stamp=null 오탐,
+    // 2초: 테스트 전체 실행 부하 시 루프백 핸드셰이크가 1초를 넘는다 — noSpawn은 stamp=null 오탐,
     // 스폰 경로는 떠 있는 서버를 놓치고 중복 스폰(낙오 프로세스가 나중에 빈 포트 차지)하던 문제
     socket = await tryConnect(url, 2000);
 
@@ -149,7 +149,7 @@ export async function connectMemory(
         );
       }
       // 스폰 후 재시도 (동시 스폰 경쟁은 서버 포트 락이 정리)
-      // NUNCHI_NO_WINDOW=1: 창 없이 detached 스폰 — 테스트 스위트가 창 수십 개를 띄우지 않도록
+      // NUNCHI_NO_WINDOW=1: 창 없이 detached 스폰 — 테스트 전체 실행이 창 수십 개를 띄우지 않도록
       if (process.platform === "win32" && process.env.NUNCHI_NO_WINDOW !== "1") {
         // 새 터미널 창에서 실행 — 서버 생존이 눈에 보이고, 창을 닫으면 종료된다.
         // (백그라운드 detached는 세션 종료 후 orphan으로 남아 memory.db를 잠그는 문제가 있었다)
@@ -202,13 +202,13 @@ export async function connectMemory(
 
   return {
     doc: async () => (await req("mem:doc")).doc ?? null,
-    calAdd: async (e) => (await req("cal:add", e)).id,
-    calUpdate: async (id, fields) => (await req("cal:update", { id, ...fields })).updated,
-    calRemove: async (id) => (await req("cal:remove", { id })).removed,
-    calSearch: async (queries, opts = {}) => (await req("cal:search", { queries, ...opts })).rows,
-    calList: async (opts = {}) => (await req("cal:list", opts)).rows,
-    calCore: async () => (await req("cal:core")).rows,
-    calStamp: async () => (await req("cal:stamp")).stamp ?? null,
+    add: async (e) => (await req("mem:add", e)).id,
+    update: async (id, fields) => (await req("mem:update", { id, ...fields })).updated,
+    remove: async (id) => (await req("mem:remove", { id })).removed,
+    search: async (queries, opts = {}) => (await req("mem:search", { queries, ...opts })).rows,
+    list: async (opts = {}) => (await req("mem:list", opts)).rows,
+    core: async () => (await req("mem:core")).rows,
+    stamp: async () => (await req("mem:stamp")).stamp ?? null,
     shutdown: async () => {
       // ack는 서버가 파일 핸들을 놓기 전에 도착할 수 있다 — disconnect까지 기다려야
       // 호출자가 곧바로 DB 디렉터리를 지워도 안전하다 (서버는 db.close 후 접속을 끊는다)
