@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 const makeStore = () => createCalStore(new Database(":memory:"));
 
-test("add/get: 엔트리 추가와 조회, 기본 신뢰도 1", () => {
+test("add/get: 항목 추가와 조회, 기본 신뢰도 1", () => {
   const s = makeStore();
   const id = s.add({ section: "punish", area: "[배포: CI 캐시]", rule: "lockfile 변경 시 캐시 키 확인", evidence: "2026-06-12 캐시 미스매치로 배포 2회 실패" });
   const e = s.get(id);
@@ -59,10 +59,10 @@ test("search: 다중 쿼리 OR-병합, 중복 제거, limit", () => {
   const a = s.add({ section: "punish", area: "[배포: CI]", rule: "배포 전 캐시 키 확인", evidence: "2026-06-12 배포 실패" });
   const b = s.add({ section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략", evidence: "2026-06-20 과잉" });
   s.add({ section: "env", area: "[윈도우: 인코딩]", rule: "BOM 주의", evidence: "2026-06-25 파싱 실패" });
-  // "배포"(2글자→LIKE), "테스트 생략"(FTS) 두 쿼리가 서로 다른 엔트리를 회수
+  // "배포"(2글자→LIKE), "테스트 생략"(FTS) 두 쿼리가 서로 다른 항목을 회수
   const rows = s.search(["배포", "테스트 생략"], { limit: 5 });
   expect(rows.map((r) => r.id).sort()).toEqual([a, b].sort());
-  // 같은 엔트리를 두 쿼리가 맞혀도 1건
+  // 같은 항목을 두 쿼리가 맞혀도 1건
   expect(s.search(["배포", "캐시"], { limit: 5 }).length).toBe(1);
   expect(s.search(["배포", "테스트 생략"], { limit: 1 }).length).toBe(1);
 });
@@ -111,7 +111,7 @@ const SAMPLE_DOC = `# Calibration — my-project
 - 신뢰도: 중간(2)
 
 ### [불량: 필드 누락]
-- 규칙: 근거가 없는 엔트리
+- 규칙: 근거가 없는 항목
 
 ## 환경 특이사항
 
@@ -121,7 +121,7 @@ const SAMPLE_DOC = `# Calibration — my-project
 - 신뢰도: 낮음(1)
 `;
 
-test("parseCalibrationDoc: 3섹션·신뢰도 숫자 추출·불량 엔트리 skip", () => {
+test("parseCalibrationDoc: 3섹션·신뢰도 숫자 추출·불량 항목 skip", () => {
   const { entries, skipped } = parseCalibrationDoc(SAMPLE_DOC);
   expect(entries.length).toBe(3);
   expect(skipped).toBe(1);

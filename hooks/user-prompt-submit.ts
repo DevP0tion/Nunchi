@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // nunchi UserPromptSubmit hook (Bun)
-// 프롬프트 어절로 보정 DB를 검색해 관련 엔트리만 조용히 주입한다.
+// 프롬프트 어절로 보정 DB를 검색해 관련 항목만 조용히 주입한다.
 // 매 메시지 경로 — 서버 미기동이면 스폰하지 않고 즉시 통과한다 (noSpawn).
 // 코어(벌주는 것 3+)는 SessionStart가 이미 주입했으므로 제외(excludeCore).
 import { readStdinJson, formatCalEntries } from "./config.ts";
@@ -24,7 +24,7 @@ try {
         JSON.stringify({
           hookSpecificOutput: {
             hookEventName: "UserPromptSubmit",
-            additionalContext: `[nunchi] 이번 요청 관련 보정 엔트리:\n${formatCalEntries(rows)}`,
+            additionalContext: `[nunchi] 이번 요청 관련 보정 항목:\n${formatCalEntries(rows)}`,
           },
         })
       );

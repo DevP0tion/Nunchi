@@ -37,7 +37,7 @@ test("sameProject: Windows는 대소문자 무시", () => {
 
 test(
   // v0.8.0: mem:doc은 파일을 직접 읽지 않고 DB(calibration 테이블)에서 렌더링한다
-  "mem:doc: DB의 calibration 엔트리를 렌더링 (없으면 null)",
+  "mem:doc: DB의 보정 항목을 렌더링 (없으면 null)",
   async () => {
     const A = mkdtempSync(join(tmpdir(), "nunchi-d-"));
     await assignFreePort(A);

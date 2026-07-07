@@ -144,7 +144,7 @@ export function resolveDocPath(projectDir: string, cfg: NunchiConfig): string {
   return join(resolveDocDir(projectDir, cfg), DOC_FILENAME);
 }
 
-/** 훅 3종(session-start/user-prompt-submit/subagent-start)이 공유하는 엔트리 렌더링 */
+/** 훅 3종(session-start/user-prompt-submit/subagent-start)이 공유하는 항목 렌더링 */
 export interface CalEntryLite {
   id: number;
   section: string;

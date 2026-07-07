@@ -62,7 +62,7 @@ test(
     await assignFreePort(dir);
     const mem = await connectMemory(dir);
     try {
-      // ~60개 엔트리 × 각 ~200자 = ~12k 생성 → 8k 슬라이스 후 규약 줄 추가 = 총 <10k
+      // ~60개 항목 × 각 ~200자 = ~12k 생성 → 8k 슬라이스 후 규약 줄 추가 = 총 <10k
       const longRule = "A".repeat(100); // 100자
       const longEvidence = "E".repeat(100); // 100자
       for (let i = 0; i < 60; i++) {
@@ -87,7 +87,7 @@ test(
 );
 
 test(
-  "user-prompt-submit: 관련 엔트리 주입, 코어 제외, 무관련·서버다운은 무출력",
+  "user-prompt-submit: 관련 항목 주입, 코어 제외, 무관련·서버다운은 무출력",
   async () => {
     const { dir, mem } = await seeded();
     try {
@@ -178,7 +178,7 @@ test(
       // Turn 1: 서버 미접속 → stamp=null, state.stamp=null
       expect(await run(sid)).toBe("");
 
-      // 서버 기동: 기존 엔트리 1개 있음 (DB 구성하되 서버는 계속 켜 둠)
+      // 서버 기동: 기존 항목 1개 있음 (DB 구성하되 서버는 계속 켜 둠)
       mem = await connectMemory(dir);
       await mem.calAdd({
         section: "punish", area: "[setup]", rule: "baseline-entry",
@@ -186,7 +186,7 @@ test(
       });
 
       // Turn 2: 서버는 접속 가능하지만 baseline은 여전히 null
-      // stamp는 변하지 않음 (새 엔트리 없음), 하지만 state.stamp=null이므로
+      // stamp는 변하지 않음 (새 항목 없음), 하지만 state.stamp=null이므로
       // 기록이 없다고 판단 → block=true (과검)
       const out = await run(sid);
       const parsed = JSON.parse(out);

@@ -1,7 +1,7 @@
 // nunchi calibration store (Bun)
-// 보정 엔트리 테이블(memory) + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
+// 보정 항목 테이블(memory) + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
 // 소켓 계층(server.ts)과 테스트가 공유하는 저장소 로직.
-// v0.9.0: 범용 KV memory 테이블을 제거하고 보정 엔트리를 memory 테이블 하나로 통합했다.
+// v0.9.0: 범용 KV memory 테이블을 제거하고 보정 항목을 memory 테이블 하나로 통합했다.
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 
@@ -86,7 +86,7 @@ function applyCalSchemaInner(db: Database): void {
       VALUES (new.id, new.area, new.rule, new.evidence, new.keywords);
     END
   `);
-  // v0.9.0 마이그레이션 2/2: calibration 테이블의 엔트리를 id 보존하며 이관 후 제거
+  // v0.9.0 마이그레이션 2/2: calibration 테이블의 항목을 id 보존하며 이관 후 제거
   const calTable = db
     .query(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'calibration'`)
     .get();
@@ -123,7 +123,7 @@ export function createCalStore(db: Database) {
      ORDER BY confidence DESC, updated_at DESC`
   );
   const keywordsStmt = db.prepare(
-    // updated_at 일치 조건 — 보강 중에 엔트리가 다시 바뀌었으면 낡은 키워드를 버린다
+    // updated_at 일치 조건 — 보강 중에 항목이 다시 바뀌었으면 낡은 키워드를 버린다
     `UPDATE memory SET keywords = ? WHERE id = ? AND updated_at = ?`
   );
   const ftsStmt = db.prepare(
@@ -187,7 +187,7 @@ export function createCalStore(db: Database) {
     core(): CalEntry[] {
       return coreStmt.all(CORE_CONFIDENCE) as CalEntry[];
     },
-    /** 마지막 기록 시각 — Stop hook 점검용. 엔트리가 없으면 null */
+    /** 마지막 기록 시각 — Stop hook 점검용. 항목이 없으면 null */
     stamp(): string | null {
       return (stampStmt.get() as { m: string | null }).m;
     },
@@ -253,7 +253,7 @@ const SECTION_TITLE: Record<CalSection, string> = {
   env: "환경 특이사항",
 };
 
-/** 기존 calibration.md → 엔트리 배열. 규칙/근거가 없는 엔트리는 skipped로 센다 */
+/** 기존 calibration.md → 항목 배열. 규칙/근거가 없는 항목은 skipped로 센다 */
 export function parseCalibrationDoc(md: string): { entries: NewCalEntry[]; skipped: number } {
   const entries: NewCalEntry[] = [];
   let skipped = 0;
@@ -316,7 +316,7 @@ export function importCalibrationDoc(store: CalStore, docPath: string): number |
   if (store.stamp() !== null || !existsSync(docPath)) return null;
   const { entries, skipped } = parseCalibrationDoc(readFileSync(docPath, "utf8"));
   for (const e of entries) store.add(e);
-  if (skipped) console.error(`[nunchi] 임포트: 파싱 불가 엔트리 ${skipped}건 건너뜀 (원본 .imported 참조)`);
+  if (skipped) console.error(`[nunchi] 임포트: 파싱 불가 항목 ${skipped}건 건너뜀 (원본 .imported 참조)`);
   renameSync(docPath, docPath + ".imported"); // 0건이어도 리네임 — 기동마다 재파싱 방지
   return entries.length;
 }
