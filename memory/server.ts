@@ -9,7 +9,8 @@
 import { Database } from "bun:sqlite";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { loadConfig, resolveDocDir, resolveDocPath } from "../hooks/config.ts";
 import {
@@ -18,6 +19,7 @@ import {
   renderCalibrationDoc,
   type NewCalEntry,
 } from "./calibration.ts";
+import { DEFAULT_PROVIDER, PROVIDERS } from "./provider/index.ts";
 
 export const DB_FILENAME = "memory.db";
 export const MEMORY_CONFIG_FILENAME = "memory-config.json";
@@ -33,9 +35,12 @@ export interface MemoryConfig {
   /** 바인딩 주소. 기본 루프백. 외부 클라이언트(external-address)에게 서비스하려면
    *  "0.0.0.0" 등으로 변경 — 인증이 없으므로 신뢰할 수 있는 네트워크에서만 열 것 */
   host: string;
-  /** 설정 시(예: "haiku") 보정 기록(cal:add/update)마다 `claude -p --model <값>`으로
+  /** 설정 시(예: "haiku") 보정 기록(cal:add/update)마다 modelProvider CLI로
    *  검색 키워드를 비동기 생성. null이면 비활성. 기동 시 1회 로드 — 변경은 서버 재시작 후 반영 */
   model: string | null;
+  /** 키워드 보강에 쓸 CLI 공급자 — provider/index.ts의 PROVIDERS 키
+   *  ("claude" | "codex" | "gemini"). 기본 "claude" */
+  modelProvider: string;
 }
 
 const MEMORY_CONFIG_DEFAULTS: MemoryConfig = {
@@ -44,6 +49,7 @@ const MEMORY_CONFIG_DEFAULTS: MemoryConfig = {
   port: DEFAULT_PORT,
   host: "127.0.0.1",
   model: null,
+  modelProvider: DEFAULT_PROVIDER,
 };
 
 /** memory-config.json 로드 — 없거나 손상이면 기본값과 병합 (키 단위) */
@@ -99,11 +105,17 @@ if (import.meta.main) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const { dbPath, port, memoryConfig } = initMemory(projectDir);
   const pluginCfg = loadConfig(projectDir); // calibration.md 임포트 경로(path) 해석용
-  // 보강 모델 — memory-config.json에서 기동 시 1회 로드. 변경은 memory server 재시작 후 반영
+  // 보강 모델·공급자 — memory-config.json에서 기동 시 1회 로드. 변경은 memory server 재시작 후 반영
   const model = memoryConfig.model;
+  const provider = PROVIDERS[memoryConfig.modelProvider] ?? PROVIDERS[DEFAULT_PROVIDER];
+  if (!PROVIDERS[memoryConfig.modelProvider])
+    console.error(
+      `[nunchi] 알 수 없는 modelProvider "${memoryConfig.modelProvider}" — ${DEFAULT_PROVIDER}로 대체`
+    );
 
   const ENRICH_TIMEOUT_MS = 60_000;
-  /** claude -p로 검색 키워드 생성 (model 설정 시에만 호출됨). 실패 시 빈 문자열 */
+  let kwSeq = 0; // output: "file" 공급자의 임시 파일 이름 충돌 방지
+  /** provider CLI로 검색 키워드 생성 (model 설정 시에만 호출됨). 실패 시 빈 문자열 */
   async function generateKeywords(label: string, body: string): Promise<string> {
     const prompt = [
       "다음 작업 기록을 나중에 검색할 때 쓸 키워드를 생성하라.",
@@ -113,11 +125,9 @@ if (import.meta.main) {
       `key: ${label}`,
       `value: ${body}`,
     ].join("\n");
-    // 프롬프트는 stdin으로 전달 — Windows cmd 인용 문제를 피한다
-    const cmd =
-      process.platform === "win32"
-        ? ["cmd", "/c", "claude", "-p", "--model", model!]
-        : ["claude", "-p", "--model", model!];
+    const outFile = join(tmpdir(), `nunchi-kw-${process.pid}-${++kwSeq}.txt`);
+    const argv = provider.argv(model!, outFile);
+    const cmd = process.platform === "win32" ? ["cmd", "/c", ...argv] : argv;
     const proc = Bun.spawn(cmd, {
       stdin: new TextEncoder().encode(prompt),
       stdout: "pipe",
@@ -125,12 +135,15 @@ if (import.meta.main) {
     });
     const timer = setTimeout(() => proc.kill(), ENRICH_TIMEOUT_MS);
     try {
-      return pickKeywordsLine(await new Response(proc.stdout).text());
+      let text = await new Response(proc.stdout).text(); // stdout EOF = 프로세스 종료 대기
+      if (provider.output === "file") text = readFileSync(outFile, "utf8");
+      return pickKeywordsLine(text);
     } catch (e) {
       console.error(`[nunchi] keyword 보강 실패 (${label}): ${e}`);
       return "";
     } finally {
       clearTimeout(timer);
+      if (provider.output === "file") rmSync(outFile, { force: true });
     }
   }
   // 기본 루프백 바인딩. 외부 서비스가 필요하면 memory-config.json의 host를 변경
