@@ -1,15 +1,15 @@
-// nunchi calibration store (Bun)
-// 보정 엔트리 테이블(memory) + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
+// nunchi memory store (Bun)
+// 보정 항목 테이블(memory) + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
 // 소켓 계층(server.ts)과 테스트가 공유하는 저장소 로직.
-// v0.9.0: 범용 KV memory 테이블을 제거하고 보정 엔트리를 memory 테이블 하나로 통합했다.
+// v0.9.0: 범용 KV memory 테이블을 제거하고 보정 항목을 memory 테이블 하나로 통합했다.
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 
-export type CalSection = "punish" | "forgive" | "env";
+export type MemorySection = "punish" | "forgive" | "env";
 
-export interface CalEntry {
+export interface MemoryEntry {
   id: number;
-  section: CalSection;
+  section: MemorySection;
   area: string;
   rule: string;
   evidence: string;
@@ -17,8 +17,8 @@ export interface CalEntry {
   updated_at: string;
 }
 
-export interface NewCalEntry {
-  section: CalSection;
+export interface NewMemoryEntry {
+  section: MemorySection;
   area: string;
   rule: string;
   evidence: string;
@@ -34,11 +34,11 @@ const COLS = "id, section, area, rule, evidence, confidence, updated_at";
 /** 테이블 + FTS5 인덱스 초기화 (멱등). 0.8.x DB는 memory 테이블 하나로 마이그레이션.
  *  전체를 한 트랜잭션으로 — 마이그레이션 도중 크래시로 두 테이블이 공존(다음 기동 시
  *  id 중복 INSERT 실패)하는 상태를 남기지 않는다 */
-export function applyCalSchema(db: Database): void {
-  db.transaction(() => applyCalSchemaInner(db))();
+export function applyMemorySchema(db: Database): void {
+  db.transaction(() => applyMemorySchemaInner(db))();
 }
 
-function applyCalSchemaInner(db: Database): void {
+function applyMemorySchemaInner(db: Database): void {
   // v0.9.0 마이그레이션 1/2: 구 KV memory 테이블(key/value)은 제거 — 플러그인 내 소비자 없음.
   // 트리거는 테이블과 함께 삭제되고, 구 memory_fts는 컬럼이 달라 명시적으로 지운다
   const kvMemory = db
@@ -86,11 +86,11 @@ function applyCalSchemaInner(db: Database): void {
       VALUES (new.id, new.area, new.rule, new.evidence, new.keywords);
     END
   `);
-  // v0.9.0 마이그레이션 2/2: calibration 테이블의 엔트리를 id 보존하며 이관 후 제거
-  const calTable = db
+  // v0.9.0 마이그레이션 2/2: calibration 테이블의 항목을 id 보존하며 이관 후 제거
+  const legacyTable = db
     .query(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'calibration'`)
     .get();
-  if (calTable) {
+  if (legacyTable) {
     db.run(`
       INSERT INTO memory (id, section, area, rule, evidence, confidence, keywords, updated_at)
       SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM calibration
@@ -102,8 +102,8 @@ function applyCalSchemaInner(db: Database): void {
   db.run(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`);
 }
 
-export function createCalStore(db: Database) {
-  applyCalSchema(db);
+export function createMemoryStore(db: Database) {
+  applyMemorySchema(db);
   const insStmt = db.prepare(
     `INSERT INTO memory (section, area, rule, evidence, confidence)
      VALUES (?, ?, ?, ?, ?) RETURNING id`
@@ -123,7 +123,7 @@ export function createCalStore(db: Database) {
      ORDER BY confidence DESC, updated_at DESC`
   );
   const keywordsStmt = db.prepare(
-    // updated_at 일치 조건 — 보강 중에 엔트리가 다시 바뀌었으면 낡은 키워드를 버린다
+    // updated_at 일치 조건 — 보강 중에 항목이 다시 바뀌었으면 낡은 키워드를 버린다
     `UPDATE memory SET keywords = ? WHERE id = ? AND updated_at = ?`
   );
   const ftsStmt = db.prepare(
@@ -139,18 +139,18 @@ export function createCalStore(db: Database) {
   );
 
   return {
-    add(e: NewCalEntry): number {
+    add(e: NewMemoryEntry): number {
       return (insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1) as { id: number }).id;
     },
-    get(id: number): CalEntry | null {
-      const row = getStmt.get(id) as (CalEntry & { keywords: string }) | null;
+    get(id: number): MemoryEntry | null {
+      const row = getStmt.get(id) as (MemoryEntry & { keywords: string }) | null;
       if (!row) return null;
       const { keywords: _k, ...e } = row;
       return e;
     },
     /** 부분 갱신 — 내용(area/rule/evidence)이 바뀌면 keywords를 비운다 (보강이 다시 채움) */
-    update(id: number, fields: Partial<NewCalEntry>): boolean {
-      const cur = getStmt.get(id) as (CalEntry & { keywords: string }) | null;
+    update(id: number, fields: Partial<NewMemoryEntry>): boolean {
+      const cur = getStmt.get(id) as (MemoryEntry & { keywords: string }) | null;
       if (!cur) return false;
       const next = {
         section: fields.section ?? cur.section,
@@ -172,7 +172,7 @@ export function createCalStore(db: Database) {
     remove(id: number): boolean {
       return delStmt.run(id).changes > 0;
     },
-    list(opts: { section?: CalSection; minConfidence?: number } = {}): CalEntry[] {
+    list(opts: { section?: MemorySection; minConfidence?: number } = {}): MemoryEntry[] {
       // ponytail: 필터 2개뿐이라 동적 WHERE — 쿼리 빌더 불필요
       const where: string[] = [];
       const args: (string | number)[] = [];
@@ -181,13 +181,13 @@ export function createCalStore(db: Database) {
       const sql = `SELECT ${COLS} FROM memory
         ${where.length ? "WHERE " + where.join(" AND ") : ""}
         ORDER BY section, confidence DESC, updated_at DESC`;
-      return db.prepare(sql).all(...args) as CalEntry[];
+      return db.prepare(sql).all(...args) as MemoryEntry[];
     },
     /** 상시 주입 대상: 벌주는 것 고신뢰 */
-    core(): CalEntry[] {
-      return coreStmt.all(CORE_CONFIDENCE) as CalEntry[];
+    core(): MemoryEntry[] {
+      return coreStmt.all(CORE_CONFIDENCE) as MemoryEntry[];
     },
-    /** 마지막 기록 시각 — Stop hook 점검용. 엔트리가 없으면 null */
+    /** 마지막 기록 시각 — Stop hook 점검용. 항목이 없으면 null */
     stamp(): string | null {
       return (stampStmt.get() as { m: string | null }).m;
     },
@@ -198,26 +198,26 @@ export function createCalStore(db: Database) {
      *  모델 쿼리 확장(nunchi_search)과 훅 자동 주입이 공유하는 유일한 검색 경로 */
     search(
       queries: string[],
-      opts: { section?: CalSection; limit?: number; excludeCore?: boolean } = {}
-    ): CalEntry[] {
+      opts: { section?: MemorySection; limit?: number; excludeCore?: boolean } = {}
+    ): MemoryEntry[] {
       const limit = opts.limit ?? 3;
-      const best = new Map<number, CalEntry & { rank: number }>();
+      const best = new Map<number, MemoryEntry & { rank: number }>();
       let pseudo = 1e9; // LIKE 결과는 랭크가 없다 — FTS 결과 뒤에 도착 순으로
       for (const raw of queries) {
         const q = String(raw ?? "").trim();
         if (!q) continue;
-        let rows: (CalEntry & { rank?: number })[] = [];
+        let rows: (MemoryEntry & { rank?: number })[] = [];
         if ([...q].length >= 3) {
           try {
             const phrase = `"${q.replaceAll('"', '""')}"`;
-            rows = ftsStmt.all(phrase) as (CalEntry & { rank: number })[];
+            rows = ftsStmt.all(phrase) as (MemoryEntry & { rank: number })[];
           } catch {
             /* FTS 질의 오류 → LIKE 폴백 */
           }
         }
         if (!rows.length) {
           const pat = `%${q}%`;
-          rows = (likeStmt.all(pat, pat, pat, pat) as CalEntry[]).map((r) => ({
+          rows = (likeStmt.all(pat, pat, pat, pat) as MemoryEntry[]).map((r) => ({
             ...r,
             rank: pseudo++,
           }));
@@ -225,7 +225,7 @@ export function createCalStore(db: Database) {
         for (const r of rows) {
           const rank = r.rank ?? pseudo++;
           const prev = best.get(r.id);
-          if (!prev || rank < prev.rank) best.set(r.id, { ...r, rank } as CalEntry & { rank: number });
+          if (!prev || rank < prev.rank) best.set(r.id, { ...r, rank } as MemoryEntry & { rank: number });
         }
       }
       let out = [...best.values()];
@@ -238,27 +238,27 @@ export function createCalStore(db: Database) {
   };
 }
 
-export type CalStore = ReturnType<typeof createCalStore>;
+export type MemoryStore = ReturnType<typeof createMemoryStore>;
 
 // ---- calibration.md 상호 변환 (임포트 원본 · mem:doc 내보내기 뷰) ----
 
-const SECTION_OF: [RegExp, CalSection][] = [
+const SECTION_OF: [RegExp, MemorySection][] = [
   [/벌주는/, "punish"],
   [/용서/, "forgive"],
   [/특이사항/, "env"],
 ];
-const SECTION_TITLE: Record<CalSection, string> = {
+const SECTION_TITLE: Record<MemorySection, string> = {
   punish: "벌주는 것 (반드시 한다)",
   forgive: "용서하는 것 (생략 가능)",
   env: "환경 특이사항",
 };
 
-/** 기존 calibration.md → 엔트리 배열. 규칙/근거가 없는 엔트리는 skipped로 센다 */
-export function parseCalibrationDoc(md: string): { entries: NewCalEntry[]; skipped: number } {
-  const entries: NewCalEntry[] = [];
+/** 기존 calibration.md → 항목 배열. 규칙/근거가 없는 항목은 skipped로 센다 */
+export function parseLegacyDoc(md: string): { entries: NewMemoryEntry[]; skipped: number } {
+  const entries: NewMemoryEntry[] = [];
   let skipped = 0;
-  let section: CalSection | null = null;
-  let cur: Partial<NewCalEntry> | null = null;
+  let section: MemorySection | null = null;
+  let cur: Partial<NewMemoryEntry> | null = null;
 
   const flush = () => {
     if (!cur) return;
@@ -295,12 +295,12 @@ export function parseCalibrationDoc(md: string): { entries: NewCalEntry[]; skipp
 }
 
 /** DB → 기존 3섹션 markdown. external-address 구버전 클라이언트(mem:doc)와 내보내기 겸용 */
-export function renderCalibrationDoc(store: CalStore, projectName: string): string | null {
+export function renderMemoryDoc(store: MemoryStore, projectName: string): string | null {
   const all = store.list({});
   if (!all.length) return null;
   const label = (c: number) => (c >= CORE_CONFIDENCE ? `높음(${c})` : c === 2 ? "중간(2)" : `낮음(${c})`);
-  const parts = [`# Calibration — ${projectName}`];
-  for (const sec of ["punish", "forgive", "env"] as CalSection[]) {
+  const parts = [`# 보정 — ${projectName}`];
+  for (const sec of ["punish", "forgive", "env"] as MemorySection[]) {
     const rows = all.filter((e) => e.section === sec);
     if (!rows.length) continue;
     parts.push("", `## ${SECTION_TITLE[sec]}`);
@@ -312,11 +312,11 @@ export function renderCalibrationDoc(store: CalStore, projectName: string): stri
 }
 
 /** 서버 기동 시 1회 마이그레이션: DB가 비어 있고 문서가 있으면 임포트 후 .imported로 보존 */
-export function importCalibrationDoc(store: CalStore, docPath: string): number | null {
+export function importLegacyDoc(store: MemoryStore, docPath: string): number | null {
   if (store.stamp() !== null || !existsSync(docPath)) return null;
-  const { entries, skipped } = parseCalibrationDoc(readFileSync(docPath, "utf8"));
+  const { entries, skipped } = parseLegacyDoc(readFileSync(docPath, "utf8"));
   for (const e of entries) store.add(e);
-  if (skipped) console.error(`[nunchi] 임포트: 파싱 불가 엔트리 ${skipped}건 건너뜀 (원본 .imported 참조)`);
+  if (skipped) console.error(`[nunchi] 임포트: 파싱 불가 항목 ${skipped}건 건너뜀 (원본 .imported 참조)`);
   renameSync(docPath, docPath + ".imported"); // 0건이어도 리네임 — 기동마다 재파싱 방지
   return entries.length;
 }

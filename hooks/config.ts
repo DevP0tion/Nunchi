@@ -21,16 +21,16 @@ declare global {
 export interface NunchiConfig {
   /** true면 SessionStart 시 memory server(server.ts) 자동 시작 */
   "auto-start": boolean;
-  /** calibration 문서가 저장될 폴더 (프로젝트 루트 기준 상대 또는 절대) */
+  /** 보정 DB(memory.db)가 저장될 폴더 (프로젝트 루트 기준 상대 또는 절대) */
   path: string;
   /** memory server(Socket.IO) 포트. 미설정(null) 시 memory-config.json의 port(기본 41720) 사용 */
   port: number | null;
   /** 설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결 (예: "http://192.168.0.10:41720").
    *  스킴 생략 시 http:// 로 간주. 로컬 스폰·프로젝트 핸드셰이크는 생략된다 */
   "external-address": string | null;
-  /** ponytail(고정 강도 정책) 활성 시 calibration과 충돌하면 어느 쪽을 우선할지.
+  /** ponytail(고정 강도 정책) 활성 시 보정 DB와 충돌하면 어느 쪽을 우선할지.
    *  null = 미결정 — SessionStart가 첫 충돌 시 사용자에게 질문하라는 지시를 주입한다 */
-  "policy-priority": "calibration" | "ponytail" | null;
+  "policy-priority": "nunchi" | "ponytail" | null;
 }
 
 export const DEFAULTS: NunchiConfig = {
@@ -41,7 +41,7 @@ export const DEFAULTS: NunchiConfig = {
   "policy-priority": null,
 };
 
-/** path 폴더 안의 calibration 문서 파일명 (고정) */
+/** path 폴더 안의 구버전 문서 파일명 (임포트 원본 — 고정) */
 export const DOC_FILENAME = "calibration.md";
 
 /** Claude Code hook이 stdin으로 전달하는 JSON의 사용 필드 */
@@ -86,9 +86,8 @@ function envConfig(): Partial<NunchiConfig> {
   if (Number.isFinite(port)) cfg.port = port;
   const external = process.env.CLAUDE_PLUGIN_OPTION_EXTERNAL_ADDRESS;
   if (external) cfg["external-address"] = external;
-  const priority = process.env.CLAUDE_PLUGIN_OPTION_POLICY_PRIORITY;
-  if (priority === "calibration" || priority === "ponytail")
-    cfg["policy-priority"] = priority;
+  const priority = normalizePriority(process.env.CLAUDE_PLUGIN_OPTION_POLICY_PRIORITY);
+  if (priority) cfg["policy-priority"] = priority;
   return cfg;
 }
 
@@ -108,11 +107,15 @@ export function loadConfig(projectDir: string): NunchiConfig {
       typeof merged["external-address"] === "string" && merged["external-address"].trim()
         ? merged["external-address"].trim()
         : null,
-    "policy-priority":
-      merged["policy-priority"] === "calibration" || merged["policy-priority"] === "ponytail"
-        ? merged["policy-priority"]
-        : null,
+    "policy-priority": normalizePriority(merged["policy-priority"]),
   };
+}
+
+/** policy-priority 값 정규화 — 구버전 값 "calibration"은 "nunchi"로 읽는다 */
+function normalizePriority(v: unknown): "nunchi" | "ponytail" | null {
+  if (v === "nunchi" || v === "ponytail") return v;
+  if (v === "calibration") return "nunchi"; // 0.10.x 이하에서 저장된 값 호환
+  return null;
 }
 
 /** enabledPlugins에서 ponytail 활성 여부.
@@ -134,18 +137,18 @@ export function isPonytailEnabled(projectDir: string): boolean {
   return enabled;
 }
 
-/** calibration 폴더 절대 경로 */
+/** 보정 데이터 폴더 절대 경로 */
 export function resolveDocDir(projectDir: string, cfg: NunchiConfig): string {
   return isAbsolute(cfg.path) ? cfg.path : join(projectDir, cfg.path);
 }
 
-/** calibration 문서 절대 경로 (폴더 + 고정 파일명) */
+/** 구버전 calibration.md 절대 경로 (폴더 + 고정 파일명) */
 export function resolveDocPath(projectDir: string, cfg: NunchiConfig): string {
   return join(resolveDocDir(projectDir, cfg), DOC_FILENAME);
 }
 
-/** 훅 3종(session-start/user-prompt-submit/subagent-start)이 공유하는 엔트리 렌더링 */
-export interface CalEntryLite {
+/** 훅 3종(session-start/user-prompt-submit/subagent-start)이 공유하는 항목 렌더링 */
+export interface MemoryEntryLite {
   id: number;
   section: string;
   area: string;
@@ -160,7 +163,7 @@ export const SECTION_LABEL: Record<string, string> = {
   env: "환경 특이사항",
 };
 
-export function formatCalEntries(rows: CalEntryLite[]): string {
+export function formatMemoryEntries(rows: MemoryEntryLite[]): string {
   return rows
     .map(
       (r) =>
