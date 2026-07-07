@@ -25,7 +25,7 @@ export interface NunchiConfig {
   path: string;
   /** memory server(Socket.IO) 포트. 미설정(null) 시 memory-config.json의 port(기본 41720) 사용 */
   port: number | null;
-  /** 설정 시 mem:set마다 `claude -p --model <값>`으로 검색 키워드를 비동기 생성. null이면 비활성 */
+  /** 설정 시 보정 기록(cal:add/update)마다 `claude -p --model <값>`으로 검색 키워드를 비동기 생성. null이면 비활성 */
   model: string | null;
   /** 설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결 (예: "http://192.168.0.10:41720").
    *  스킴 생략 시 http:// 로 간주. 로컬 스폰·프로젝트 핸드셰이크는 생략된다 */

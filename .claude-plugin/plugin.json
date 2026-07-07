@@ -1,7 +1,7 @@
 {
   "name": "nunchi",
   "description": "환경별 작업 강도 보정('적당히') passive skill — surprise 기록과 재귀 개선",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "author": {
     "name": "DevP0tion"
   },
@@ -40,7 +40,7 @@
     },
     "model": {
       "title": "Enrichment Model",
-      "description": "설정 시 mem:set마다 claude -p --model <값>으로 검색 키워드를 비동기 생성 (예: haiku). 미설정 시 비활성. 변경은 memory server 재시작 후 반영",
+      "description": "설정 시 보정 기록마다 claude -p --model <값>으로 검색 키워드를 비동기 생성 (예: haiku). 미설정 시 비활성. 변경은 memory server 재시작 후 반영",
       "type": "string",
       "required": false
     },
