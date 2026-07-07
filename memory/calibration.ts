@@ -1,6 +1,7 @@
 // nunchi calibration store (Bun)
-// 보정 엔트리 테이블 + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
-// 소켓 계층(server.ts)과 테스트가 공유하는 저장소 로직 — memory store(createStore)와 같은 패턴.
+// 보정 엔트리 테이블(memory) + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
+// 소켓 계층(server.ts)과 테스트가 공유하는 저장소 로직.
+// v0.9.0: 범용 KV memory 테이블을 제거하고 보정 엔트리를 memory 테이블 하나로 통합했다.
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 
@@ -30,10 +31,25 @@ export const CORE_CONFIDENCE = 3;
 
 const COLS = "id, section, area, rule, evidence, confidence, updated_at";
 
-/** 테이블 + FTS5 인덱스 초기화 (멱등) — memory_fts와 동일 패턴 */
+/** 테이블 + FTS5 인덱스 초기화 (멱등). 0.8.x DB는 memory 테이블 하나로 마이그레이션.
+ *  전체를 한 트랜잭션으로 — 마이그레이션 도중 크래시로 두 테이블이 공존(다음 기동 시
+ *  id 중복 INSERT 실패)하는 상태를 남기지 않는다 */
 export function applyCalSchema(db: Database): void {
+  db.transaction(() => applyCalSchemaInner(db))();
+}
+
+function applyCalSchemaInner(db: Database): void {
+  // v0.9.0 마이그레이션 1/2: 구 KV memory 테이블(key/value)은 제거 — 플러그인 내 소비자 없음.
+  // 트리거는 테이블과 함께 삭제되고, 구 memory_fts는 컬럼이 달라 명시적으로 지운다
+  const kvMemory = db
+    .query(`SELECT 1 AS x FROM pragma_table_info('memory') WHERE name = 'key'`)
+    .get();
+  if (kvMemory) {
+    db.run(`DROP TABLE memory`);
+    db.run(`DROP TABLE IF EXISTS memory_fts`);
+  }
   db.run(`
-    CREATE TABLE IF NOT EXISTS calibration (
+    CREATE TABLE IF NOT EXISTS memory (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       section TEXT NOT NULL CHECK (section IN ('punish','forgive','env')),
       area TEXT NOT NULL,
@@ -45,67 +61,79 @@ export function applyCalSchema(db: Database): void {
     )
   `);
   db.run(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS calibration_fts USING fts5(
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
       area, rule, evidence, keywords,
-      content='calibration', content_rowid='id', tokenize='trigram'
+      content='memory', content_rowid='id', tokenize='trigram'
     )
   `);
   db.run(`
-    CREATE TRIGGER IF NOT EXISTS calibration_fts_ai AFTER INSERT ON calibration BEGIN
-      INSERT INTO calibration_fts(rowid, area, rule, evidence, keywords)
+    CREATE TRIGGER IF NOT EXISTS memory_fts_ai AFTER INSERT ON memory BEGIN
+      INSERT INTO memory_fts(rowid, area, rule, evidence, keywords)
       VALUES (new.id, new.area, new.rule, new.evidence, new.keywords);
     END
   `);
   db.run(`
-    CREATE TRIGGER IF NOT EXISTS calibration_fts_ad AFTER DELETE ON calibration BEGIN
-      INSERT INTO calibration_fts(calibration_fts, rowid, area, rule, evidence, keywords)
+    CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory BEGIN
+      INSERT INTO memory_fts(memory_fts, rowid, area, rule, evidence, keywords)
       VALUES ('delete', old.id, old.area, old.rule, old.evidence, old.keywords);
     END
   `);
   db.run(`
-    CREATE TRIGGER IF NOT EXISTS calibration_fts_au AFTER UPDATE ON calibration BEGIN
-      INSERT INTO calibration_fts(calibration_fts, rowid, area, rule, evidence, keywords)
+    CREATE TRIGGER IF NOT EXISTS memory_fts_au AFTER UPDATE ON memory BEGIN
+      INSERT INTO memory_fts(memory_fts, rowid, area, rule, evidence, keywords)
       VALUES ('delete', old.id, old.area, old.rule, old.evidence, old.keywords);
-      INSERT INTO calibration_fts(rowid, area, rule, evidence, keywords)
+      INSERT INTO memory_fts(rowid, area, rule, evidence, keywords)
       VALUES (new.id, new.area, new.rule, new.evidence, new.keywords);
     END
   `);
+  // v0.9.0 마이그레이션 2/2: calibration 테이블의 엔트리를 id 보존하며 이관 후 제거
+  const calTable = db
+    .query(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'calibration'`)
+    .get();
+  if (calTable) {
+    db.run(`
+      INSERT INTO memory (id, section, area, rule, evidence, confidence, keywords, updated_at)
+      SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM calibration
+    `);
+    db.run(`DROP TABLE calibration`);
+    db.run(`DROP TABLE IF EXISTS calibration_fts`);
+  }
   // 시작 시 재구축: 백필 + 드리프트 자가 치유 (수백 행 규모 — ms 단위)
-  db.run(`INSERT INTO calibration_fts(calibration_fts) VALUES ('rebuild')`);
+  db.run(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`);
 }
 
 export function createCalStore(db: Database) {
   applyCalSchema(db);
   const insStmt = db.prepare(
-    `INSERT INTO calibration (section, area, rule, evidence, confidence)
+    `INSERT INTO memory (section, area, rule, evidence, confidence)
      VALUES (?, ?, ?, ?, ?) RETURNING id`
   );
-  const getStmt = db.prepare(`SELECT ${COLS}, keywords FROM calibration WHERE id = ?`);
+  const getStmt = db.prepare(`SELECT ${COLS}, keywords FROM memory WHERE id = ?`);
   const updStmt = db.prepare(
-    `UPDATE calibration SET section = ?, area = ?, rule = ?, evidence = ?,
+    `UPDATE memory SET section = ?, area = ?, rule = ?, evidence = ?,
      confidence = ?, keywords = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
   );
   const confirmStmt = db.prepare(
-    `UPDATE calibration SET confidence = confidence + 1, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
+    `UPDATE memory SET confidence = confidence + 1, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
   );
-  const delStmt = db.prepare(`DELETE FROM calibration WHERE id = ?`);
-  const stampStmt = db.prepare(`SELECT max(updated_at) AS m FROM calibration`);
+  const delStmt = db.prepare(`DELETE FROM memory WHERE id = ?`);
+  const stampStmt = db.prepare(`SELECT max(updated_at) AS m FROM memory`);
   const coreStmt = db.prepare(
-    `SELECT ${COLS} FROM calibration WHERE section = 'punish' AND confidence >= ?
+    `SELECT ${COLS} FROM memory WHERE section = 'punish' AND confidence >= ?
      ORDER BY confidence DESC, updated_at DESC`
   );
   const keywordsStmt = db.prepare(
     // updated_at 일치 조건 — 보강 중에 엔트리가 다시 바뀌었으면 낡은 키워드를 버린다
-    `UPDATE calibration SET keywords = ? WHERE id = ? AND updated_at = ?`
+    `UPDATE memory SET keywords = ? WHERE id = ? AND updated_at = ?`
   );
   const ftsStmt = db.prepare(
     `SELECT c.id, c.section, c.area, c.rule, c.evidence, c.confidence, c.updated_at,
             f.rank AS rank
-     FROM calibration_fts f JOIN calibration c ON c.id = f.rowid
-     WHERE calibration_fts MATCH ? ORDER BY f.rank LIMIT 50`
+     FROM memory_fts f JOIN memory c ON c.id = f.rowid
+     WHERE memory_fts MATCH ? ORDER BY f.rank LIMIT 50`
   );
   const likeStmt = db.prepare(
-    `SELECT ${COLS} FROM calibration
+    `SELECT ${COLS} FROM memory
      WHERE area LIKE ? OR rule LIKE ? OR evidence LIKE ? OR keywords LIKE ?
      ORDER BY updated_at DESC LIMIT 50`
   );
@@ -150,7 +178,7 @@ export function createCalStore(db: Database) {
       const args: (string | number)[] = [];
       if (opts.section) { where.push("section = ?"); args.push(opts.section); }
       if (opts.minConfidence) { where.push("confidence >= ?"); args.push(opts.minConfidence); }
-      const sql = `SELECT ${COLS} FROM calibration
+      const sql = `SELECT ${COLS} FROM memory
         ${where.length ? "WHERE " + where.join(" AND ") : ""}
         ORDER BY section, confidence DESC, updated_at DESC`;
       return db.prepare(sql).all(...args) as CalEntry[];

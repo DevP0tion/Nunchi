@@ -48,7 +48,7 @@ Codex 안에서:
 Claude Code와의 차이:
 
 - **userConfig(설정 UI) 없음** — 전역 설정 대신 프로젝트 `.claude/nunchi.json`을 사용한다 (경로는 두 도구 공통).
-- **calibration 공유** — 보정 DB(memory server의 `memory.db` calibration 테이블) 경로가 동일하므로, 한 프로젝트를 Claude Code와 Codex로 번갈아 작업해도 학습이 하나로 쌓인다.
+- **calibration 공유** — 보정 DB(memory server의 `memory.db` memory 테이블) 경로가 동일하므로, 한 프로젝트를 Claude Code와 Codex로 번갈아 작업해도 학습이 하나로 쌓인다.
 - **MCP 도구 동일** — 기록/검색(`nunchi_record`·`nunchi_search` 등)은 plugin 번들 MCP 서버로 제공되며, Codex도 매니페스트의 `mcpServers`로 동일하게 로드한다 (도구 이름 접두어 `mcp__nunchi__` 동일).
 - **SKILL.md 규약** — Codex에는 Skill 도구가 없으므로 SessionStart 주입 메시지에 SKILL.md 절대 경로가 포함된다. 모델이 기록 시 이 파일을 직접 읽는다.
 - **ponytail 감지·`model` 키워드 보강은 Claude Code 전용** — ponytail은 Claude Code plugin이고, 키워드 보강은 `claude` CLI를 호출한다. Codex 단독 환경에서는 자동으로 비활성 상태가 된다.
