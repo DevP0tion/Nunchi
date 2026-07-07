@@ -62,9 +62,10 @@ export function resolveMemoryPort(projectDir: string): number {
   return cfg.port ?? mc.port;
 }
 
-/** path 폴더를 만들고 memory.db + memory-config.json을 초기화 (멱등). db는 열린 채 반환 */
+/** path 폴더를 만들고 memory-config.json을 초기화 (멱등). DB는 열지 않는다 —
+ *  포트 락(단일 실행)을 딴 뒤에만 열어, EADDRINUSE로 곧 종료될 패자 프로세스가
+ *  DB 파일을 잠깐이라도 잠그지 않게 한다 */
 export function initMemory(projectDir: string): {
-  db: Database;
   dbPath: string;
   configPath: string;
   memoryConfig: MemoryConfig;
@@ -81,117 +82,7 @@ export function initMemory(projectDir: string): {
   const memoryConfig = loadMemoryConfig(configPath);
 
   const dbPath = join(dir, memoryConfig.db);
-  const db = new Database(dbPath); // 파일이 없으면 생성
-  applySchema(db);
-
-  return { db, dbPath, configPath, memoryConfig, port: cfg.port ?? memoryConfig.port };
-}
-
-/** 테이블 + FTS5 인덱스 초기화 (멱등). 구버전 db는 keywords 컬럼을 추가해 마이그레이션 */
-export function applySchema(db: Database): void {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS memory (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      key TEXT NOT NULL UNIQUE,
-      value TEXT NOT NULL,
-      keywords TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-  try {
-    // 구버전 db 마이그레이션 — 이미 있으면 duplicate column 에러가 나고 무시된다
-    db.run(`ALTER TABLE memory ADD COLUMN keywords TEXT NOT NULL DEFAULT ''`);
-  } catch {
-    /* 컬럼이 이미 존재 */
-  }
-  // trigram: 한국어 조사 문제(unicode61은 "검증했다"≠"검증")를 부분 문자열 매칭으로 회피
-  db.run(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-      key, value, keywords,
-      content='memory', content_rowid='id', tokenize='trigram'
-    )
-  `);
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS memory_fts_ai AFTER INSERT ON memory BEGIN
-      INSERT INTO memory_fts(rowid, key, value, keywords)
-      VALUES (new.id, new.key, new.value, new.keywords);
-    END
-  `);
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory BEGIN
-      INSERT INTO memory_fts(memory_fts, rowid, key, value, keywords)
-      VALUES ('delete', old.id, old.key, old.value, old.keywords);
-    END
-  `);
-  db.run(`
-    CREATE TRIGGER IF NOT EXISTS memory_fts_au AFTER UPDATE ON memory BEGIN
-      INSERT INTO memory_fts(memory_fts, rowid, key, value, keywords)
-      VALUES ('delete', old.id, old.key, old.value, old.keywords);
-      INSERT INTO memory_fts(rowid, key, value, keywords)
-      VALUES (new.id, new.key, new.value, new.keywords);
-    END
-  `);
-  // 시작 시 재구축: 기존 데이터 백필 + 드리프트 자가 치유 (수백 행 규모 — ms 단위)
-  db.run(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`);
-}
-
-export interface SearchRow {
-  key: string;
-  value: string;
-  updated_at: string;
-}
-
-/** set/get/search/setKeywords — 소켓 핸들러와 테스트가 공유하는 저장소 로직 */
-export function createStore(db: Database) {
-  applySchema(db);
-  const upsert = db.prepare(
-    // 값이 바뀌면 keywords를 비운다 — 낡은 키워드로 오검색되지 않게. 보강이 다시 채운다
-    `INSERT INTO memory (key, value, updated_at) VALUES (?, ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, keywords = '', updated_at = excluded.updated_at`
-  );
-  const getStmt = db.prepare(`SELECT value FROM memory WHERE key = ?`);
-  const keywordsStmt = db.prepare(
-    // value 일치 조건 — 보강 중에 값이 다시 바뀌었으면 낡은 키워드를 버린다
-    `UPDATE memory SET keywords = ? WHERE key = ? AND value = ?`
-  );
-  const ftsStmt = db.prepare(
-    `SELECT m.key, m.value, m.updated_at FROM memory_fts f
-     JOIN memory m ON m.id = f.rowid
-     WHERE memory_fts MATCH ? ORDER BY f.rank LIMIT ?`
-  );
-  const likeStmt = db.prepare(
-    `SELECT key, value, updated_at FROM memory
-     WHERE key LIKE ? OR value LIKE ? OR keywords LIKE ?
-     ORDER BY updated_at DESC LIMIT ?`
-  );
-
-  return {
-    set(key: string, value: string): void {
-      upsert.run(key, value);
-    },
-    get(key: string): string | null {
-      return (getStmt.get(key) as { value: string } | null)?.value ?? null;
-    },
-    setKeywords(key: string, value: string, keywords: string): void {
-      keywordsStmt.run(keywords, key, value);
-    },
-    // ponytail: FTS5(trigram) + LIKE 폴백. 시맨틱 검색이 필요해지면 sqlite-vec으로 교체
-    search(query: string, limit: number): SearchRow[] {
-      const q = query.trim();
-      // trigram은 3글자 미만 질의를 매칭하지 못한다 → 짧은 질의는 LIKE로
-      if ([...q].length >= 3) {
-        try {
-          const phrase = `"${q.replaceAll('"', '""')}"`;
-          const rows = ftsStmt.all(phrase, limit) as SearchRow[];
-          if (rows.length) return rows;
-        } catch {
-          /* FTS 질의 오류 → LIKE 폴백 */
-        }
-      }
-      const pat = `%${q}%`;
-      return likeStmt.all(pat, pat, pat, limit) as SearchRow[];
-    },
-  };
+  return { dbPath, configPath, memoryConfig, port: cfg.port ?? memoryConfig.port };
 }
 
 /** claude -p 출력에서 키워드 줄 추출 — 서론이 섞여도 마지막 비어있지 않은 줄을 취한다 */
@@ -202,17 +93,10 @@ export function pickKeywordsLine(raw: string): string {
 
 if (import.meta.main) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const { db, dbPath, port, memoryConfig } = initMemory(projectDir);
-  const store = createStore(db);
-  const cal = createCalStore(db);
+  const { dbPath, port, memoryConfig } = initMemory(projectDir);
   // 보강 모델 — 기동 시 1회 로드. 변경은 memory server 재시작 후 반영
   const pluginCfg = loadConfig(projectDir);
   const model = pluginCfg.model;
-  // calibration 문서 경로 — 기동 시 1회만 DB로 임포트한다 (이후는 mem:doc이 DB에서 렌더링)
-  const calibrationPath = resolveDocPath(projectDir, pluginCfg);
-  const imported = importCalibrationDoc(cal, calibrationPath);
-  if (imported !== null)
-    console.log(`[nunchi] calibration.md 임포트: ${imported}건 → DB (원본은 .imported로 보존)`);
 
   const ENRICH_TIMEOUT_MS = 60_000;
   /** claude -p로 검색 키워드 생성 (model 설정 시에만 호출됨). 실패 시 빈 문자열 */
@@ -245,19 +129,6 @@ if (import.meta.main) {
       clearTimeout(timer);
     }
   }
-  /** mem:set 후 백그라운드 보강 */
-  async function enrich(key: string, value: string): Promise<void> {
-    const keywords = await generateKeywords(key, value);
-    if (keywords) store.setKeywords(key, value, keywords);
-  }
-  /** cal:add/update 후 백그라운드 보강 — updated_at 가드로 낡은 키워드 폐기 */
-  async function enrichCal(id: number): Promise<void> {
-    const e = cal.get(id);
-    if (!e) return;
-    const keywords = await generateKeywords(e.area, `${e.rule} / ${e.evidence}`);
-    if (keywords) cal.setKeywords(id, e.updated_at, keywords);
-  }
-
   // 기본 루프백 바인딩. 외부 서비스가 필요하면 memory-config.json의 host를 변경
   const httpServer = createServer();
   httpServer.on("error", (e: NodeJS.ErrnoException) => {
@@ -268,47 +139,63 @@ if (import.meta.main) {
     throw e;
   });
   const io = new Server(httpServer);
-  httpServer.listen(port, memoryConfig.host);
 
   type Ack = (res: Record<string, unknown>) => void;
-  const handle = (fn: () => Record<string, unknown>) => (ack: Ack) => {
+  // 작업 로그 — 서버 터미널 창에서 무슨 일이 오가는지 보이도록
+  const ts = () => new Date().toTimeString().slice(0, 8);
+  const summarize = (res: Record<string, unknown>): string => {
+    if (Array.isArray(res.rows)) return `${res.rows.length}건`;
+    if (res.id !== undefined) return `#${res.id}`;
+    if (res.updated !== undefined) return `updated=${res.updated}`;
+    if (res.removed !== undefined) return `removed=${res.removed}`;
+    if ("doc" in res) return res.doc ? "렌더" : "없음";
+    if ("stamp" in res) return String(res.stamp);
+    return "";
+  };
+  const handle = (ev: string, fn: () => Record<string, unknown>) => (ack: Ack) => {
     if (typeof ack !== "function") return;
     try {
-      ack({ ok: true, ...fn() });
+      const res = fn();
+      console.log(`[${ts()}] ${ev} ${summarize(res)}`.trimEnd());
+      ack({ ok: true, ...res });
     } catch (e) {
+      console.error(`[${ts()}] ${ev} 실패: ${e}`);
       ack({ ok: false, error: String(e) });
     }
   };
+
+  // 포트 락(단일 실행)을 딴 뒤에만 DB를 연다 — EADDRINUSE 패자는 DB를 건드리지 않는다.
+  // 콜백 본문은 동기 실행이므로 핸들러 등록 전에 connection 이벤트가 끼어들 수 없다
+  httpServer.listen(port, memoryConfig.host, () => {
+  const db = new Database(dbPath); // 파일이 없으면 생성 (createCalStore가 스키마 적용)
+  const cal = createCalStore(db);
+  // calibration 문서 — 기동 시 1회만 DB로 임포트한다 (이후는 mem:doc이 DB에서 렌더링)
+  const imported = importCalibrationDoc(cal, resolveDocPath(projectDir, pluginCfg));
+  if (imported !== null)
+    console.log(`[nunchi] calibration.md 임포트: ${imported}건 → DB (원본은 .imported로 보존)`);
+  /** cal:add/update 후 백그라운드 보강 — updated_at 가드로 낡은 키워드 폐기 */
+  async function enrichCal(id: number): Promise<void> {
+    const e = cal.get(id);
+    if (!e) return;
+    const keywords = await generateKeywords(e.area, `${e.rule} / ${e.evidence}`);
+    if (keywords) {
+      cal.setKeywords(id, e.updated_at, keywords);
+      console.log(`[${ts()}] enrich #${id} keywords: ${keywords}`);
+    }
+  }
 
   io.on("connection", (socket) => {
     // 핸드셰이크: 클라이언트가 접속 직후 이 서버의 소유 프로젝트를 확인한다
     // — 여러 프로젝트가 같은 포트를 쓸 때 다른 프로젝트의 db에 조용히 붙는 사고 방지
     socket.on("mem:info", (ack) =>
-      handle(() => ({ projectDir, dbPath, port }))(ack)
-    );
-    socket.on("mem:set", (p, ack) =>
-      handle(() => {
-        const key = String(p.key);
-        const value = String(p.value);
-        store.set(key, value);
-        if (model) void enrich(key, value); // 비동기 — ack을 막지 않는다
-        return {};
-      })(ack)
-    );
-    socket.on("mem:get", (p, ack) =>
-      handle(() => ({ value: store.get(String(p.key)) }))(ack)
+      handle("mem:info", () => ({ projectDir, dbPath, port }))(ack)
     );
     // calibration 문서 — DB에서 렌더링 (external-address 구버전 클라이언트·내보내기 겸용)
     socket.on("mem:doc", (ack) =>
-      handle(() => ({ doc: renderCalibrationDoc(cal, basename(projectDir)) }))(ack)
-    );
-    socket.on("mem:search", (p, ack) =>
-      handle(() => ({
-        rows: store.search(String(p.query), Number(p.limit) || 20),
-      }))(ack)
+      handle("mem:doc", () => ({ doc: renderCalibrationDoc(cal, basename(projectDir)) }))(ack)
     );
     socket.on("cal:add", (p, ack) =>
-      handle(() => {
+      handle(`cal:add [${p.area}]`, () => {
         const id = cal.add({
           section: p.section, area: String(p.area), rule: String(p.rule),
           evidence: String(p.evidence),
@@ -319,7 +206,7 @@ if (import.meta.main) {
       })(ack)
     );
     socket.on("cal:update", (p, ack) =>
-      handle(() => {
+      handle(`cal:update #${p.id}${p.confirm ? " confirm" : ""}`, () => {
         const id = Number(p.id);
         if (p.confirm) return { updated: cal.confirm(id) };
         const fields: Partial<NewCalEntry> = {};
@@ -335,27 +222,29 @@ if (import.meta.main) {
       })(ack)
     );
     socket.on("cal:remove", (p, ack) =>
-      handle(() => ({ removed: cal.remove(Number(p.id)) }))(ack)
+      handle(`cal:remove #${p.id}`, () => ({ removed: cal.remove(Number(p.id)) }))(ack)
     );
-    socket.on("cal:search", (p, ack) =>
-      handle(() => ({
-        rows: cal.search(Array.isArray(p.queries) ? p.queries.map(String) : [], {
+    socket.on("cal:search", (p, ack) => {
+      const queries = Array.isArray(p.queries) ? p.queries.map(String) : [];
+      handle(`cal:search [${queries.join(" | ")}]`, () => ({
+        rows: cal.search(queries, {
           section: p.section, limit: Number(p.limit) || undefined,
           excludeCore: Boolean(p.excludeCore),
         }),
-      }))(ack)
-    );
+      }))(ack);
+    });
     socket.on("cal:list", (p, ack) =>
-      handle(() => ({
+      handle("cal:list", () => ({
         rows: cal.list({
           section: p?.section,
           minConfidence: Number(p?.minConfidence) || undefined,
         }),
       }))(ack)
     );
-    socket.on("cal:core", (ack) => handle(() => ({ rows: cal.core() }))(ack));
-    socket.on("cal:stamp", (ack) => handle(() => ({ stamp: cal.stamp() }))(ack));
+    socket.on("cal:core", (ack) => handle("cal:core", () => ({ rows: cal.core() }))(ack));
+    socket.on("cal:stamp", (ack) => handle("cal:stamp", () => ({ stamp: cal.stamp() }))(ack));
     socket.on("mem:shutdown", (ack) => {
+      console.log(`[${ts()}] mem:shutdown — 종료`);
       if (typeof ack === "function") ack({ ok: true });
       // db를 먼저 닫는다 — 클라이언트가 disconnect를 볼 시점엔 DB 파일 잠금이 해제된 뒤다
       // (ack 직후 rmSync하는 테스트의 EBUSY 경쟁 방지)
@@ -366,4 +255,5 @@ if (import.meta.main) {
   });
 
   console.log(`[nunchi] memory server 시작: port ${port}, db ${dbPath}`);
+  });
 }

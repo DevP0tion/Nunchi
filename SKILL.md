@@ -1,15 +1,15 @@
 ---
 name: nunchi
-description: 작업 강도 보정("적당히") 규약. 프로젝트별 보정 DB(memory.db calibration 테이블)에 예측-실제 불일치(surprise)를 기록하고 재귀 개선한다. 다음 상황에서 반드시 이 스킬을 사용할 것 - 사용자가 "눈치", "적당히", "보정", "캘리브레이션", "calibration"을 언급할 때, 과잉/과소 대응(over/under-engineering) 판단이 필요할 때, 보정 엔트리의 기록·갱신·정제(pruning)가 필요할 때, Stop hook 점검([nunchi] 주기 점검)에 응답할 때, 검증 깊이·테스트 범위·리서치 강도를 어느 수준으로 할지 애매할 때.
+description: 작업 강도 보정("적당히") 규약. 프로젝트별 보정 DB(memory.db memory 테이블)에 예측-실제 불일치(surprise)를 기록하고 재귀 개선한다. 다음 상황에서 반드시 이 스킬을 사용할 것 - 사용자가 "눈치", "적당히", "보정", "캘리브레이션", "calibration"을 언급할 때, 과잉/과소 대응(over/under-engineering) 판단이 필요할 때, 보정 엔트리의 기록·갱신·정제(pruning)가 필요할 때, Stop hook 점검([nunchi] 주기 점검)에 응답할 때, 검증 깊이·테스트 범위·리서치 강도를 어느 수준으로 할지 애매할 때.
 ---
 
 # nunchi — 작업 강도 보정
 
-"적당히"는 고정 규칙이 아니라 **환경별로 학습되는 다이얼**이다. 어떤 환경은 테스트 생략을 벌주고, 어떤 환경은 과잉 검증이 시간 낭비다. 이 스킬은 그 다이얼의 위치를 프로젝트 경험으로 학습해 보정 DB(`memory.db`의 `calibration` 테이블)에 축적하고, 세션 시작 시 자동 주입과 매 메시지 검색 회수로 불러와 작업 강도 결정의 기준으로 삼는다.
+"적당히"는 고정 규칙이 아니라 **환경별로 학습되는 다이얼**이다. 어떤 환경은 테스트 생략을 벌주고, 어떤 환경은 과잉 검증이 시간 낭비다. 이 스킬은 그 다이얼의 위치를 프로젝트 경험으로 학습해 보정 DB(`memory.db`의 `memory` 테이블)에 축적하고, 세션 시작 시 자동 주입과 매 메시지 검색 회수로 불러와 작업 강도 결정의 기준으로 삼는다.
 
 ## 저장소와 회수
 
-- 저장소: `{path 폴더}/memory.db`의 `calibration` 테이블 (프로젝트별 독립, memory server가 단일 소유). 엔트리 필드: section(punish=벌주는 것 / forgive=용서하는 것 / env=환경 특이사항), area("[영역: 짧은 상황 서술]"), rule, evidence, confidence.
+- 저장소: `{path 폴더}/memory.db`의 `memory` 테이블 (프로젝트별 독립, memory server가 단일 소유). 엔트리 필드: section(punish=벌주는 것 / forgive=용서하는 것 / env=환경 특이사항), area("[영역: 짧은 상황 서술]"), rule, evidence, confidence.
 - 회수 3계층:
   1. **자동 주입** — SessionStart가 규약 요약 + 코어('벌주는 것' 신뢰도 3+)를, UserPromptSubmit이 프롬프트 관련 상위 3건을, SubagentStart가 서브에이전트에 규약+코어를 주입한다. 모델 개입 없음.
   2. **`nunchi_search`** — 주입으로 부족할 때. 원문 어휘에 얽매이지 말고 유의어·관련어·한/영 변형 쿼리 2-5개를 배열로 전달한다 (시맨틱 매칭은 쿼리를 만드는 쪽의 몫).

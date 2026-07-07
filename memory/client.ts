@@ -81,12 +81,6 @@ export async function assignFreePort(
 }
 
 export interface MemoryClient {
-  set(key: string, value: string): Promise<void>;
-  get(key: string): Promise<string | null>;
-  search(
-    query: string,
-    limit?: number
-  ): Promise<{ key: string; value: string; updated_at: string }[]>;
   /** 서버 프로젝트의 calibration 문서 전문 (없으면 null). 구버전 서버는 timeout 에러 */
   doc(): Promise<string | null>;
   calAdd(e: NewCalEntry): Promise<number>;
@@ -138,10 +132,10 @@ export async function connectMemory(
   } else {
     const port = resolveMemoryPort(projectDir);
     const url = `http://127.0.0.1:${port}`;
-    // auto-start와 무관하게: 포트에 서버가 실행 중이면 그대로 연결
-    // ponytail: noSpawn(훅 프로브)만 2초 — 풀스위트 부하 시 루프백 핸드셰이크가 1초를 넘어
-    // stamp=null 오탐(false positive)이 나던 문제. 스폰 경로의 콜드스타트 타이밍은 그대로 둔다
-    socket = await tryConnect(url, opts.noSpawn ? 2000 : 1000);
+    // auto-start와 무관하게: 포트에 서버가 실행 중이면 그대로 연결.
+    // 2초: 풀스위트 부하 시 루프백 핸드셰이크가 1초를 넘는다 — noSpawn은 stamp=null 오탐,
+    // 스폰 경로는 떠 있는 서버를 놓치고 중복 스폰(낙오 프로세스가 나중에 빈 포트 차지)하던 문제
+    socket = await tryConnect(url, 2000);
 
     if (!socket) {
       // 훅의 빠른 경로: 스폰 대기 없이 즉시 실패 (매 메시지 훅이 세션을 막지 않도록)
@@ -155,7 +149,8 @@ export async function connectMemory(
         );
       }
       // 스폰 후 재시도 (동시 스폰 경쟁은 서버 포트 락이 정리)
-      if (process.platform === "win32") {
+      // NUNCHI_NO_WINDOW=1: 창 없이 detached 스폰 — 테스트 스위트가 창 수십 개를 띄우지 않도록
+      if (process.platform === "win32" && process.env.NUNCHI_NO_WINDOW !== "1") {
         // 새 터미널 창에서 실행 — 서버 생존이 눈에 보이고, 창을 닫으면 종료된다.
         // (백그라운드 detached는 세션 종료 후 orphan으로 남아 memory.db를 잠그는 문제가 있었다)
         // cmd /s /c: 바깥 따옴표 한 겹을 벗기고 안쪽을 보존. start의 첫 따옴표 인자는 창 제목.
@@ -206,12 +201,6 @@ export async function connectMemory(
   };
 
   return {
-    set: async (key, value) => {
-      await req("mem:set", { key, value });
-    },
-    get: async (key) => (await req("mem:get", { key })).value,
-    search: async (query, limit = 20) =>
-      (await req("mem:search", { query, limit })).rows,
     doc: async () => (await req("mem:doc")).doc ?? null,
     calAdd: async (e) => (await req("cal:add", e)).id,
     calUpdate: async (id, fields) => (await req("cal:update", { id, ...fields })).updated,

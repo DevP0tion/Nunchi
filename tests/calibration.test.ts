@@ -155,6 +155,44 @@ test("renderCalibrationDoc: 3섹션 재구성, 빈 DB는 null", () => {
   expect(parseCalibrationDoc(doc).entries.length).toBe(3);
 });
 
+test("v0.9.0 마이그레이션: 구 KV memory 제거 + calibration → memory 이관 (id 보존)", () => {
+  const db = new Database(":memory:");
+  // 0.8.x 스키마 재현 — 구 KV memory 테이블 + FTS + 트리거
+  db.run(`CREATE TABLE memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE,
+    value TEXT NOT NULL, keywords TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+  db.run(`CREATE VIRTUAL TABLE memory_fts USING fts5(
+    key, value, keywords, content='memory', content_rowid='id', tokenize='trigram')`);
+  db.run(`CREATE TRIGGER memory_fts_ai AFTER INSERT ON memory BEGIN
+    INSERT INTO memory_fts(rowid, key, value, keywords)
+    VALUES (new.id, new.key, new.value, new.keywords); END`);
+  db.run(`INSERT INTO memory (key, value) VALUES ('test:roundtrip', 'v')`);
+  // 0.8.x calibration 테이블 + 데이터
+  db.run(`CREATE TABLE calibration (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    section TEXT NOT NULL CHECK (section IN ('punish','forgive','env')),
+    area TEXT NOT NULL, rule TEXT NOT NULL, evidence TEXT NOT NULL,
+    confidence INTEGER NOT NULL DEFAULT 1, keywords TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')))`);
+  db.run(`CREATE VIRTUAL TABLE calibration_fts USING fts5(
+    area, rule, evidence, keywords, content='calibration', content_rowid='id', tokenize='trigram')`);
+  db.run(`INSERT INTO calibration (id, section, area, rule, evidence, confidence)
+    VALUES (7, 'punish', '[배포: CI]', '캐시 키 확인', '2026-06-12 실패', 3)`);
+
+  const s = createCalStore(db);
+  expect(s.get(7)?.area).toBe("[배포: CI]"); // id 보존 이관
+  expect(s.list({}).length).toBe(1); // 구 KV 행은 이관 대상 아님
+  expect(s.search(["캐시 키 확인"], { limit: 5 }).map((e) => e.id)).toEqual([7]); // FTS 재구축
+  const leftovers = db
+    .query(`SELECT name FROM sqlite_master WHERE name IN ('calibration', 'calibration_fts')`)
+    .all();
+  expect(leftovers).toEqual([]);
+  expect(db.query(`SELECT 1 AS x FROM pragma_table_info('memory') WHERE name = 'key'`).get()).toBe(null);
+  // 재실행은 no-op (멱등)
+  expect(createCalStore(db).list({}).length).toBe(1);
+});
+
 test("importCalibrationDoc: 1회 임포트 + .imported 리네임, 재실행은 no-op", () => {
   const dir = mkdtempSync(join(tmpdir(), "nunchi-imp-"));
   const docPath = join(dir, "calibration.md");

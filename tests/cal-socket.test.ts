@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assignFreePort, connectMemory } from "../memory/client.ts";
+import { rmProject } from "./helpers.ts";
 
 test(
   "cal:* 왕복 — add/search/core/stamp/update/remove, mem:doc 렌더링",
@@ -35,7 +36,7 @@ test(
       expect((await mem.calList({})).length).toBe(1);
     } finally {
       await mem.shutdown();
-      rmSync(A, { recursive: true, force: true });
+      await rmProject(A);
     }
   },
   20000
@@ -59,7 +60,7 @@ test(
       expect(existsSync(join(dir, "calibration.md.imported"))).toBe(true);
     } finally {
       await mem.shutdown();
-      rmSync(A, { recursive: true, force: true });
+      await rmProject(A);
     }
   },
   20000

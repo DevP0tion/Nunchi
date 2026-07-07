@@ -1,11 +1,12 @@
 // bun test tests/hooks.test.ts
 // 훅 4종 스모크: stdin에 hook JSON을 넣고 stdout을 검증한다. 실서버를 시드해서 사용.
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assignFreePort, connectMemory, type MemoryClient } from "../memory/client.ts";
+import { rmProject } from "./helpers.ts";
 
 const hookPath = (name: string) => fileURLToPath(new URL(`../hooks/${name}`, import.meta.url));
 
@@ -48,7 +49,7 @@ test(
       expect(ctx).not.toContain("일회성 스크립트"); // 저신뢰는 주입 안 함
     } finally {
       await mem.shutdown();
-      rmSync(dir, { recursive: true, force: true });
+      await rmProject(dir);
     }
   },
   30000
@@ -79,7 +80,7 @@ test(
       expect(ctx).toContain("nunchi_search"); // 규약 줄 생존
     } finally {
       await mem.shutdown();
-      rmSync(dir, { recursive: true, force: true });
+      await rmProject(dir);
     }
   },
   30000
@@ -104,7 +105,7 @@ test(
       await mem.shutdown();
       // 서버 종료 후: noSpawn이므로 조용히 통과 (스폰 없음)
       expect(await runHook("user-prompt-submit.ts", dir, { prompt: "테스트 스크립트" })).toBe("");
-      rmSync(dir, { recursive: true, force: true });
+      await rmProject(dir);
     }
   },
   30000
@@ -125,7 +126,7 @@ test(
       // 서버 다운: 규약 1줄은 그래도 주입 (도구 사용 안내는 유효)
       const raw = await runHook("subagent-start.ts", dir, { agent_type: "general-purpose" });
       expect(JSON.parse(raw).hookSpecificOutput.additionalContext).toContain("nunchi_search");
-      rmSync(dir, { recursive: true, force: true });
+      await rmProject(dir);
     }
   },
   30000
@@ -157,7 +158,7 @@ test(
     } finally {
       delete process.env.NUNCHI_CHECK_EVERY;
       await mem.shutdown();
-      rmSync(dir, { recursive: true, force: true });
+      await rmProject(dir);
     }
   },
   30000
@@ -194,9 +195,7 @@ test(
     } finally {
       delete process.env.NUNCHI_CHECK_EVERY;
       if (mem) await mem.shutdown();
-      // Allow server process to fully release file handles
-      await new Promise(resolve => setTimeout(resolve, 200));
-      rmSync(dir, { recursive: true, force: true });
+      await rmProject(dir);
     }
   },
   30000
