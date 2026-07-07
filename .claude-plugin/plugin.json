@@ -1,9 +1,15 @@
 {
   "name": "nunchi-codex",
   "description": "환경별 작업 강도 보정('적당히') passive skill — surprise 기록과 재귀 개선",
-  "version": "0.7.0",
+  "version": "0.8.1",
   "author": {
     "name": "DevP0tion"
+  },
+  "mcpServers": {
+    "nunchi": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.ts"]
+    }
   },
   "userConfig": {
     "auto_start": {

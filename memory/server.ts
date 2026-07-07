@@ -10,8 +10,14 @@ import { Database } from "bun:sqlite";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { loadConfig, resolveDocDir, resolveDocPath } from "../hooks/config.ts";
+import {
+  createCalStore,
+  importCalibrationDoc,
+  renderCalibrationDoc,
+  type NewCalEntry,
+} from "./calibration.ts";
 
 export const DB_FILENAME = "memory.db";
 export const MEMORY_CONFIG_FILENAME = "memory-config.json";
@@ -198,22 +204,26 @@ if (import.meta.main) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const { db, dbPath, port, memoryConfig } = initMemory(projectDir);
   const store = createStore(db);
+  const cal = createCalStore(db);
   // 보강 모델 — 기동 시 1회 로드. 변경은 memory server 재시작 후 반영
   const pluginCfg = loadConfig(projectDir);
   const model = pluginCfg.model;
-  // calibration 문서 경로 — mem:doc으로 외부 클라이언트에게 전문을 서비스한다
+  // calibration 문서 경로 — 기동 시 1회만 DB로 임포트한다 (이후는 mem:doc이 DB에서 렌더링)
   const calibrationPath = resolveDocPath(projectDir, pluginCfg);
+  const imported = importCalibrationDoc(cal, calibrationPath);
+  if (imported !== null)
+    console.log(`[nunchi] calibration.md 임포트: ${imported}건 → DB (원본은 .imported로 보존)`);
 
   const ENRICH_TIMEOUT_MS = 60_000;
-  /** mem:set 후 백그라운드로 claude -p를 돌려 검색 키워드를 생성 (model 설정 시에만) */
-  async function enrich(key: string, value: string): Promise<void> {
+  /** claude -p로 검색 키워드 생성 (model 설정 시에만 호출됨). 실패 시 빈 문자열 */
+  async function generateKeywords(label: string, body: string): Promise<string> {
     const prompt = [
       "다음 작업 기록을 나중에 검색할 때 쓸 키워드를 생성하라.",
       "원문에 없는 유의어·관련어 위주로 한국어/영어 키워드 10개 이내.",
       "쉼표로 구분된 한 줄만 출력하고 다른 텍스트는 출력하지 마라.",
       "",
-      `key: ${key}`,
-      `value: ${value}`,
+      `key: ${label}`,
+      `value: ${body}`,
     ].join("\n");
     // 프롬프트는 stdin으로 전달 — Windows cmd 인용 문제를 피한다
     const cmd =
@@ -227,13 +237,25 @@ if (import.meta.main) {
     });
     const timer = setTimeout(() => proc.kill(), ENRICH_TIMEOUT_MS);
     try {
-      const keywords = pickKeywordsLine(await new Response(proc.stdout).text());
-      if (keywords) store.setKeywords(key, value, keywords);
+      return pickKeywordsLine(await new Response(proc.stdout).text());
     } catch (e) {
-      console.error(`[nunchi] keyword 보강 실패 (${key}): ${e}`);
+      console.error(`[nunchi] keyword 보강 실패 (${label}): ${e}`);
+      return "";
     } finally {
       clearTimeout(timer);
     }
+  }
+  /** mem:set 후 백그라운드 보강 */
+  async function enrich(key: string, value: string): Promise<void> {
+    const keywords = await generateKeywords(key, value);
+    if (keywords) store.setKeywords(key, value, keywords);
+  }
+  /** cal:add/update 후 백그라운드 보강 — updated_at 가드로 낡은 키워드 폐기 */
+  async function enrichCal(id: number): Promise<void> {
+    const e = cal.get(id);
+    if (!e) return;
+    const keywords = await generateKeywords(e.area, `${e.rule} / ${e.evidence}`);
+    if (keywords) cal.setKeywords(id, e.updated_at, keywords);
   }
 
   // 기본 루프백 바인딩. 외부 서비스가 필요하면 memory-config.json의 host를 변경
@@ -276,23 +298,69 @@ if (import.meta.main) {
     socket.on("mem:get", (p, ack) =>
       handle(() => ({ value: store.get(String(p.key)) }))(ack)
     );
-    // calibration 문서 요청 — 매 요청마다 읽는다 (모델이 세션 중 문서를 갱신하므로)
+    // calibration 문서 — DB에서 렌더링 (external-address 구버전 클라이언트·내보내기 겸용)
     socket.on("mem:doc", (ack) =>
-      handle(() => ({
-        doc: existsSync(calibrationPath)
-          ? readFileSync(calibrationPath, "utf8")
-          : null,
-      }))(ack)
+      handle(() => ({ doc: renderCalibrationDoc(cal, basename(projectDir)) }))(ack)
     );
     socket.on("mem:search", (p, ack) =>
       handle(() => ({
         rows: store.search(String(p.query), Number(p.limit) || 20),
       }))(ack)
     );
+    socket.on("cal:add", (p, ack) =>
+      handle(() => {
+        const id = cal.add({
+          section: p.section, area: String(p.area), rule: String(p.rule),
+          evidence: String(p.evidence),
+          confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined,
+        } as NewCalEntry);
+        if (model) void enrichCal(id);
+        return { id };
+      })(ack)
+    );
+    socket.on("cal:update", (p, ack) =>
+      handle(() => {
+        const id = Number(p.id);
+        if (p.confirm) return { updated: cal.confirm(id) };
+        const fields: Partial<NewCalEntry> = {};
+        if (p.section !== undefined) fields.section = p.section;
+        if (p.area !== undefined) fields.area = String(p.area);
+        if (p.rule !== undefined) fields.rule = String(p.rule);
+        if (p.evidence !== undefined) fields.evidence = String(p.evidence);
+        if (p.confidence !== undefined) fields.confidence = Number(p.confidence);
+        const updated = cal.update(id, fields);
+        if (updated && model && (fields.area ?? fields.rule ?? fields.evidence) !== undefined)
+          void enrichCal(id);
+        return { updated };
+      })(ack)
+    );
+    socket.on("cal:remove", (p, ack) =>
+      handle(() => ({ removed: cal.remove(Number(p.id)) }))(ack)
+    );
+    socket.on("cal:search", (p, ack) =>
+      handle(() => ({
+        rows: cal.search(Array.isArray(p.queries) ? p.queries.map(String) : [], {
+          section: p.section, limit: Number(p.limit) || undefined,
+          excludeCore: Boolean(p.excludeCore),
+        }),
+      }))(ack)
+    );
+    socket.on("cal:list", (p, ack) =>
+      handle(() => ({
+        rows: cal.list({
+          section: p?.section,
+          minConfidence: Number(p?.minConfidence) || undefined,
+        }),
+      }))(ack)
+    );
+    socket.on("cal:core", (ack) => handle(() => ({ rows: cal.core() }))(ack));
+    socket.on("cal:stamp", (ack) => handle(() => ({ stamp: cal.stamp() }))(ack));
     socket.on("mem:shutdown", (ack) => {
       if (typeof ack === "function") ack({ ok: true });
-      io.close();
+      // db를 먼저 닫는다 — 클라이언트가 disconnect를 볼 시점엔 DB 파일 잠금이 해제된 뒤다
+      // (ack 직후 rmSync하는 테스트의 EBUSY 경쟁 방지)
       db.close();
+      io.close();
       process.exit(0);
     });
   });
