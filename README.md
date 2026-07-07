@@ -47,7 +47,7 @@ Claude Code와의 차이 등 상세는 해당 브랜치의 README를 참조.
 
 ## 왜 만들었나
 
-Claude Code에도 세션 간 기억은 있다 — CLAUDE.md, 자동 메모리 등. 하지만 "이 프로젝트에서 뭐가 통하고 뭐가 사고 나는지"는 그 위에서 잘 살아남지 못한다: 기록할지가 모델 재량이라 바쁜 작업 중에 누락되고, 남더라도 다음 세션의 판단 시점에 회수된다는 보장이 없으며, 한번 적힌 규칙은 틀려도 교정되지 않는다. nunchi는 이 경험을 전담 구조로 받는다 — 기록은 hook이 점검을 강제하고, 회수는 매 메시지 검색이 보장하며(기록 시점에 AI가 유의어 키워드를 보강해 표현이 달라도 걸린다), 규칙은 신뢰도·반전으로 수명을 관리한다. 그래서 **다음 판단을 바꿀 것만** 남긴다:
+Claude Code에도 세션 간 기억은 있다 — CLAUDE.md, 자동 메모리 등. 하지만 "이 프로젝트에서 뭐가 통하고 뭐가 사고 나는지"는 그 위에서 잘 살아남지 못한다: 기록할지가 모델 재량이라 바쁜 작업 중에 누락되고, 남더라도 다음 세션의 판단 시점에 회수된다는 보장이 없으며, 한번 적힌 규칙은 틀려도 교정되지 않는다. nunchi는 이 경험을 전담 구조로 받는다 — 기록은 hook이 점검을 강제하고, 회수는 매 메시지 검색이 보장하며(보강 모델을 설정하면 기록 시점에 AI가 유의어 키워드를 더해 표현이 달라도 걸린다), 규칙은 신뢰도·반전으로 수명을 관리한다. 그래서 **다음 판단을 바꿀 것만** 남긴다:
 
 - **과잉이었음** — 했는데 불필요했던 검증/방어/추상화 → "용서하는 것"
 - **과소였음** — 생략했다가 실제로 문제가 된 것 → "벌주는 것"
@@ -63,7 +63,7 @@ Claude Code든 Codex든, CLAUDE.md·AGENTS.md·메모리 문서에 경험을 적
 |---|---|---|
 | 기록 대상 | 제한 없음 — 사실, 선호, 코드 패턴, 프로젝트 지식 전부 | 의도적으로 좁음 — **예측과 실제가 어긋난 순간**만, 작업 강도 판단 전용 |
 | 기록 트리거 | 모델 재량 또는 사용자 요청. 모델이 잊으면 유실 | Stop hook이 N턴마다 점검을 **강제** — 기록 기회가 시스템에 의해 보장 |
-| 회수·검색 | 모델 재량 — 전문 통째 주입(항목 수에 비례해 컨텍스트 비용 증가)이거나 grep 수준, 관련 문서를 안 읽고 지나칠 수 있음 | hook이 보장 — 코어 상시 주입 + 매 메시지 FTS5 BM25 검색 상위 3건, 기록 시점 AI 유의어 보강으로 표현이 달라도 회수. 항목 수와 무관하게 비용 일정 |
+| 회수·검색 | 모델 재량 — 전문 통째 주입(항목 수에 비례해 컨텍스트 비용 증가)이거나 grep 수준, 관련 문서를 안 읽고 지나칠 수 있음 | hook이 보장 — 코어 상시 주입 + 매 메시지 FTS5 BM25 검색 상위 3건, 보강 모델 설정 시 기록 시점 AI 유의어 보강으로 표현이 달라도 회수. 항목 수와 무관하게 비용 일정 |
 | 규칙의 수명·갱신 | 한 번 적히면 영속 — 틀린 규칙도 자동 교정 없음, "신뢰도 +1" 같은 필드 갱신이 텍스트 편집이라 깨지기 쉬움 | 고정 스키마(규칙 · 근거 · 신뢰도) 위에서 confirm/reverse/정제가 안전한 연산 — 모든 항목이 반증 가능한 가설 |
 | 동시 접근 | 여러 프로세스가 같은 파일을 쓰면 유실·충돌 | server 단일 소유 + 포트 락으로 구조적으로 안전 |
 | 확장 경로 | 임베딩·랭킹을 붙이려면 결국 DB화 | embedding 컬럼 추가 등 업그레이드 경로 예약됨 |
@@ -110,9 +110,12 @@ nunchi/
 ├── memory/
 │   ├── server.ts             # memory server: sqlite 단일 소유 + Socket.IO 노출 (mem:*)
 │   ├── store.ts              # 보정 항목 저장소: 스키마·검색·파서·임포트
-│   └── client.ts             # Socket.IO 클라이언트 (서버 미기동 시 자동 스폰, noSpawn 옵션)
+│   ├── client.ts             # Socket.IO 클라이언트 (서버 미기동 시 자동 스폰, noSpawn 옵션)
+│   └── provider/             # 키워드 보강 CLI 공급자 (claude/codex/gemini)
 ├── mcp/
 │   └── server.ts             # MCP stdio 서버: nunchi_record/update/search/list
+├── skills/
+│   └── migrate/              # 구버전 보정 DB 마이그레이션 스킬 (nunchi:migrate)
 ├── tests/
 ├── .claude-plugin/
 │   └── plugin.json           # plugin 매니페스트 + userConfig + mcpServers
@@ -137,7 +140,7 @@ nunchi/
 | `path` | `CLAUDE_PLUGIN_OPTION_PATH` | `path` | `.claude/nunchi` | 보정 DB(memory.db)가 저장될 폴더 (프로젝트 루트 기준 상대 또는 절대). 초기화 시 없으면 생성 |
 | `port` | `CLAUDE_PLUGIN_OPTION_PORT` | `port` | `null` | memory server(Socket.IO) 포트. 미설정 시 memory-config.json의 port(기본 41720) 사용 |
 | `external_address` | `CLAUDE_PLUGIN_OPTION_EXTERNAL_ADDRESS` | `external-address` | `null` | 설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결 (예: `http://192.168.0.10:41720`, 스킴 생략 시 `http://`). 로컬 자동 스폰과 프로젝트 검증 핸드셰이크는 생략 |
-| `policy_priority` | `CLAUDE_PLUGIN_OPTION_POLICY_PRIORITY` | `policy-priority` | `null` | ponytail 활성 시 보정 DB와 충돌하면 우선할 쪽 (`nunchi` | `ponytail`)\| `ponytail`). 미결정이면 첫 충돌 시점에 사용자에게 질문 후 프로젝트 nunchi.json에 저장 — 아래 "우선순위 핸드셰이크" 참조 |
+| `policy_priority` | `CLAUDE_PLUGIN_OPTION_POLICY_PRIORITY` | `policy-priority` | `null` | ponytail 활성 시 보정 DB와 충돌하면 우선할 쪽 (`nunchi` \| `ponytail`). 미결정이면 첫 충돌 시점에 사용자에게 질문 후 프로젝트 nunchi.json에 저장 — 아래 "우선순위 핸드셰이크" 참조 |
 
 프로젝트별 예시 — `{프로젝트}/.claude/nunchi.json`:
 
@@ -158,9 +161,8 @@ sqlite(`memory.db`)는 server.ts 단일 프로세스만 소유하고, MCP 서버
 - **설정**: `{path}/memory-config.json` (서버 전용 — 플러그인 config와 별개). `db`(파일명, 기본 `memory.db`), `port`(기본 41720), `host`(바인딩 주소, 기본 `127.0.0.1`), `model`(키워드 보강 모델, 기본 `null`), `modelProvider`(보강 CLI 공급자 `"claude"`/`"codex"`/`"gemini"`, 기본 `"claude"`). 플러그인 config의 `port`가 설정돼 있으면 그쪽이 우선.
 - **외부 서버**: 플러그인 config에 `external-address`를 설정하면 로컬 스폰 없이 해당 주소로 연결한다 (명시적 공유 서버이므로 프로젝트 검증 핸드셰이크 생략). 외부에 서비스하는 쪽은 memory-config.json의 `host`를 `0.0.0.0` 등으로 바꿔 바인딩을 연다 — 인증이 없으므로 신뢰할 수 있는 네트워크에서만 열 것.
 - **API**: `doc()` / `shutdown()` + `add` / `update` / `remove` / `search(queries[], {section, limit, excludeCore})` / `list` / `core` / `stamp`
-- **보정 검색**: `mem:search`는 다중 쿼리 OR-병합 (FTS5 BM25, 3글자 미만·무결과는 LIKE 폴백). 시맨틱 매칭은 쿼리를 확장하는 모델 쪽이 담당한다 — 임베딩 불필요. 필요해지면 `memory` 테이블에 embedding 컬럼을 추가하는 업그레이드 경로가 예약되어 있다.
+- **보정 검색**: `mem:search`는 다중 쿼리 OR-병합 — FTS5(trigram, BM25 랭킹), 3글자 미만·무결과 질의는 LIKE 폴백. 구버전 db는 기동 시 자동 마이그레이션·백필. 시맨틱 매칭은 쿼리를 확장하는 모델 쪽이 담당한다 — 임베딩 불필요. 필요해지면 `memory` 테이블에 embedding 컬럼을 추가하는 업그레이드 경로가 예약되어 있다.
 - **문서 요청**: `doc()`(`mem:doc`)은 보정 DB에서 3섹션 markdown을 렌더링해 반환한다 (없으면 `null`) — external-address 구버전 클라이언트·내보내기 겸용.
-- **검색**: FTS5(trigram, BM25 랭킹). 3글자 미만 질의는 LIKE 폴백. 구버전 db는 기동 시 자동 마이그레이션·백필.
 - **키워드 보강**: memory-config.json에 `model`을 설정하면(예: `"haiku"`) 보정 기록마다 보강 CLI를 백그라운드로 돌려 유의어 키워드를 생성, 검색 대상에 포함한다. CLI는 `modelProvider`로 선택 — `"claude"`(기본, `claude -p --model <값>`), `"codex"`(`codex exec --model <값>`, 최종 메시지는 `--output-last-message` 임시 파일로 회수), `"gemini"`(`gemini -m <값>`, stdin 파이프 headless). 구현은 `memory/provider/`에 공급자별 파일로 분리 — 새 공급자는 파일 추가 후 `provider/index.ts`의 `PROVIDERS`에 등록. 값이 갱신되면 낡은 키워드는 자동 폐기. `model` 미설정 시 완전 비활성. 기동 시 1회 로드되므로 변경은 memory server 재시작 후 반영. (0.10.0에서 플러그인 config → memory-config.json으로 이동)
 
 ## 응용 — 절차형 워크플로 스킬 모음과 상호보완 (예: gstack)
