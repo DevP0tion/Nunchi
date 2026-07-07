@@ -1,7 +1,7 @@
 {
   "name": "nunchi",
   "description": "환경별 작업 강도 보정('적당히') passive skill — surprise 기록과 재귀 개선",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "author": {
     "name": "DevP0tion"
   },
@@ -35,12 +35,6 @@
     "external_address": {
       "title": "External Address",
       "description": "설정 시 로컬 서버 대신 이 주소의 외부 memory server에 연결 (예: http://192.168.0.10:41720, 스킴 생략 시 http). 로컬 자동 스폰과 프로젝트 검증 핸드셰이크는 생략",
-      "type": "string",
-      "required": false
-    },
-    "model": {
-      "title": "Enrichment Model",
-      "description": "설정 시 보정 기록마다 claude -p --model <값>으로 검색 키워드를 비동기 생성 (예: haiku). 미설정 시 비활성. 변경은 memory server 재시작 후 반영",
       "type": "string",
       "required": false
     },
