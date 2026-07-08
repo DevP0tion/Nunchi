@@ -32,9 +32,15 @@ export interface MemoryConfig {
   db: string;
   /** Socket.IO 포트. 플러그인 config의 port가 설정돼 있으면 그쪽이 우선 */
   port: number;
-  /** 바인딩 주소. 기본 루프백. 외부 클라이언트(external-address)에게 서비스하려면
-   *  "0.0.0.0" 등으로 변경 — 인증이 없으므로 신뢰할 수 있는 네트워크에서만 열 것 */
-  host: string;
+  /** false = 루프백(127.0.0.1), true = 외부 공개(0.0.0.0). 소켓·웹 대시보드 공용.
+   *  구버전 문자열 값("127.0.0.1" 등)은 loadMemoryConfig가 불리언으로 정규화.
+   *  외부 공개 시 token 설정을 권장 — 없으면 신뢰할 수 있는 네트워크에서만 열 것 */
+  host: boolean;
+  /** true면 이 포트의 HTTP GET에서 대시보드(memory/dashboard)를 정적 서빙 */
+  web: boolean;
+  /** 설정 시 모든 Socket.IO 접속에 핸드셰이크 토큰 요구 (대시보드·MCP 클라이언트 공통).
+   *  null·빈 문자열이면 무인증(기존 동작) */
+  token: string | null;
   /** 설정 시(예: "haiku") 보정 기록(mem:add/update)마다 modelProvider CLI로
    *  검색 키워드를 비동기 생성. null이면 비활성. 기동 시 1회 로드 — 변경은 서버 재시작 후 반영 */
   model: string | null;
@@ -47,29 +53,47 @@ const MEMORY_CONFIG_DEFAULTS: MemoryConfig = {
   version: 1,
   db: DB_FILENAME,
   port: DEFAULT_PORT,
-  host: "127.0.0.1",
+  host: false,
+  web: false,
+  token: null,
   model: null,
   modelProvider: DEFAULT_PROVIDER,
 };
+
+const LOOPBACKS = ["127.0.0.1", "localhost", "::1"];
 
 /** memory-config.json 로드 — 없거나 손상이면 기본값과 병합 (키 단위) */
 export function loadMemoryConfig(configPath: string): MemoryConfig {
   try {
     // trim(): UTF-8(BOM) 파일도 파싱되도록
     const raw = JSON.parse(readFileSync(configPath, "utf8").trim());
-    return { ...MEMORY_CONFIG_DEFAULTS, ...raw };
+    const merged: MemoryConfig = { ...MEMORY_CONFIG_DEFAULTS, ...raw };
+    // 구버전 host: string 정규화 — 루프백은 false, 그 외("0.0.0.0" 등)는 true
+    if (typeof (merged.host as unknown) === "string")
+      merged.host = !LOOPBACKS.includes(merged.host as unknown as string);
+    merged.web = merged.web === true;
+    merged.token =
+      typeof merged.token === "string" && merged.token ? merged.token : null;
+    return merged;
   } catch {
     return { ...MEMORY_CONFIG_DEFAULTS };
   }
 }
 
-/** 클라이언트용: 접속할 포트만 조회 (파일 생성 없음) */
-export function resolveMemoryPort(projectDir: string): number {
+/** 클라이언트용: 접속 정보(포트·토큰) 조회 (파일 생성 없음) */
+export function resolveMemoryConn(
+  projectDir: string
+): { port: number; token: string | null } {
   const cfg = loadConfig(projectDir);
   const mc = loadMemoryConfig(
     join(resolveDocDir(projectDir, cfg), MEMORY_CONFIG_FILENAME)
   );
-  return cfg.port ?? mc.port;
+  return { port: cfg.port ?? mc.port, token: mc.token };
+}
+
+/** 클라이언트용: 접속할 포트만 조회 (파일 생성 없음) */
+export function resolveMemoryPort(projectDir: string): number {
+  return resolveMemoryConn(projectDir).port;
 }
 
 /** path 폴더를 만들고 memory-config.json을 초기화 (멱등). DB는 열지 않는다 —
@@ -146,7 +170,7 @@ if (import.meta.main) {
       if (provider.output === "file") rmSync(outFile, { force: true });
     }
   }
-  // 기본 루프백 바인딩. 외부 서비스가 필요하면 memory-config.json의 host를 변경
+  // 기본 루프백 바인딩. 외부 서비스가 필요하면 memory-config.json의 host를 true로
   const httpServer = createServer();
   httpServer.on("error", (e: NodeJS.ErrnoException) => {
     if (e.code === "EADDRINUSE") {
@@ -183,7 +207,7 @@ if (import.meta.main) {
 
   // 포트 락(단일 실행)을 딴 뒤에만 DB를 연다 — EADDRINUSE 패자는 DB를 건드리지 않는다.
   // 콜백 본문은 동기 실행이므로 핸들러 등록 전에 connection 이벤트가 끼어들 수 없다
-  httpServer.listen(port, memoryConfig.host, () => {
+  httpServer.listen(port, memoryConfig.host ? "0.0.0.0" : "127.0.0.1", () => {
   const db = new Database(dbPath); // 파일이 없으면 생성 (createMemoryStore가 스키마 적용)
   const store = createMemoryStore(db);
   // 구버전 calibration.md — 기동 시 1회만 DB로 임포트한다 (이후는 mem:doc이 DB에서 렌더링)
