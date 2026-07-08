@@ -1,6 +1,6 @@
 # memory server 조건부 웹 대시보드 구현 계획
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers (ultracode):** 이 계획은 Workflow 도구 실행에 최적화되어 있다. 아래 **실행 전략 (ultracode)** 섹션의 워크플로 스크립트를 Workflow 도구에 그대로 전달해 실행하라 — 태스크 에이전트는 이 문서의 Task N을 읽고 구현한다. Workflow를 쓸 수 없는 환경에서만 superpowers:executing-plans로 순차 실행(폴백)한다. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** memory server에 `web: true` 설정 시 기존 포트에서 대시보드(전체 CRUD 웹 UI)를 서빙하고, `token` 설정 시 소켓 전체에 핸드셰이크 인증을 건다.
 
@@ -18,6 +18,123 @@
 - 테스트 실행은 `bun test tests/web.test.ts` (통합 테스트는 실제 서버를 스폰 — 기존 store-socket.test.ts 패턴)
 - 커밋 메시지 끝에 `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` 트레일러
 - HTTPS/TLS, 계정·권한 분리, `web.port` 분리는 범위 밖 (스펙 참조)
+
+## 실행 전략 (ultracode)
+
+### 태스크 DAG — 파일 충돌 기준
+
+| 태스크 | 수정 파일 | 의존 | 병렬 가능 대상 |
+|---|---|---|---|
+| Task 1 | `memory/server.ts`, `tests/web.test.ts` | — | Task 3 |
+| Task 3 | `memory/dashboard/*` (신규) | — | Task 1 |
+| Task 2 | `memory/server.ts`, `memory/client.ts`, `tests/web.test.ts` | Task 1 (`resolveMemoryConn`) | 없음 |
+| Task 4 | `memory/server.ts`, `tests/web.test.ts` | Task 1 (`web` 키), Task 2 (web.test.ts의 import 확장 — Step 1이 추가한 `mkdirSync`·`connectMemory` 등), Task 3 (정적 파일) | 없음 |
+| Task 5 | `README.md` | Task 1–4 전체 | 없음 |
+
+```
+Task 1 ─┬─→ Task 2 ─→ Task 4 ─→ Verify ─→ Task 5
+Task 3 ─┘  (server.ts·web.test.ts 체인 — 반드시 순차)
+```
+
+**규칙:**
+
+- **Task 2·4는 절대 병렬 금지** — 둘 다 `memory/server.ts`와 `tests/web.test.ts`를 수정한다. 순차 체인.
+- **병렬 페이즈(Task 1 ∥ 3)의 에이전트는 커밋하지 않는다** — 동시 `git commit`은 index.lock 경쟁으로 실패한다. 커밋은 후속 순차 스텝이 담당. 워크트리 격리는 불필요 (수정 파일이 서로소).
+- 태스크 에이전트는 **이 문서의 코드 블록을 그대로 적용**한다. 계획과 실제 코드가 어긋나면 임의 수정하지 말고 중단·보고. 단, Files의 라인 번호는 계획 작성 시점 참고값 — 선행 태스크가 라인을 밀 수 있으므로 어긋남 판정은 라인 번호가 아니라 **코드 내용** 기준.
+- 테스트는 실제 memory server를 스폰한다(임시 포트라 병렬 실행 안전). Windows 창 스폰 억제는 `tests/preload.ts`가 처리.
+- 스크립트에 `model` 오버라이드 없음 — 세션 모델(Opus)을 상속한다. Verify 렌즈만 `effort: 'high'`.
+- Task 5 Step 2(브라우저 수동 검증)는 자동화 불가 — 워크플로 종료 후 사용자와 함께 수행.
+- 실패 시 같은 스크립트를 `resumeFromRunId`로 재개하면 완료된 태스크는 캐시로 스킵된다.
+
+### 워크플로 스크립트 (Workflow 도구에 그대로 전달)
+
+```js
+export const meta = {
+  name: 'memory-web-dashboard',
+  description: 'memory server 웹 대시보드 — 계획 5개 태스크를 DAG 순서로 구현하고 적대적 검증',
+  phases: [
+    { title: 'Phase A', detail: 'Task 1(설정 스키마) ∥ Task 3(대시보드 파일) — 파일 서로소' },
+    { title: 'Commit A', detail: '병렬 결과 순차 커밋' },
+    { title: 'Phase B', detail: 'Task 2(토큰) → Task 4(정적 서빙) — server.ts 체인' },
+    { title: 'Verify', detail: '적대적 검증: correctness / security / regression' },
+    { title: 'Phase C', detail: 'Task 5 README + 최종 테스트' },
+  ],
+}
+
+const PLAN = 'docs/superpowers/plans/2026-07-08-memory-web-dashboard.md'
+const SPEC = 'docs/superpowers/specs/2026-07-08-memory-web-dashboard-design.md'
+const RESULT = {
+  type: 'object',
+  properties: {
+    done: { type: 'boolean' },
+    summary: { type: 'string' },
+    testOutput: { type: 'string', description: '실행한 bun test 결과 요약' },
+  },
+  required: ['done', 'summary'],
+}
+
+const taskPrompt = (n, extra = '') => `${PLAN} 를 읽고 Task ${n}만 구현하라.
+- Step 체크박스를 순서대로 수행하라. 계획의 코드 블록을 그대로 적용 — 임의 변경 금지.
+- 계획과 실제 코드가 어긋나 그대로 적용할 수 없으면, 구현을 멈추고 done: false로 어긋난 지점을 summary에 보고하라.
+- 테스트 Step은 반드시 실행하고 결과를 testOutput에 담아라.
+${extra}`
+
+phase('Phase A')
+const [t1, t3] = await parallel([
+  () => agent(taskPrompt(1, '- "커밋" Step은 건너뛴다 (Commit A 스텝이 담당 — git index.lock 경쟁 방지).'),
+    { label: 'task1:config', phase: 'Phase A', schema: RESULT }),
+  () => agent(taskPrompt(3, '- "커밋" Step은 건너뛴다 (Commit A 스텝이 담당).'),
+    { label: 'task3:dashboard', phase: 'Phase A', schema: RESULT }),
+])
+if (!t1?.done || !t3?.done) return { failed: 'Phase A', t1, t3 }
+
+phase('Commit A')
+await agent(
+  `${PLAN} 의 Task 1 Step 6과 Task 3 Step 3의 커밋 명령을 순서대로 그대로 실행하라 (2개 커밋). 커밋 전 bun test tests/web.test.ts로 통과를 확인하라.`,
+  { label: 'commit:A', phase: 'Commit A', effort: 'low' }
+)
+
+phase('Phase B')
+// Task 2·4는 둘 다 server.ts와 web.test.ts를 수정 — 병렬 금지
+const t2 = await agent(taskPrompt(2, '- Task 2 Step 7의 커밋까지 수행하라.'),
+  { label: 'task2:token', phase: 'Phase B', schema: RESULT })
+if (!t2?.done) return { failed: 'Task 2', t2 }
+const t4 = await agent(taskPrompt(4, '- Task 4 Step 6의 커밋까지 수행하라.'),
+  { label: 'task4:serving', phase: 'Phase B', schema: RESULT })
+if (!t4?.done) return { failed: 'Task 4', t4 }
+
+phase('Verify')
+const VERDICT = {
+  type: 'object',
+  properties: {
+    pass: { type: 'boolean' },
+    issues: { type: 'array', items: { type: 'string' }, description: '확실한 결함만 — 파일:라인과 재현 조건 포함' },
+  },
+  required: ['pass', 'issues'],
+}
+const lenses = [
+  ['correctness', 'config 정규화(구버전 문자열 host)·resolveMemoryConn·클라이언트 토큰 전달·mem:* 왕복이 스펙과 일치하는지 코드를 읽고 반박을 시도하라'],
+  ['security', '정적 서빙의 경로 탈출(이중 인코딩·백슬래시·널바이트·대소문자), 토큰 우회(auth 미들웨어 등록 조건·polling 핸드셰이크), host 바인딩을 공격자 관점에서 검증하라'],
+  ['regression', 'bun test 전체를 실행하고, web:false·token:null 기본 경로가 기존 동작과 동일한지 git diff를 읽어 검증하라'],
+]
+const verdicts = await parallel(lenses.map(([k, p]) => () =>
+  agent(`구현 검증 (렌즈: ${k}). 근거는 ${SPEC} 와 git diff(이번 브랜치 변경분). ${p}. 불확실하면 pass — 확실한 결함만 issues에 담아라.`,
+    { label: `verify:${k}`, phase: 'Verify', schema: VERDICT, effort: 'high' })))
+const issues = verdicts.filter(Boolean).flatMap(v => v.issues)
+log(issues.length ? `검증 결함 ${issues.length}건 — 수정 진행` : '검증 통과')
+if (issues.length) {
+  const fix = await agent(
+    `다음 검증 결함을 수정하라. 수정 후 bun test 전체 통과를 확인하고 fix 커밋을 만들어라:\n${issues.map(i => '- ' + i).join('\n')}`,
+    { label: 'fix', phase: 'Verify', schema: RESULT })
+  if (!fix?.done) return { failed: 'fix', issues, fix }
+}
+
+phase('Phase C')
+const t5 = await agent(taskPrompt(5, `- Step 2(브라우저 수동 검증)는 자동화 불가 — 수행하지 말고 summary에 "수동 검증 대기"라고 남겨라.
+- Step 3(bun test 전체)과 Step 4의 커밋은 수행하라.`),
+  { label: 'task5:docs', phase: 'Phase C', schema: RESULT })
+return { t1, t3, t2, t4, issues, t5, manual: 'Task 5 Step 2 브라우저 검증은 사용자와 함께 수행할 것' }
+```
 
 ---
 
@@ -210,7 +327,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `memory/server.ts` (`const io = new Server(httpServer);` 직후에 미들웨어 추가)
-- Modify: `memory/client.ts:10, 103-138` (import, tryConnect, connectMemory)
+- Modify: `memory/client.ts` (import 10행, tryConnect 103-115행, connectMemory 내 호출부 3곳 — external 분기·local 분기·재시도 루프 ~178행)
 - Test: `tests/web.test.ts` (통합 테스트 추가)
 
 **Interfaces:**
