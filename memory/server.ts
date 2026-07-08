@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, extname, join, resolve, sep } from "node:path";
 import { loadConfig, resolveDocDir, resolveDocPath } from "../hooks/config.ts";
 import {
   createMemoryStore,
@@ -179,6 +179,34 @@ if (import.meta.main) {
     }
     throw e;
   });
+  // web: true — 이 포트의 HTTP GET에서 대시보드(memory/dashboard)를 정적 서빙.
+  // io 생성 전에 등록해야 engine.io가 이 리스너를 캡처해 /socket.io 외 경로에만 위임한다
+  if (memoryConfig.web) {
+    const dashDir = join(import.meta.dir, "dashboard");
+    const MIME: Record<string, string> = {
+      ".html": "text/html; charset=utf-8",
+      ".css": "text/css; charset=utf-8",
+      ".js": "text/javascript; charset=utf-8",
+    };
+    httpServer.on("request", (req, res) => {
+      if (req.url?.startsWith("/socket.io/")) return; // 등록 순서가 바뀌어도 io 응답과 충돌하지 않도록
+      let file = "";
+      try {
+        const pathname = decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname);
+        file = resolve(dashDir, "." + (pathname === "/" ? "/index.html" : pathname));
+      } catch {
+        /* 잘못된 URL·인코딩 → 아래 404 */
+      }
+      // 경로 탈출 방지: 정규화 결과가 dashboard 루트 밖이면 거부 (host 공개 시 필수)
+      if (!file.startsWith(dashDir + sep) || !existsSync(file)) {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
+      res.end(readFileSync(file));
+    });
+  }
+
   const io = new Server(httpServer);
   // token 설정 시 모든 접속에 핸드셰이크 토큰 요구 (대시보드·MCP 클라이언트 공통).
   // 구버전 external-address 클라이언트는 토큰을 못 보내므로, 그런 환경에선 token을 설정하지 말 것

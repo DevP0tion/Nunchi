@@ -66,3 +66,35 @@ test(
   },
   20000
 );
+
+test(
+  "web: true — 대시보드 정적 서빙, 경로 탈출 차단",
+  async () => {
+    const A = mkdtempSync(join(tmpdir(), "nunchi-webui-"));
+    await assignFreePort(A);
+    const dir = join(A, ".claude", "nunchi");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "memory-config.json"),
+      JSON.stringify({ version: 1, web: true })
+    );
+    const mem = await connectMemory(A);
+    try {
+      const base = `http://127.0.0.1:${resolveMemoryPort(A)}`;
+      const home = await fetch(`${base}/`);
+      expect(home.status).toBe(200);
+      expect(home.headers.get("content-type")).toContain("text/html");
+      expect(await home.text()).toContain("nunchi memory");
+      const css = await fetch(`${base}/style.css`);
+      expect(css.status).toBe(200);
+      expect(css.headers.get("content-type")).toContain("text/css");
+      // 경로 탈출 (%2F = 인코딩된 '/' — fetch가 정규화하지 못하는 형태) → 404
+      expect((await fetch(`${base}/..%2Fserver.ts`)).status).toBe(404);
+      expect((await fetch(`${base}/no-such.css`)).status).toBe(404);
+    } finally {
+      await mem.shutdown();
+      await rmProject(A);
+    }
+  },
+  20000
+);
