@@ -1,10 +1,13 @@
 // bun test tests/web.test.ts
 // 웹 대시보드: 설정 정규화 + 토큰 인증 + 정적 서빙
 import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadMemoryConfig } from "../memory/server.ts";
+import { io as ioc } from "socket.io-client";
+import { loadMemoryConfig, resolveMemoryPort } from "../memory/server.ts";
+import { assignFreePort, connectMemory } from "../memory/client.ts";
+import { rmProject } from "./helpers.ts";
 
 const D = mkdtempSync(join(tmpdir(), "nunchi-webcfg-"));
 /** 임시 memory-config.json을 쓰고 경로 반환 */
@@ -32,3 +35,34 @@ test("loadMemoryConfig: 구버전 host 문자열 정규화 + web/token 기본값
   expect(loadMemoryConfig(cfgFile({ token: "" })).token).toBe(null);
   expect(loadMemoryConfig(cfgFile({ token: "s3cret" })).token).toBe("s3cret");
 });
+
+test(
+  "token: 클라이언트는 config 토큰으로 접속, 무토큰 원시 접속은 거부",
+  async () => {
+    const A = mkdtempSync(join(tmpdir(), "nunchi-tok-"));
+    await assignFreePort(A);
+    const dir = join(A, ".claude", "nunchi");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "memory-config.json"),
+      JSON.stringify({ version: 1, token: "s3cret" })
+    );
+    const mem = await connectMemory(A); // client가 config에서 토큰을 읽어 전달 — 성공해야 함
+    try {
+      expect(await mem.stamp()).toBe(null); // 인증 통과 후 정상 왕복
+      // 토큰 없는 원시 소켓은 미들웨어가 거부
+      const err = await new Promise<unknown>((resolve) => {
+        const bad = ioc(`http://127.0.0.1:${resolveMemoryPort(A)}`, {
+          reconnection: false,
+        });
+        bad.once("connect", () => { bad.close(); resolve(null); });
+        bad.once("connect_error", (e) => { bad.close(); resolve(e); });
+      });
+      expect(String(err)).toContain("unauthorized");
+    } finally {
+      await mem.shutdown();
+      await rmProject(A);
+    }
+  },
+  20000
+);

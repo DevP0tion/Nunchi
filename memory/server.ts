@@ -180,6 +180,15 @@ if (import.meta.main) {
     throw e;
   });
   const io = new Server(httpServer);
+  // token 설정 시 모든 접속에 핸드셰이크 토큰 요구 (대시보드·MCP 클라이언트 공통).
+  // 구버전 external-address 클라이언트는 토큰을 못 보내므로, 그런 환경에선 token을 설정하지 말 것
+  if (memoryConfig.token) {
+    io.use((socket, next) =>
+      socket.handshake.auth?.token === memoryConfig.token
+        ? next()
+        : next(new Error("unauthorized"))
+    );
+  }
 
   type Ack = (res: Record<string, unknown>) => void;
   // 작업 로그 — 서버 터미널 창에서 무슨 일이 오가는지 보이도록
