@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nunchi memory</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>nunchi memory</h1>
+    <span id="info">접속 중…</span>
+  </header>
+  <section id="toolbar">
+    <input id="q" placeholder="검색 — 쉼표로 다중 쿼리 (예: 배포, deploy)">
+    <select id="filter-section">
+      <option value="">전체 섹션</option>
+      <option value="punish">punish</option>
+      <option value="forgive">forgive</option>
+      <option value="env">env</option>
+    </select>
+    <button id="btn-search">검색</button>
+    <button id="btn-refresh">전체 목록</button>
+    <button id="btn-doc">문서 뷰</button>
+    <button id="btn-add">+ 추가</button>
+  </section>
+  <form id="editor" hidden>
+    <input type="hidden" id="f-id">
+    <select id="f-section">
+      <option value="punish">punish</option>
+      <option value="forgive">forgive</option>
+      <option value="env">env</option>
+    </select>
+    <input id="f-area" placeholder="area — 예: [배포: CI]" required>
+    <input id="f-rule" placeholder="rule" required>
+    <input id="f-evidence" placeholder="evidence" required>
+    <input id="f-confidence" type="number" min="1" max="9" value="1" title="confidence">
+    <button type="submit">저장</button>
+    <button type="button" id="f-cancel">취소</button>
+  </form>
+  <pre id="doc" hidden></pre>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>section</th><th>area</th><th>rule</th>
+        <th>evidence</th><th>conf</th><th>updated</th><th>동작</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // 서버(memory/server.ts)의 mem:* 이벤트를 same-origin Socket.IO로 직접 호출한다
+    // — 별도 REST 레이어 없음. 응답 형식은 { ok, ...payload } (server.ts의 handle 참조).
+    let rowCache = []; // 마지막 렌더 목록 — 수정 버튼이 폼을 채울 때 사용
+    const $ = (id) => document.getElementById(id);
+    const socket = io({ auth: { token: localStorage.getItem("nunchi-token") ?? "" } });
+
+    // 토큰 불일치 → 입력받아 저장 후 재접속
+    socket.on("connect_error", (e) => {
+      if (!String(e.message).includes("unauthorized")) return;
+      const t = prompt("접속 토큰 (memory-config.json의 token)");
+      if (t) { localStorage.setItem("nunchi-token", t); location.reload(); }
+    });
+
+    window.addEventListener("unhandledrejection", (e) =>
+      alert(e.reason?.message ?? e.reason));
+
+    async function req(ev, payload) {
+      const r = payload === undefined
+        ? await socket.timeout(5000).emitWithAck(ev)
+        : await socket.timeout(5000).emitWithAck(ev, payload);
+      if (!r.ok) throw new Error(r.error);
+      return r;
+    }
+
+    const esc = (s) => String(s).replace(/[&<>"]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+    function render(rows) {
+      rowCache = rows;
+      $("rows").innerHTML = rows.map((e) => `
+        <tr>
+          <td>${e.id}</td>
+          <td class="sec-${esc(e.section)}">${esc(e.section)}</td>
+          <td>${esc(e.area)}</td>
+          <td>${esc(e.rule)}</td>
+          <td>${esc(e.evidence)}</td>
+          <td>${e.confidence}</td>
+          <td>${esc(e.updated_at)}</td>
+          <td class="actions">
+            <button data-act="edit" data-id="${e.id}">수정</button>
+            <button data-act="confirm" data-id="${e.id}">confirm</button>
+            <button data-act="remove" data-id="${e.id}">삭제</button>
+          </td>
+        </tr>`).join("");
+    }
+
+    async function refresh() {
+      const section = $("filter-section").value || undefined;
+      render((await req("mem:list", { section })).rows);
+    }
+
+    async function search() {
+      const queries = $("q").value.split(",").map((s) => s.trim()).filter(Boolean);
+      if (!queries.length) return refresh();
+      const section = $("filter-section").value || undefined;
+      render((await req("mem:search", { queries, section })).rows);
+    }
+
+    $("rows").addEventListener("click", async (ev) => {
+      const b = ev.target.closest("button");
+      if (!b) return;
+      const id = Number(b.dataset.id);
+      if (b.dataset.act === "remove") {
+        if (confirm(`#${id} 삭제할까요?`)) { await req("mem:remove", { id }); await refresh(); }
+      } else if (b.dataset.act === "confirm") {
+        await req("mem:update", { id, confirm: true });
+        await refresh();
+      } else if (b.dataset.act === "edit") {
+        openEditor(rowCache.find((r) => r.id === id));
+      }
+    });
+
+    function openEditor(e) {
+      $("editor").hidden = false;
+      $("f-id").value = e?.id ?? "";
+      $("f-section").value = e?.section ?? "punish";
+      $("f-area").value = e?.area ?? "";
+      $("f-rule").value = e?.rule ?? "";
+      $("f-evidence").value = e?.evidence ?? "";
+      $("f-confidence").value = e?.confidence ?? 1;
+      $("f-area").focus();
+    }
+
+    $("editor").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const fields = {
+        section: $("f-section").value,
+        area: $("f-area").value,
+        rule: $("f-rule").value,
+        evidence: $("f-evidence").value,
+        confidence: Number($("f-confidence").value),
+      };
+      const id = $("f-id").value;
+      if (id) await req("mem:update", { id: Number(id), ...fields });
+      else await req("mem:add", fields);
+      $("editor").hidden = true;
+      await refresh();
+    });
+
+    $("f-cancel").onclick = () => ($("editor").hidden = true);
+    $("btn-add").onclick = () => openEditor(null);
+    $("btn-search").onclick = search;
+    $("btn-refresh").onclick = () => { $("q").value = ""; refresh(); };
+    $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+    $("btn-doc").onclick = async () => {
+      const el = $("doc");
+      if (!el.hidden) { el.hidden = true; return; }
+      el.textContent = (await req("mem:doc")).doc ?? "(비어 있음)";
+      el.hidden = false;
+    };
+
+    socket.on("connect", async () => {
+      const info = await req("mem:info");
+      $("info").textContent = `${info.projectDir} · port ${info.port}`;
+      await refresh();
+    });
+  </script>
+</body>
+</html>
