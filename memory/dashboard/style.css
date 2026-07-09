@@ -162,6 +162,23 @@ button.primary {
 button.primary:hover { opacity: 0.85; }
 :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
+/* ── 필터 행 ────────────────────────────────────────────── */
+#filters {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+#filters label { display: inline-flex; align-items: center; gap: 5px; }
+#filters input[type="checkbox"] { accent-color: var(--ink); margin: 0; }
+.flt-label { font-size: 11px; letter-spacing: 0.04em; color: var(--muted); }
+.flt-sep { width: 1px; height: 16px; background: var(--line); }
+#flt-conf { width: 58px; }
+#filters input[type="date"] { font-family: var(--mono); font-size: 12px; }
+
 /* ── 패널 (편집 폼 · 문서 뷰) ───────────────────────────── */
 .panel {
   background: var(--surface);

@@ -44,6 +44,20 @@
     <button id="btn-add" class="primary">+ 추가</button>
   </section>
 
+  <!-- 필터 — 구분(0개 선택 = 전체) · 신뢰도 ≥ N · 기간(갱신일). 목록·검색 결과에 공통 적용 -->
+  <section id="filters" aria-label="필터">
+    <span class="flt-label">구분</span>
+    <label><input type="checkbox" data-sec="punish"><span class="mark sec-punish" aria-hidden="true"></span>punish</label>
+    <label><input type="checkbox" data-sec="forgive"><span class="mark sec-forgive" aria-hidden="true"></span>forgive</label>
+    <label><input type="checkbox" data-sec="env"><span class="mark sec-env" aria-hidden="true"></span>env</label>
+    <span class="flt-sep" aria-hidden="true"></span>
+    <label>신뢰도 ≥ <input id="flt-conf" type="number" min="1" placeholder="—"></label>
+    <span class="flt-sep" aria-hidden="true"></span>
+    <label>기간 <input id="flt-from" type="date" aria-label="기간 시작"></label>
+    <span aria-hidden="true">~</span>
+    <label><input id="flt-to" type="date" aria-label="기간 끝"></label>
+  </section>
+
   <form id="editor" class="panel" hidden>
     <h2 id="editor-title">새 항목</h2>
     <input type="hidden" id="f-id">
@@ -95,8 +109,7 @@
     // — 별도 REST 레이어 없음. 응답 형식은 { ok, ...payload } (server.ts의 handle 참조).
     const CORE_MIN = 3; // store.ts의 CORE_CONFIDENCE — punish & conf>=3 = 상시 주입
     let rowCache = []; // 마지막 렌더 목록 — 수정 버튼이 폼을 채울 때 사용
-    let allRows = []; // 마지막 전체 목록 — 통계 타일과 클라이언트 섹션 필터용
-    let secFilter = ""; // 타일 클릭으로 토글되는 섹션 필터 ("" = 전체)
+    let allRows = []; // 마지막 전체 목록 — 통계 타일과 클라이언트 필터용
     const $ = (id) => document.getElementById(id);
     const socket = io({ auth: { token: localStorage.getItem("nunchi-token") ?? "" } });
 
@@ -128,6 +141,28 @@
     const meter = (c) => `<span class="meter" aria-hidden="true">${
       [1, 2, 3].map((n) => `<i class="${c >= n ? "on" : ""}"></i>`).join("")}</span>`;
 
+    // 필터 상태의 원본은 DOM(#filters 입력들) — 별도 상태 변수 없음
+    const checkedSecs = () =>
+      [...document.querySelectorAll('#filters input[data-sec]:checked')].map((c) => c.dataset.sec);
+    const filtersActive = () => checkedSecs().length > 0 ||
+      $("flt-conf").value !== "" || $("flt-from").value !== "" || $("flt-to").value !== "";
+    function applyFilters(rows) {
+      const secs = checkedSecs();
+      const min = Number($("flt-conf").value) || 0;
+      const [from, to] = [$("flt-from").value, $("flt-to").value];
+      return rows.filter((e) =>
+        (!secs.length || secs.includes(e.section)) &&
+        e.confidence >= min &&
+        (!from || e.updated_at.slice(0, 10) >= from) &&
+        (!to || e.updated_at.slice(0, 10) <= to));
+    }
+    /** 타일 aria-pressed를 구분 체크박스와 동기화 — 타일 클릭 = 체크박스 토글 */
+    function syncTiles() {
+      const secs = checkedSecs();
+      document.querySelectorAll(".tile[data-sec]").forEach((t) =>
+        t.setAttribute("aria-pressed", String(secs.includes(t.dataset.sec))));
+    }
+
     function render(rows) {
       rowCache = rows;
       $("rows").innerHTML = rows.length ? rows.map((e) => `
@@ -146,7 +181,7 @@
           </td>
         </tr>`).join("")
         : `<tr class="empty"><td colspan="8">${
-          $("q").value.trim() || secFilter
+          $("q").value.trim() || filtersActive()
             ? "일치하는 항목이 없습니다."
             : "항목이 없습니다 — ‘+ 추가’로 첫 항목을 기록하세요."}</td></tr>`;
     }
@@ -159,27 +194,29 @@
       $("n-core").textContent = rows.filter(isCore).length;
     }
 
-    // 전체 목록 1회 조회로 통계와 화면을 함께 갱신 — 섹션 필터는 클라이언트에서 거른다
+    // 전체 목록 1회 조회로 통계와 화면을 함께 갱신 — 필터는 클라이언트에서 거른다
     async function refresh() {
       allRows = (await req("mem:list", {})).rows;
       renderStats(allRows);
-      render(secFilter ? allRows.filter((e) => e.section === secFilter) : allRows);
+      render(applyFilters(allRows));
     }
 
     async function search() {
       const queries = $("q").value.split(",").map((s) => s.trim()).filter(Boolean);
       if (!queries.length) return refresh();
-      const section = secFilter || undefined;
-      render((await req("mem:search", { queries, section })).rows);
+      // ponytail: 서버는 상위 50건만 반환 — 필터는 결과에 후적용이라 대형 DB에선 누락 가능. 필요해지면 서버 필터로
+      render(applyFilters((await req("mem:search", { queries })).rows));
     }
 
     document.querySelectorAll(".tile[data-sec]").forEach((t) =>
       t.addEventListener("click", async () => {
-        secFilter = secFilter === t.dataset.sec ? "" : t.dataset.sec;
-        document.querySelectorAll(".tile[data-sec]").forEach((x) =>
-          x.setAttribute("aria-pressed", String(x.dataset.sec === secFilter)));
+        const box = document.querySelector(`#filters input[data-sec="${t.dataset.sec}"]`);
+        box.checked = !box.checked;
+        syncTiles();
         await search(); // 검색어가 있으면 필터 적용 재검색, 없으면 목록 갱신
       }));
+
+    $("filters").addEventListener("change", async () => { syncTiles(); await search(); });
 
     $("rows").addEventListener("click", async (ev) => {
       const b = ev.target.closest("button");
@@ -228,9 +265,11 @@
     $("btn-search").onclick = search;
     $("btn-refresh").onclick = () => {
       $("q").value = "";
-      secFilter = "";
-      document.querySelectorAll(".tile[data-sec]").forEach((x) =>
-        x.setAttribute("aria-pressed", "false"));
+      document.querySelectorAll("#filters input[data-sec]").forEach((c) => (c.checked = false));
+      $("flt-conf").value = "";
+      $("flt-from").value = "";
+      $("flt-to").value = "";
+      syncTiles();
       refresh();
     };
     $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
