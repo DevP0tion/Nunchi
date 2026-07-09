@@ -142,7 +142,10 @@
             <button data-act="remove" data-id="${e.id}">삭제</button>
           </td>
         </tr>`).join("")
-        : '<tr class="empty"><td colspan="8">항목이 없습니다 — ‘+ 추가’로 첫 항목을 기록하세요.</td></tr>';
+        : `<tr class="empty"><td colspan="8">${
+          $("q").value.trim() || secFilter
+            ? "일치하는 항목이 없습니다."
+            : "항목이 없습니다 — ‘+ 추가’로 첫 항목을 기록하세요."}</td></tr>`;
     }
 
     function renderStats(rows) {
