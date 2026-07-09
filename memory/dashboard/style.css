@@ -222,7 +222,7 @@ th {
   color: var(--muted);
   white-space: nowrap;
 }
-td.num, td.updated {
+td.num, td.updated, td.conf .num {
   font-family: var(--mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
