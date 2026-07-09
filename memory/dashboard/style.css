@@ -16,7 +16,9 @@
   --sec-punish: #e34948;
   --sec-forgive: #1baf7a;
   --sec-env: #2a78d6;
+  /* 상태 색 — dataviz status 팔레트, 양 테마 고정 (섹션 색과 분리: 시리즈 색이 상태를 겸하지 않도록) */
   --ok: #0ca30c;
+  --err: #d03b3b;
   --mono: "Cascadia Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
   --sans: system-ui, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
 }
@@ -78,7 +80,7 @@ h1 .tag { color: var(--muted); font-weight: 400; }
   background: var(--muted);
 }
 .conn[data-state="on"] .dot { background: var(--ok); }
-.conn[data-state="off"] .dot { background: var(--sec-punish); }
+.conn[data-state="off"] .dot { background: var(--err); }
 
 /* ── 통계 타일: punish/forgive/env는 클릭 = 섹션 필터 ────── */
 .stats {
@@ -260,7 +262,7 @@ td.conf { white-space: nowrap; }
 .meter i {
   width: 9px;
   height: 5px;
-  background: var(--line);
+  background: var(--line-2); /* --line은 라이트 서피스와 1.1:1 — 빈 칸이 안 보여 임계 프레임이 사라진다 */
   border-radius: 1px;
 }
 .meter i.on { background: var(--ink-2); }
