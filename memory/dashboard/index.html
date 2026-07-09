@@ -44,14 +44,12 @@
     <button id="btn-add" class="primary">+ 추가</button>
   </section>
 
-  <!-- 필터 — 구분(0개 선택 = 전체) · 신뢰도 ≥ N · 기간(갱신일). 목록·검색 결과에 공통 적용 -->
+  <!-- 필터 — 신뢰도 범위 · 기간(갱신일). 구분 필터는 섹션 타일 클릭(다중 토글)이 담당.
+       목록·검색 결과에 공통 적용 -->
   <section id="filters" aria-label="필터">
-    <span class="flt-label">구분</span>
-    <label><input type="checkbox" data-sec="punish"><span class="mark sec-punish" aria-hidden="true"></span>punish</label>
-    <label><input type="checkbox" data-sec="forgive"><span class="mark sec-forgive" aria-hidden="true"></span>forgive</label>
-    <label><input type="checkbox" data-sec="env"><span class="mark sec-env" aria-hidden="true"></span>env</label>
-    <span class="flt-sep" aria-hidden="true"></span>
-    <label>신뢰도 ≥ <input id="flt-conf" type="number" min="1" placeholder="—"></label>
+    <label>신뢰도 <input id="flt-cmin" type="number" min="1" placeholder="—" aria-label="신뢰도 이상"></label>
+    <span aria-hidden="true">~</span>
+    <label><input id="flt-cmax" type="number" min="1" placeholder="—" aria-label="신뢰도 이하"></label>
     <span class="flt-sep" aria-hidden="true"></span>
     <label>기간 <input id="flt-from" type="date" aria-label="기간 시작"></label>
     <span aria-hidden="true">~</span>
@@ -110,6 +108,7 @@
     const CORE_MIN = 3; // store.ts의 CORE_CONFIDENCE — punish & conf>=3 = 상시 주입
     let rowCache = []; // 마지막 렌더 목록 — 수정 버튼이 폼을 채울 때 사용
     let allRows = []; // 마지막 전체 목록 — 통계 타일과 클라이언트 필터용
+    const secFilter = new Set(); // 섹션 타일 클릭으로 토글되는 구분 필터 — 빈 셋 = 전체
     const $ = (id) => document.getElementById(id);
     const socket = io({ auth: { token: localStorage.getItem("nunchi-token") ?? "" } });
 
@@ -141,26 +140,24 @@
     const meter = (c) => `<span class="meter" aria-hidden="true">${
       [1, 2, 3].map((n) => `<i class="${c >= n ? "on" : ""}"></i>`).join("")}</span>`;
 
-    // 필터 상태의 원본은 DOM(#filters 입력들) — 별도 상태 변수 없음
-    const checkedSecs = () =>
-      [...document.querySelectorAll('#filters input[data-sec]:checked')].map((c) => c.dataset.sec);
-    const filtersActive = () => checkedSecs().length > 0 ||
-      $("flt-conf").value !== "" || $("flt-from").value !== "" || $("flt-to").value !== "";
+    // 신뢰도·기간 필터의 원본은 DOM(#filters 입력들), 구분은 secFilter 셋
+    const filtersActive = () => secFilter.size > 0 ||
+      $("flt-cmin").value !== "" || $("flt-cmax").value !== "" ||
+      $("flt-from").value !== "" || $("flt-to").value !== "";
     function applyFilters(rows) {
-      const secs = checkedSecs();
-      const min = Number($("flt-conf").value) || 0;
+      const min = Number($("flt-cmin").value) || 0;
+      const max = Number($("flt-cmax").value) || Infinity; // 빈 입력 = 상한 없음
       const [from, to] = [$("flt-from").value, $("flt-to").value];
       return rows.filter((e) =>
-        (!secs.length || secs.includes(e.section)) &&
-        e.confidence >= min &&
+        (!secFilter.size || secFilter.has(e.section)) &&
+        e.confidence >= min && e.confidence <= max &&
         (!from || e.updated_at.slice(0, 10) >= from) &&
         (!to || e.updated_at.slice(0, 10) <= to));
     }
-    /** 타일 aria-pressed를 구분 체크박스와 동기화 — 타일 클릭 = 체크박스 토글 */
+    /** 타일 aria-pressed를 secFilter와 동기화 */
     function syncTiles() {
-      const secs = checkedSecs();
       document.querySelectorAll(".tile[data-sec]").forEach((t) =>
-        t.setAttribute("aria-pressed", String(secs.includes(t.dataset.sec))));
+        t.setAttribute("aria-pressed", String(secFilter.has(t.dataset.sec))));
     }
 
     function render(rows) {
@@ -210,13 +207,13 @@
 
     document.querySelectorAll(".tile[data-sec]").forEach((t) =>
       t.addEventListener("click", async () => {
-        const box = document.querySelector(`#filters input[data-sec="${t.dataset.sec}"]`);
-        box.checked = !box.checked;
+        const sec = t.dataset.sec;
+        secFilter.has(sec) ? secFilter.delete(sec) : secFilter.add(sec);
         syncTiles();
         await search(); // 검색어가 있으면 필터 적용 재검색, 없으면 목록 갱신
       }));
 
-    $("filters").addEventListener("change", async () => { syncTiles(); await search(); });
+    $("filters").addEventListener("change", search);
 
     $("rows").addEventListener("click", async (ev) => {
       const b = ev.target.closest("button");
@@ -265,8 +262,9 @@
     $("btn-search").onclick = search;
     $("btn-refresh").onclick = () => {
       $("q").value = "";
-      document.querySelectorAll("#filters input[data-sec]").forEach((c) => (c.checked = false));
-      $("flt-conf").value = "";
+      secFilter.clear();
+      $("flt-cmin").value = "";
+      $("flt-cmax").value = "";
       $("flt-from").value = "";
       $("flt-to").value = "";
       syncTiles();
