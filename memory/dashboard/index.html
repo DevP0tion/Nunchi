@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1><span class="tag">[nunchi]</span> memory</h1>
-    <span id="conn" class="conn" data-state="connecting">
+    <span id="conn" class="conn" data-state="connecting" role="status">
       <span class="dot" aria-hidden="true"></span><span id="info">접속 중…</span>
     </span>
   </header>
@@ -34,11 +34,11 @@
     </div>
   </section>
 
-  <section id="toolbar">
-    <input id="q" type="search" placeholder="검색 — 쉼표로 여러 쿼리 (예: 배포, deploy)">
+  <section id="toolbar" aria-label="검색·동작">
+    <input id="q" type="search" aria-label="검색" placeholder="검색 — 쉼표로 여러 쿼리 (예: 배포, deploy)">
     <button id="btn-search">검색</button>
     <button id="btn-refresh">전체 목록</button>
-    <button id="btn-doc" aria-expanded="false">문서 뷰</button>
+    <button id="btn-doc" aria-expanded="false" aria-controls="doc">문서 뷰</button>
     <button id="btn-add" class="primary">+ 추가</button>
   </section>
 
@@ -78,8 +78,9 @@
     <table>
       <thead>
         <tr>
-          <th>#</th><th>구분</th><th>영역</th><th>규칙</th>
-          <th>근거</th><th>신뢰도</th><th>갱신</th><th></th>
+          <th scope="col">#</th><th scope="col">구분</th><th scope="col">영역</th><th scope="col">규칙</th>
+          <th scope="col">근거</th><th scope="col">신뢰도</th><th scope="col">갱신</th>
+          <th scope="col" aria-label="동작"></th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
