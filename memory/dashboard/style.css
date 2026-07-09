@@ -66,10 +66,11 @@ h1 .tag { color: var(--muted); font-weight: 400; }
 .conn {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font: 12px var(--mono);
   color: var(--muted);
 }
+#info { overflow-wrap: anywhere; } /* 백슬래시 경로는 소프트 브레이크가 없어 좁은 폭에서 넘친다 */
 .conn .dot {
   width: 7px;
   height: 7px;
@@ -207,6 +208,9 @@ th, td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
+  /* URL·파일 경로 같은 공백 없는 장문이 컬럼을 수천 px로 밀지 않도록
+     (auto 테이블 레이아웃에서 min-content를 줄이는 값은 anywhere뿐) */
+  overflow-wrap: anywhere;
 }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr { transition: background-color 0.12s; }
