@@ -289,6 +289,8 @@ td.actions button {
   border-color: transparent;
   background: transparent;
 }
+td.actions button.react { filter: grayscale(1); } /* 컬러 이모지가 모노크롬 장부 톤을 깨지 않도록 */
+td.actions button.react:hover { filter: none; }
 td.actions button:hover { border-color: var(--line-2); background: var(--surface); }
 tr.empty td {
   padding: 28px 10px;

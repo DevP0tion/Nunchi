@@ -173,7 +173,8 @@
           <td class="updated" title="${esc(e.updated_at)}">${esc(shortDate(e.updated_at))}</td>
           <td class="actions">
             <button data-act="edit" data-id="${e.id}">수정</button>
-            <button data-act="confirm" data-id="${e.id}" title="confirm — 신뢰도 +1">재확인</button>
+            <button data-act="confirm" data-id="${e.id}" class="react" title="맞았음 — 신뢰도 +1 (confirm)" aria-label="좋아요 — 신뢰도 +1">👍</button>
+            <button data-act="down" data-id="${e.id}" class="react" title="틀렸음 — 신뢰도 −1" aria-label="싫어요 — 신뢰도 −1">👎</button>
             <button data-act="remove" data-id="${e.id}">삭제</button>
           </td>
         </tr>`).join("")
@@ -224,6 +225,13 @@
       } else if (b.dataset.act === "confirm") {
         await req("mem:update", { id, confirm: true });
         await refresh();
+      } else if (b.dataset.act === "down") {
+        const cur = rowCache.find((r) => r.id === id);
+        // 하한 1 — 이미 1이면 요청 없이 무시 (updated_at 불필요 갱신 방지)
+        if (cur && cur.confidence > 1) {
+          await req("mem:update", { id, confidence: cur.confidence - 1 });
+          await refresh();
+        }
       } else if (b.dataset.act === "edit") {
         openEditor(rowCache.find((r) => r.id === id));
       }
