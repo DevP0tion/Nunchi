@@ -74,8 +74,8 @@ h1 .tag { color: var(--muted); font-weight: 400; }
 }
 #info { overflow-wrap: anywhere; } /* 백슬래시 경로는 소프트 브레이크가 없어 좁은 폭에서 넘친다 */
 .conn .dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--muted);
 }
@@ -85,7 +85,8 @@ h1 .tag { color: var(--muted); font-weight: 400; }
 /* ── 통계 타일: punish/forgive/env는 클릭 = 섹션 필터 ────── */
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  /* 150px: 375px 뷰포트에서 2열이 성립하도록 (160px이면 1열로 무너져 세로 과점) */
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -137,7 +138,7 @@ button.tile[aria-pressed="true"] { border-color: var(--ink); }
   margin: 12px 0;
   flex-wrap: wrap;
 }
-#q { flex: 1; min-width: 220px; font-family: var(--mono); font-size: 13px; }
+#q { flex: 1; min-width: 220px; }
 input, select, button {
   padding: 6px 10px;
   font: inherit;
@@ -256,7 +257,7 @@ td.conf { white-space: nowrap; }
 .meter {
   display: inline-flex;
   gap: 2px;
-  margin-right: 7px;
+  margin-right: 8px;
   vertical-align: 1px;
 }
 .meter i {
