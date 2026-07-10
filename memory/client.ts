@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { resolveMemoryConn } from "./server.ts";
 import { loadConfig } from "../hooks/config.ts";
 import type { MemoryEntry, MemorySection, NewMemoryEntry } from "./store.ts";
@@ -163,7 +163,7 @@ export async function connectMemory(
         // cmd /s /c: 바깥 따옴표 한 겹을 벗기고 안쪽을 보존. start의 첫 따옴표 인자는 창 제목.
         spawn(
           "cmd",
-          ["/d", "/s", "/c", `"start "nunchi memory server" bun "${SERVER_PATH}""`],
+          ["/d", "/s", "/c", `"start "Nunchi [${basename(projectDir)}]" bun "${SERVER_PATH}""`],
           {
             env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
             detached: true,
