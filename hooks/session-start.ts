@@ -44,6 +44,7 @@ const lines = [
   "[nunchi] 이 프로젝트는 작업 강도 보정 규약을 사용한다 (보정 DB — 검색 회수 방식).",
   "작업 강도(검증 깊이, 테스트 여부, 리서치 범위, 리팩토링 범위) 판단 시: 자동 주입된 항목으로 부족하면 nunchi_search(유의어·한/영 확장 쿼리 2-5개), 그래도 애매하거나 판단이 중요하면 nunchi_list로 전량을 읽고 직접 선별한다.",
   "예측과 실제가 어긋나면(과잉/과소/환경 특이사항) nunchi_record로 기록한다. 기존 항목 재확인은 nunchi_update(action: confirm), '용서하는 것'을 따르다 사고가 나면 nunchi_update(action: reverse)로 즉시 반전한다.",
+  "작업 기록 규약: 완결된 작업(산출물이 남는 요청 단위)을 마무리하면 nunchi_search로 유사 task 항목을 찾아 — 절차가 어긋났으면 nunchi_update(edit)로 교정, 그대로 유효했으면 nunchi_update(confirm), 없으면 nunchi_record(section: task)로 신규 기록한다.",
 ];
 if (core.length) {
   const coreBlock = formatMemoryEntries(core).slice(0, 8000);

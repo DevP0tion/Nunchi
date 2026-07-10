@@ -1,7 +1,7 @@
 {
   "name": "nunchi",
   "description": "환경별 작업 강도 보정('적당히') passive skill — 예측 어긋남 기록과 재귀 개선",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "author": {
     "name": "DevP0tion"
   },

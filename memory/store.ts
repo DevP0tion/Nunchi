@@ -1,11 +1,12 @@
 // nunchi memory store (Bun)
-// 보정 항목 테이블(memory) + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
+// 보정 항목 + 작업 기록(task) 테이블(memory) + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
 // 소켓 계층(server.ts)과 테스트가 공유하는 저장소 로직.
 // v0.9.0: 범용 KV memory 테이블을 제거하고 보정 항목을 memory 테이블 하나로 통합했다.
+// task: 완결 작업 플레이북을 같은 테이블 section='task'로 축적한다. reverse는 forgive 전용(store 소유).
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 
-export type MemorySection = "punish" | "forgive" | "env";
+export type MemorySection = "punish" | "forgive" | "env" | "task";
 
 export interface MemoryEntry {
   id: number;
@@ -31,6 +32,19 @@ export const CORE_CONFIDENCE = 3;
 
 const COLS = "id, section, area, rule, evidence, confidence, updated_at";
 
+/** memory 테이블 컬럼 정의 — 신규 생성과 재구축(§task 마이그레이션)이 동일 CHECK를
+ *  쓰도록 한 곳에 둔다. CHECK 문자열이 두 곳에 흩어지면 안 된다. */
+const MEMORY_COLS_DDL = `
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  section TEXT NOT NULL CHECK (section IN ('punish','forgive','env','task')),
+  area TEXT NOT NULL,
+  rule TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  confidence INTEGER NOT NULL DEFAULT 1,
+  keywords TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+`;
+
 /** 테이블 + FTS5 인덱스 초기화 (멱등). 0.8.x DB는 memory 테이블 하나로 마이그레이션.
  *  전체를 한 트랜잭션으로 — 마이그레이션 도중 크래시로 두 테이블이 공존(다음 기동 시
  *  id 중복 INSERT 실패)하는 상태를 남기지 않는다 */
@@ -48,18 +62,22 @@ function applyMemorySchemaInner(db: Database): void {
     db.run(`DROP TABLE memory`);
     db.run(`DROP TABLE IF EXISTS memory_fts`);
   }
-  db.run(`
-    CREATE TABLE IF NOT EXISTS memory (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      section TEXT NOT NULL CHECK (section IN ('punish','forgive','env')),
-      area TEXT NOT NULL,
-      rule TEXT NOT NULL,
-      evidence TEXT NOT NULL,
-      confidence INTEGER NOT NULL DEFAULT 1,
-      keywords TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
-    )
-  `);
+  // task 마이그레이션: CHECK에 'task'를 추가한다. SQLite는 CHECK 변경이 불가하므로
+  // 테이블 재구축(id·keywords·updated_at 보존). kv 블록 이후에 조회하므로 kv 케이스는
+  // memory가 이미 DROP돼 ddl=null → 재구축 블록이 자연히 건너뛰어진다 (별도 오탐 방어 불필요).
+  const memDdl = db
+    .query(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory'`)
+    .get() as { sql: string } | null;
+  if (memDdl && !memDdl.sql.includes("'task'")) {
+    db.run(`CREATE TABLE memory_new (${MEMORY_COLS_DDL})`);
+    db.run(`
+      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, keywords, updated_at)
+      SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM memory
+    `);
+    db.run(`DROP TABLE memory`); // 트리거 3종(memory_fts_ai/ad/au)도 함께 삭제된다
+    db.run(`ALTER TABLE memory_new RENAME TO memory`);
+  }
+  db.run(`CREATE TABLE IF NOT EXISTS memory (${MEMORY_COLS_DDL})`);
   db.run(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
       area, rule, evidence, keywords,
@@ -169,6 +187,15 @@ export function createMemoryStore(db: Database) {
     confirm(id: number): boolean {
       return confirmStmt.run(id).changes > 0;
     },
+    /** 반전: '용서하는 것'(forgive) 전용 — punish 이동 + 신뢰도 1 리셋 + 근거 교체.
+     *  env·punish·task 대상은 규약 위반이므로 명확한 에러로 거부한다 */
+    reverse(id: number, evidence: string): boolean {
+      const cur = getStmt.get(id) as (MemoryEntry & { keywords: string }) | null;
+      if (!cur) return false;
+      if (cur.section !== "forgive")
+        throw new Error(`reverse는 '용서하는 것'(forgive) 전용 — 대상 항목은 ${cur.section}`);
+      return this.update(id, { section: "punish", confidence: 1, evidence });
+    },
     remove(id: number): boolean {
       return delStmt.run(id).changes > 0;
     },
@@ -198,7 +225,7 @@ export function createMemoryStore(db: Database) {
      *  모델 쿼리 확장(nunchi_search)과 훅 자동 주입이 공유하는 유일한 검색 경로 */
     search(
       queries: string[],
-      opts: { section?: MemorySection; limit?: number; excludeCore?: boolean } = {}
+      opts: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean } = {}
     ): MemoryEntry[] {
       const limit = opts.limit ?? 3;
       const best = new Map<number, MemoryEntry & { rank: number }>();
@@ -229,7 +256,7 @@ export function createMemoryStore(db: Database) {
         }
       }
       let out = [...best.values()];
-      if (opts.section) out = out.filter((r) => r.section === opts.section);
+      if (opts.sections) out = out.filter((r) => opts.sections!.includes(r.section));
       if (opts.excludeCore)
         out = out.filter((r) => !(r.section === "punish" && r.confidence >= CORE_CONFIDENCE));
       out.sort((a, b) => a.rank - b.rank); // BM25 rank는 음수(낮을수록 관련) — 오름차순
@@ -251,6 +278,7 @@ const SECTION_TITLE: Record<MemorySection, string> = {
   punish: "벌주는 것 (반드시 한다)",
   forgive: "용서하는 것 (생략 가능)",
   env: "환경 특이사항",
+  task: "작업 기록",
 };
 
 /** 기존 calibration.md → 항목 배열. 규칙/근거가 없는 항목은 skipped로 센다 */
@@ -300,7 +328,7 @@ export function renderMemoryDoc(store: MemoryStore, projectName: string): string
   if (!all.length) return null;
   const label = (c: number) => (c >= CORE_CONFIDENCE ? `높음(${c})` : c === 2 ? "중간(2)" : `낮음(${c})`);
   const parts = [`# 보정 — ${projectName}`];
-  for (const sec of ["punish", "forgive", "env"] as MemorySection[]) {
+  for (const sec of ["punish", "forgive", "env", "task"] as MemorySection[]) {
     const rows = all.filter((e) => e.section === sec);
     if (!rows.length) continue;
     parts.push("", `## ${SECTION_TITLE[sec]}`);

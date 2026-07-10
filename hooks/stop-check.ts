@@ -79,10 +79,12 @@ if (block) {
     JSON.stringify({
       decision: "block",
       reason:
-        `[nunchi] 주기 점검(${CHECK_EVERY}턴): 이번 구간에 예측과 실제가 어긋난 경우가 있었는가? ` +
-        `(1) 과잉 대응 — 한 검증/리서치/방어 코드가 불필요했음 (2) 과소 대응 — 생략한 것 때문에 문제 발생 (3) 환경 특이사항 발견. ` +
-        `있었다면 nunchi_record(신규) 또는 nunchi_update(action: confirm 재확인 / reverse 반전)로 기록할 것. ` +
-        `없었다면 "보정 특이사항 없음" 한 줄만 답하고 종료할 것.`,
+        `[nunchi] 주기 점검(${CHECK_EVERY}턴): ` +
+        `(A) 이번 구간에 예측과 실제가 어긋난 경우가 있었는가? (1) 과잉 대응 (2) 과소 대응 (3) 환경 특이사항 — ` +
+        `있었다면 nunchi_record(신규) 또는 nunchi_update(action: confirm 재확인 / reverse 반전). ` +
+        `(B) 이번 구간에 완결된 작업(산출물이 남는 요청 단위)이 있는가? — ` +
+        `있다면 유사 task 항목을 검색해 nunchi_update(edit 절차 교정 / confirm 재확인), 없으면 nunchi_record(section: task)로 기록. ` +
+        `둘 다 없었다면 "보정·작업 특이사항 없음" 한 줄만 답하고 종료할 것.`,
     })
   );
 }

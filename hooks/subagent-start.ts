@@ -10,6 +10,7 @@ const projectDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
 
 const lines = [
   "[nunchi] 이 프로젝트는 작업 강도 보정 규약을 사용한다. 작업 강도 판단이 애매하면 nunchi_search(유의어 확장 쿼리)·nunchi_list 도구로 보정 항목을 조회하고, 예측-실제 불일치(예측 어긋남)는 nunchi_record로 기록한다.",
+  "작업 기록 규약: 완결된 작업(산출물이 남는 요청 단위)을 마무리하면 nunchi_search로 유사 task 항목을 찾아 edit(절차 교정)/confirm(재확인), 없으면 nunchi_record(section: task)로 기록한다.",
 ];
 
 try {
@@ -25,7 +26,10 @@ try {
     const prompt = String(input.prompt ?? "").trim();
     if (prompt) {
       const tokens = [...new Set(prompt.split(/[^\p{L}\p{N}]+/u).filter((t) => t.length >= 2))].slice(0, 8);
-      const rows = tokens.length ? await mem.search(tokens, { limit: 3, excludeCore: true }) : [];
+      // 보정 전용 — task는 "보정 항목" 블록에 섞지 않는다 (§작업 기록 규약은 위 요약이 담당)
+      const rows = tokens.length
+        ? await mem.search(tokens, { limit: 3, excludeCore: true, sections: ["punish", "forgive", "env"] })
+        : [];
       if (rows.length) lines.push("", "[이번 작업 관련 보정 항목]", formatMemoryEntries(rows));
     }
   } finally {
