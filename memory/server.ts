@@ -343,5 +343,29 @@ if (import.meta.main) {
   });
 
   console.log(`[nunchi] memory server 시작: port ${port}, db ${dbPath}`);
+
+  // 'o' 키로 웹 대시보드 열기 — 새 터미널 창에서 서버가 뜨는 환경(win32) 편의 기능.
+  // detached 스폰(stdio ignore)에선 isTTY가 아니므로 자동으로 비활성화된다
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", (buf) => {
+      const key = buf.toString();
+      if (key === "\x03") process.exit(0); // raw mode에선 Ctrl+C 신호가 안 오므로 직접 종료
+      if (key.toLowerCase() !== "o") return;
+      if (!memoryConfig.web) {
+        console.log(`[nunchi] 대시보드 비활성 — ${MEMORY_CONFIG_FILENAME}의 web을 true로 설정`);
+        return;
+      }
+      const url = `http://127.0.0.1:${port}`;
+      const argv =
+        process.platform === "win32"
+          ? ["cmd", "/c", "start", "", url]
+          : [process.platform === "darwin" ? "open" : "xdg-open", url];
+      Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" });
+      console.log(`[${ts()}] 대시보드 열기: ${url}`);
+    });
+    console.log("[nunchi] o 키: 웹 대시보드 열기");
+  }
   });
 }
