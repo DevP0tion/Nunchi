@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
-import { resolveMemoryPort } from "./server.ts";
+import { resolveMemoryConn } from "./server.ts";
 import { loadConfig } from "../hooks/config.ts";
 import type { MemoryEntry, MemorySection, NewMemoryEntry } from "./store.ts";
 
@@ -84,11 +84,11 @@ export interface MemoryClient {
   /** 서버 프로젝트의 보정 문서 전문 (없으면 null). 구버전 서버는 timeout 에러 */
   doc(): Promise<string | null>;
   add(e: NewMemoryEntry): Promise<number>;
-  update(id: number, fields: Partial<NewMemoryEntry> & { confirm?: boolean }): Promise<boolean>;
+  update(id: number, fields: Partial<NewMemoryEntry> & { confirm?: boolean; reverse?: boolean }): Promise<boolean>;
   remove(id: number): Promise<boolean>;
   search(
     queries: string[],
-    opts?: { section?: MemorySection; limit?: number; excludeCore?: boolean }
+    opts?: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean }
   ): Promise<MemoryEntry[]>;
   list(opts?: { section?: MemorySection; minConfidence?: number }): Promise<MemoryEntry[]>;
   /** 상시 주입 코어: 벌주는 것 신뢰도 높음(3+) */
@@ -100,11 +100,16 @@ export interface MemoryClient {
   close(): void;
 }
 
-function tryConnect(url: string, timeoutMs: number): Promise<Socket | null> {
+function tryConnect(
+  url: string,
+  timeoutMs: number,
+  token: string | null
+): Promise<Socket | null> {
   return new Promise((resolve) => {
     const s = io(url, {
       reconnection: false,
       timeout: timeoutMs,
+      auth: token ? { token } : {},
     });
     s.once("connect", () => resolve(s));
     s.once("connect_error", () => {
@@ -119,23 +124,25 @@ export async function connectMemory(
   opts: { force?: boolean; noSpawn?: boolean } = {}
 ): Promise<MemoryClient> {
   const cfg = loadConfig(projectDir);
+  // 토큰은 로컬 memory-config.json에서 읽는다 — 외부 서버가 토큰을 요구하는 경우에도
+  // 같은 값을 로컬 config에 넣어두면 전달된다
+  const { port, token } = resolveMemoryConn(projectDir);
   let socket: Socket | null;
 
   const external = cfg["external-address"];
   if (external) {
     // 외부 서버: 스폰 없음. 명시적으로 지정한 공유 서버이므로 프로젝트 핸드셰이크도 생략
     const url = external.includes("://") ? external : `http://${external}`;
-    socket = await tryConnect(url, 3000);
+    socket = await tryConnect(url, 3000, token);
     if (!socket) {
       throw new Error(`[nunchi] external memory server 접속 실패 (${url})`);
     }
   } else {
-    const port = resolveMemoryPort(projectDir);
     const url = `http://127.0.0.1:${port}`;
     // auto-start와 무관하게: 포트에 서버가 실행 중이면 그대로 연결.
     // 2초: 테스트 전체 실행 부하 시 루프백 핸드셰이크가 1초를 넘는다 — noSpawn은 stamp=null 오탐,
     // 스폰 경로는 떠 있는 서버를 놓치고 중복 스폰(낙오 프로세스가 나중에 빈 포트 차지)하던 문제
-    socket = await tryConnect(url, 2000);
+    socket = await tryConnect(url, 2000, token);
 
     if (!socket) {
       // 훅의 빠른 경로: 스폰 대기 없이 즉시 실패 (매 메시지 훅이 세션을 막지 않도록)
@@ -175,7 +182,7 @@ export async function connectMemory(
       }
       for (let i = 0; i < 20 && !socket; i++) {
         await new Promise((r) => setTimeout(r, 250));
-        socket = await tryConnect(url, 1000);
+        socket = await tryConnect(url, 1000, token);
       }
       if (!socket) throw new Error(`[nunchi] memory server 접속 실패 (port ${port})`);
     }

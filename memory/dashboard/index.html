@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nunchi memory</title>
+  <!-- 인라인 파비콘 — /favicon.ico 404(콘솔 에러) 방지, 별도 파일 없이 미터 모티프 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230b0b0b'/%3E%3Crect x='3' y='7' width='4' height='3' rx='1' fill='%23fcfcfb'/%3E%3Crect x='8' y='7' width='4' height='3' rx='1' fill='%23e34948'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1><span class="tag">[nunchi]</span> memory</h1>
+    <span id="conn" class="conn" data-state="connecting" role="status">
+      <span class="dot" aria-hidden="true"></span><span id="info">접속 중…</span>
+    </span>
+  </header>
+
+  <!-- 통계 타일 — punish/forgive/env 타일은 클릭 = 섹션 필터 토글 -->
+  <section class="stats" aria-label="섹션별 현황">
+    <button class="tile" data-sec="punish" aria-pressed="false">
+      <span class="tile-label"><span class="mark sec-punish" aria-hidden="true"></span>punish · 벌주는 것</span>
+      <span class="tile-num" id="n-punish">–</span>
+    </button>
+    <button class="tile" data-sec="forgive" aria-pressed="false">
+      <span class="tile-label"><span class="mark sec-forgive" aria-hidden="true"></span>forgive · 용서하는 것</span>
+      <span class="tile-num" id="n-forgive">–</span>
+    </button>
+    <button class="tile" data-sec="env" aria-pressed="false">
+      <span class="tile-label"><span class="mark sec-env" aria-hidden="true"></span>env · 환경 특이사항</span>
+      <span class="tile-num" id="n-env">–</span>
+    </button>
+    <button class="tile" data-sec="task" aria-pressed="false">
+      <span class="tile-label"><span class="mark sec-task" aria-hidden="true"></span>task · 작업 기록</span>
+      <span class="tile-num" id="n-task">–</span>
+    </button>
+    <div class="tile" title="punish이면서 신뢰도 3 이상 — 세션마다 상시 주입되는 항목">
+      <span class="tile-label"><span class="mark mark-core" aria-hidden="true"></span>코어 · 상시 주입</span>
+      <span class="tile-num" id="n-core">–</span>
+    </div>
+  </section>
+
+  <section id="toolbar" aria-label="검색·동작">
+    <input id="q" type="search" aria-label="검색" placeholder="검색 — 쉼표로 여러 쿼리 (예: 배포, deploy)">
+    <button id="btn-search">검색</button>
+    <button id="btn-refresh">전체 목록</button>
+    <button id="btn-doc" aria-expanded="false" aria-controls="doc">문서 뷰</button>
+    <button id="btn-add" class="primary">+ 추가</button>
+  </section>
+
+  <!-- 필터 — 신뢰도 범위 · 기간(갱신일). 구분 필터는 섹션 타일 클릭(다중 토글)이 담당.
+       목록·검색 결과에 공통 적용 -->
+  <section id="filters" aria-label="필터">
+    <label>신뢰도 <input id="flt-cmin" type="number" min="1" placeholder="—" aria-label="신뢰도 이상"></label>
+    <span aria-hidden="true">~</span>
+    <label><input id="flt-cmax" type="number" min="1" placeholder="—" aria-label="신뢰도 이하"></label>
+    <span class="flt-sep" aria-hidden="true"></span>
+    <label>기간 <input id="flt-from" type="date" aria-label="기간 시작"></label>
+    <span aria-hidden="true">~</span>
+    <label><input id="flt-to" type="date" aria-label="기간 끝"></label>
+  </section>
+
+  <form id="editor" class="panel" hidden>
+    <h2 id="editor-title">새 항목</h2>
+    <input type="hidden" id="f-id">
+    <div class="grid">
+      <label>구분
+        <select id="f-section">
+          <option value="punish">punish</option>
+          <option value="forgive">forgive</option>
+          <option value="env">env</option>
+          <option value="task">task</option>
+        </select>
+      </label>
+      <label>영역 (area)
+        <input id="f-area" placeholder="[배포: CI]" required>
+      </label>
+      <label>신뢰도
+        <input id="f-confidence" type="number" min="1" max="9" value="1">
+      </label>
+      <label class="full">규칙 (rule)
+        <input id="f-rule" required>
+      </label>
+      <label class="full">근거 (evidence)
+        <input id="f-evidence" required>
+      </label>
+    </div>
+    <div class="editor-actions">
+      <button type="submit" class="primary">저장</button>
+      <button type="button" id="f-cancel">취소</button>
+    </div>
+  </form>
+
+  <pre id="doc" class="panel" hidden></pre>
+
+  <div class="tablewrap panel">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">#</th><th scope="col">구분</th><th scope="col">영역</th><th scope="col">규칙</th>
+          <th scope="col">근거</th><th scope="col">신뢰도</th><th scope="col">갱신</th>
+          <th scope="col" aria-label="동작"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // 서버(memory/server.ts)의 mem:* 이벤트를 same-origin Socket.IO로 직접 호출한다
+    // — 별도 REST 레이어 없음. 응답 형식은 { ok, ...payload } (server.ts의 handle 참조).
+    const CORE_MIN = 3; // store.ts의 CORE_CONFIDENCE — punish & conf>=3 = 상시 주입
+    let rowCache = []; // 마지막 렌더 목록 — 수정 버튼이 폼을 채울 때 사용
+    let allRows = []; // 마지막 전체 목록 — 통계 타일과 클라이언트 필터용
+    const secFilter = new Set(); // 섹션 타일 클릭으로 토글되는 구분 필터 — 빈 셋 = 전체
+    const $ = (id) => document.getElementById(id);
+    const socket = io({ auth: { token: localStorage.getItem("nunchi-token") ?? "" } });
+
+    // 토큰 불일치 → 입력받아 저장 후 재접속 (자동 재시도마다 다시 묻지 않도록 1회만)
+    let tokenAsked = false;
+    socket.on("connect_error", (e) => {
+      if (!String(e.message).includes("unauthorized") || tokenAsked) return;
+      tokenAsked = true;
+      const t = prompt("접속 토큰 (memory-config.json의 token)");
+      if (t) { localStorage.setItem("nunchi-token", t); location.reload(); }
+    });
+
+    window.addEventListener("unhandledrejection", (e) =>
+      alert(e.reason?.message ?? e.reason));
+
+    async function req(ev, payload) {
+      const r = payload === undefined
+        ? await socket.timeout(5000).emitWithAck(ev)
+        : await socket.timeout(5000).emitWithAck(ev, payload);
+      if (!r.ok) throw new Error(r.error);
+      return r;
+    }
+
+    const esc = (s) => String(s).replace(/[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+    const isCore = (e) => e.section === "punish" && e.confidence >= CORE_MIN;
+    // "2026-07-08 19:05:37.123" → "2026-07-08 19:05" (전체는 title로)
+    const shortDate = (s) => String(s).slice(0, 16);
+    const meter = (c) => `<span class="meter" aria-hidden="true">${
+      [1, 2, 3].map((n) => `<i class="${c >= n ? "on" : ""}"></i>`).join("")}</span>`;
+
+    // 신뢰도·기간 필터의 원본은 DOM(#filters 입력들), 구분은 secFilter 셋
+    const filtersActive = () => secFilter.size > 0 ||
+      $("flt-cmin").value !== "" || $("flt-cmax").value !== "" ||
+      $("flt-from").value !== "" || $("flt-to").value !== "";
+    function applyFilters(rows) {
+      const min = Number($("flt-cmin").value) || 0;
+      const max = Number($("flt-cmax").value) || Infinity; // 빈 입력 = 상한 없음
+      const [from, to] = [$("flt-from").value, $("flt-to").value];
+      return rows.filter((e) =>
+        (!secFilter.size || secFilter.has(e.section)) &&
+        e.confidence >= min && e.confidence <= max &&
+        (!from || e.updated_at.slice(0, 10) >= from) &&
+        (!to || e.updated_at.slice(0, 10) <= to));
+    }
+    /** 타일 aria-pressed를 secFilter와 동기화 */
+    function syncTiles() {
+      document.querySelectorAll(".tile[data-sec]").forEach((t) =>
+        t.setAttribute("aria-pressed", String(secFilter.has(t.dataset.sec))));
+    }
+
+    function render(rows) {
+      rowCache = rows;
+      $("rows").innerHTML = rows.length ? rows.map((e) => `
+        <tr>
+          <td class="num">${e.id}</td>
+          <td><span class="chip"><span class="mark sec-${esc(e.section)}" aria-hidden="true"></span>${esc(e.section)}</span></td>
+          <td>${esc(e.area)}${isCore(e) ? '<span class="core">코어</span>' : ""}</td>
+          <td>${esc(e.rule)}</td>
+          <td class="ev">${esc(e.evidence)}</td>
+          <td class="conf">${meter(e.confidence)}<span class="num">${e.confidence}</span></td>
+          <td class="updated" title="${esc(e.updated_at)}">${esc(shortDate(e.updated_at))}</td>
+          <td class="actions">
+            <button data-act="edit" data-id="${e.id}">수정</button>
+            <button data-act="confirm" data-id="${e.id}" class="react" title="맞았음 — 신뢰도 +1 (confirm)" aria-label="좋아요 — 신뢰도 +1">👍</button>
+            <button data-act="down" data-id="${e.id}" class="react" title="틀렸음 — 신뢰도 −1" aria-label="싫어요 — 신뢰도 −1">👎</button>
+            <button data-act="remove" data-id="${e.id}">삭제</button>
+          </td>
+        </tr>`).join("")
+        : `<tr class="empty"><td colspan="8">${
+          $("q").value.trim() || filtersActive()
+            ? "일치하는 항목이 없습니다."
+            : "항목이 없습니다 — ‘+ 추가’로 첫 항목을 기록하세요."}</td></tr>`;
+    }
+
+    function renderStats(rows) {
+      const n = (sec) => rows.filter((e) => e.section === sec).length;
+      $("n-punish").textContent = n("punish");
+      $("n-forgive").textContent = n("forgive");
+      $("n-env").textContent = n("env");
+      $("n-task").textContent = n("task");
+      $("n-core").textContent = rows.filter(isCore).length;
+    }
+
+    // 전체 목록 1회 조회로 통계와 화면을 함께 갱신 — 필터는 클라이언트에서 거른다
+    async function refresh() {
+      allRows = (await req("mem:list", {})).rows;
+      renderStats(allRows);
+      render(applyFilters(allRows));
+    }
+
+    async function search() {
+      const queries = $("q").value.split(",").map((s) => s.trim()).filter(Boolean);
+      if (!queries.length) return refresh();
+      // ponytail: 서버는 상위 50건만 반환 — 필터는 결과에 후적용이라 대형 DB에선 누락 가능. 필요해지면 서버 필터로
+      render(applyFilters((await req("mem:search", { queries })).rows));
+    }
+
+    document.querySelectorAll(".tile[data-sec]").forEach((t) =>
+      t.addEventListener("click", async () => {
+        const sec = t.dataset.sec;
+        secFilter.has(sec) ? secFilter.delete(sec) : secFilter.add(sec);
+        syncTiles();
+        await search(); // 검색어가 있으면 필터 적용 재검색, 없으면 목록 갱신
+      }));
+
+    $("filters").addEventListener("change", search);
+
+    $("rows").addEventListener("click", async (ev) => {
+      const b = ev.target.closest("button");
+      if (!b) return;
+      const id = Number(b.dataset.id);
+      if (b.dataset.act === "remove") {
+        if (confirm(`#${id} 삭제할까요?`)) { await req("mem:remove", { id }); await refresh(); }
+      } else if (b.dataset.act === "confirm") {
+        await req("mem:update", { id, confirm: true });
+        await refresh();
+      } else if (b.dataset.act === "down") {
+        const cur = rowCache.find((r) => r.id === id);
+        // 하한 1 — 이미 1이면 요청 없이 무시 (updated_at 불필요 갱신 방지)
+        if (cur && cur.confidence > 1) {
+          await req("mem:update", { id, confidence: cur.confidence - 1 });
+          await refresh();
+        }
+      } else if (b.dataset.act === "edit") {
+        openEditor(rowCache.find((r) => r.id === id));
+      }
+    });
+
+    function openEditor(e) {
+      $("editor").hidden = false;
+      $("editor-title").textContent = e ? `#${e.id} 수정` : "새 항목";
+      $("f-id").value = e?.id ?? "";
+      $("f-section").value = e?.section ?? "punish";
+      $("f-area").value = e?.area ?? "";
+      $("f-rule").value = e?.rule ?? "";
+      $("f-evidence").value = e?.evidence ?? "";
+      $("f-confidence").value = e?.confidence ?? 1;
+      $("f-area").focus();
+    }
+
+    $("editor").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const fields = {
+        section: $("f-section").value,
+        area: $("f-area").value,
+        rule: $("f-rule").value,
+        evidence: $("f-evidence").value,
+        confidence: Number($("f-confidence").value),
+      };
+      const id = $("f-id").value;
+      if (id) await req("mem:update", { id: Number(id), ...fields });
+      else await req("mem:add", fields);
+      $("editor").hidden = true;
+      await refresh();
+    });
+
+    $("f-cancel").onclick = () => ($("editor").hidden = true);
+    $("btn-add").onclick = () => openEditor(null);
+    $("btn-search").onclick = search;
+    $("btn-refresh").onclick = () => {
+      $("q").value = "";
+      secFilter.clear();
+      $("flt-cmin").value = "";
+      $("flt-cmax").value = "";
+      $("flt-from").value = "";
+      $("flt-to").value = "";
+      syncTiles();
+      refresh();
+    };
+    $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+    $("btn-doc").onclick = async () => {
+      const el = $("doc");
+      if (!el.hidden) { el.hidden = true; $("btn-doc").setAttribute("aria-expanded", "false"); return; }
+      el.textContent = (await req("mem:doc")).doc ?? "(비어 있음)";
+      el.hidden = false;
+      $("btn-doc").setAttribute("aria-expanded", "true");
+    };
+
+    const conn = $("conn");
+    socket.on("connect", async () => {
+      conn.dataset.state = "on";
+      const info = await req("mem:info");
+      $("info").textContent = `${info.projectDir} · port ${info.port}`;
+      await refresh();
+    });
+    socket.on("disconnect", () => {
+      conn.dataset.state = "off";
+      $("info").textContent = "연결 끊김 — 재접속 중…";
+    });
+  </script>
+</body>
+</html>
