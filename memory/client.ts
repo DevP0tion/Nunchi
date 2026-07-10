@@ -84,11 +84,11 @@ export interface MemoryClient {
   /** 서버 프로젝트의 보정 문서 전문 (없으면 null). 구버전 서버는 timeout 에러 */
   doc(): Promise<string | null>;
   add(e: NewMemoryEntry): Promise<number>;
-  update(id: number, fields: Partial<NewMemoryEntry> & { confirm?: boolean }): Promise<boolean>;
+  update(id: number, fields: Partial<NewMemoryEntry> & { confirm?: boolean; reverse?: boolean }): Promise<boolean>;
   remove(id: number): Promise<boolean>;
   search(
     queries: string[],
-    opts?: { section?: MemorySection; limit?: number; excludeCore?: boolean }
+    opts?: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean }
   ): Promise<MemoryEntry[]>;
   list(opts?: { section?: MemorySection; minConfidence?: number }): Promise<MemoryEntry[]>;
   /** 상시 주입 코어: 벌주는 것 신뢰도 높음(3+) */

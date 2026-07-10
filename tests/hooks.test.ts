@@ -47,6 +47,7 @@ test(
       expect(ctx).toContain("nunchi_search");
       expect(ctx).toContain("배포 게이트를 생략하지 않는다"); // 코어는 주입
       expect(ctx).not.toContain("일회성 스크립트"); // 저신뢰는 주입 안 함
+      expect(ctx).toContain("완결된 작업"); // task 기록 규약 요약
     } finally {
       await mem.shutdown();
       await rmProject(dir);
@@ -112,6 +113,33 @@ test(
 );
 
 test(
+  "user-prompt-submit: 보정·작업 두 블록을 각 쿼터로 출력, 한쪽 0건이면 생략",
+  async () => {
+    const { dir, mem } = await seeded(); // punish 코어 + forgive 저신뢰
+    try {
+      await mem.add({ section: "task", area: "[리팩토링: 스토어]", rule: "접근: 테스트 먼저", evidence: "2026-07-09 완료" });
+      // "테스트" → forgive(테스트 생략) + task(테스트 먼저) 둘 다 매칭
+      const both = await runHook("user-prompt-submit.ts", dir, { prompt: "테스트 접근을 어떻게 잡을까" });
+      const ctx = JSON.parse(both).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain("관련 보정 항목");
+      expect(ctx).toContain("일회성 스크립트 테스트 생략 가능"); // 보정 블록
+      expect(ctx).toContain("관련 작업 기록");
+      expect(ctx).toContain("[작업 기록·신뢰도"); // SECTION_LABEL task
+      expect(ctx).toContain("접근: 테스트 먼저"); // task 블록
+      // task만 매칭되는 프롬프트 → 보정 블록 생략
+      const onlyTask = await runHook("user-prompt-submit.ts", dir, { prompt: "리팩토링 스토어 절차" });
+      const ctx2 = JSON.parse(onlyTask).hookSpecificOutput.additionalContext as string;
+      expect(ctx2).toContain("관련 작업 기록");
+      expect(ctx2).not.toContain("관련 보정 항목");
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
   "subagent-start: 규약 + 코어 주입, 서버 다운이면 규약만",
   async () => {
     const { dir, mem } = await seeded();
@@ -121,6 +149,7 @@ test(
       expect(ctx).toContain("nunchi_search"); // 규약 안내
       expect(ctx).toContain("배포 게이트를 생략하지 않는다"); // 코어
       expect(ctx).not.toContain("일회성 스크립트"); // 저신뢰는 프롬프트 없이는 주입 안 함
+      expect(ctx).toContain("완결된 작업"); // task 기록 규약 요약
     } finally {
       await mem.shutdown();
       // 서버 다운: 규약 1줄은 그래도 주입 (도구 사용 안내는 유효)
@@ -146,6 +175,7 @@ test(
       const parsed = JSON.parse(out);
       expect(parsed.decision).toBe("block");
       expect(parsed.reason).toContain("nunchi_record"); // 기록 지시가 도구 기준
+      expect(parsed.reason).toContain("완결된 작업"); // (B) 작업 점검 문구
       // 다음 구간: 1턴째에 기록 발생 → 2턴째 점검 생략
       expect(await run(sid)).toBe("");
       await mem.add({ section: "env", area: "[x]", rule: "r", evidence: "2026-07-06 e" });

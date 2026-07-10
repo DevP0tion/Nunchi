@@ -284,9 +284,17 @@ if (import.meta.main) {
       })(ack)
     );
     socket.on("mem:update", (p, ack) =>
-      handle(`mem:update #${p.id}${p.confirm ? " confirm" : ""}`, () => {
+      handle(`mem:update #${p.id}${p.confirm ? " confirm" : p.reverse ? " reverse" : ""}`, () => {
         const id = Number(p.id);
         if (p.confirm) return { updated: store.confirm(id) };
+        if (p.reverse) {
+          // reverse는 store가 forgive 전용을 검증한다 (env·punish·task 대상은 throw)
+          if (p.evidence === undefined) throw new Error("reverse에는 evidence(새 사건 1줄)가 필요하다");
+          const updated = store.reverse(id, String(p.evidence));
+          // reverse는 evidence를 교체해 keywords가 비워지므로 edit 경로와 동일하게 재보강한다
+          if (updated && model) void enrich(id);
+          return { updated };
+        }
         const fields: Partial<NewMemoryEntry> = {};
         if (p.section !== undefined) fields.section = p.section;
         if (p.area !== undefined) fields.area = String(p.area);
@@ -306,7 +314,9 @@ if (import.meta.main) {
       const queries = Array.isArray(p.queries) ? p.queries.map(String) : [];
       handle(`mem:search [${queries.join(" | ")}]`, () => ({
         rows: store.search(queries, {
-          section: p.section, limit: Number(p.limit) || undefined,
+          // 구 클라이언트의 단수 section 페이로드를 배열로 매핑 (하위 호환)
+          sections: Array.isArray(p.sections) ? p.sections : p.section ? [p.section] : undefined,
+          limit: Number(p.limit) || undefined,
           excludeCore: Boolean(p.excludeCore),
         }),
       }))(ack);

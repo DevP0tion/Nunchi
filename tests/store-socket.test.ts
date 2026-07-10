@@ -66,6 +66,36 @@ test(
   20000
 );
 
+test(
+  "mem:search sections 배열·단수 하위호환 + mem:update reverse 왕복",
+  async () => {
+    const A = mkdtempSync(join(tmpdir(), "nunchi-task-"));
+    await assignFreePort(A);
+    const mem = await connectMemory(A);
+    try {
+      const f = await mem.add({ section: "forgive", area: "[테스트: 생략]", rule: "테스트 생략 가능", evidence: "2026-06-20 무사고", confidence: 3 });
+      const t = await mem.add({ section: "task", area: "[리팩토링: 스토어]", rule: "접근: 테스트 먼저", evidence: "2026-07-09 완료" });
+      // sections 배열 필터 — task만
+      expect((await mem.search(["테스트"], { sections: ["task"] })).map((e) => e.id)).toEqual([t]);
+      // 단수 section 하위호환 (구 클라이언트 페이로드) — 서버가 [p.section]으로 매핑
+      expect((await mem.search(["테스트"], { section: "forgive" } as never)).map((e) => e.id)).toEqual([f]);
+      // reverse 왕복: forgive → punish·신뢰도1·근거 교체
+      expect(await mem.update(f, { reverse: true, evidence: "2026-07-09 생략했다 사고" })).toBe(true);
+      const rev = (await mem.list({ section: "punish" }))[0];
+      expect(rev.confidence).toBe(1);
+      expect(rev.evidence).toBe("2026-07-09 생략했다 사고");
+      // reverse에 evidence 누락 → 에러
+      await expect(mem.update(t, { reverse: true } as never)).rejects.toThrow();
+      // task 대상 reverse (evidence 있어도) → forgive 전용이라 거부
+      await expect(mem.update(t, { reverse: true, evidence: "2026-07-09 x" })).rejects.toThrow();
+    } finally {
+      await mem.shutdown();
+      await rmProject(A);
+    }
+  },
+  20000
+);
+
 test("noSpawn: 서버 미기동이면 스폰하지 않고 즉시 실패", async () => {
   const A = mkdtempSync(join(tmpdir(), "nunchi-ns-"));
   await assignFreePort(A); // 빈 포트 배정 — 서버 없음

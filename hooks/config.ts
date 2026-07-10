@@ -161,6 +161,7 @@ export const SECTION_LABEL: Record<string, string> = {
   punish: "벌주는 것",
   forgive: "용서하는 것",
   env: "환경 특이사항",
+  task: "작업 기록",
 };
 
 export function formatMemoryEntries(rows: MemoryEntryLite[]): string {
