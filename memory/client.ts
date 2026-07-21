@@ -98,6 +98,8 @@ export interface MemoryClient {
   /** 서버 프로세스 종료 (모든 클라이언트에 영향) */
   shutdown(): Promise<void>;
   close(): void;
+  /** 소켓 생존 여부 — 캐시된 클라이언트의 죽은 소켓 재사용을 막으려 호출 전 확인 */
+  readonly connected: boolean;
 }
 
 function tryConnect(
@@ -235,5 +237,8 @@ export async function connectMemory(
       s.close();
     },
     close: () => s.close(),
+    get connected() {
+      return s.connected;
+    },
   };
 }
