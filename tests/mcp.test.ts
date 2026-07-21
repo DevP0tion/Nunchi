@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assignFreePort } from "../memory/client.ts";
+import { assignFreePort, connectMemory } from "../memory/client.ts";
 import { rmProject } from "./helpers.ts";
 
 const SERVER = fileURLToPath(new URL("../mcp/server.ts", import.meta.url));
@@ -76,6 +76,77 @@ test(
     }
   },
   25000
+);
+
+test(
+  // 이슈 #1 회귀: memory server 재시작 후 죽은 캐시 소켓을 영구 재사용하던 문제.
+  // 구코드는 재호출이 영구 timeout, 신규 코드는 connected 확인 → 재연결/재스폰으로 복구.
+  "MCP: memory server 종료 후에도 도구 호출이 재연결로 복구된다",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-mcp3-"));
+    await assignFreePort(dir);
+    // 테스트가 memory server 수명을 직접 통제 — MCP는 떠 있는 이 서버에 붙어 캐시한다
+    const srv = await connectMemory(dir);
+    const proc = Bun.spawn(["bun", SERVER], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: dir, NUNCHI_NO_WINDOW: "1" },
+      stdin: "pipe", stdout: "pipe", stderr: "ignore",
+    });
+    const reader = proc.stdout.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    const responses = new Map<number, { result?: { isError?: boolean } }>();
+    const pump = (async () => {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value);
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          try { const m = JSON.parse(line); if (m.id != null) responses.set(m.id, m); } catch { /* 불완전 */ }
+        }
+      }
+    })().catch(() => {});
+    const send = (msg: object) => proc.stdin.write(JSON.stringify(msg) + "\n");
+    const waitFor = async (id: number) => {
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        const r = responses.get(id);
+        if (r) return r;
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      throw new Error(`timeout waiting for id ${id}`);
+    };
+    try {
+      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+        protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" },
+      }});
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      await proc.stdin.flush();
+      await waitFor(1);
+      // 1) 첫 호출 → MCP가 떠 있는 서버에 연결·캐시
+      send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "nunchi_list", arguments: {} }});
+      await proc.stdin.flush();
+      expect((await waitFor(2)).result?.isError).toBeFalsy();
+      // 2) 서버 종료 → MCP의 캐시 소켓이 죽는다
+      await srv.shutdown();
+      // 3) 재호출 → 신규 코드는 재연결(+재스폰)으로 복구. connected 감지 타이밍 레이스 대비
+      //    최대 3회 재시도 — 구코드는 몇 번을 해도 죽은 캐시라 영구 실패한다.
+      let recovered = false;
+      for (let id = 3; id <= 5 && !recovered; id++) {
+        send({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "nunchi_list", arguments: {} }});
+        await proc.stdin.flush();
+        recovered = !(await waitFor(id)).result?.isError;
+      }
+      expect(recovered).toBe(true);
+    } finally {
+      proc.kill();
+      await pump;
+      try { srv.close(); } catch { /* 이미 종료 */ }
+      await rmProject(dir); // MCP가 재스폰한 서버가 DB를 잠그므로 rmProject가 정리
+    }
+  },
+  40000
 );
 
 test(

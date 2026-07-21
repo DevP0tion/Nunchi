@@ -10,9 +10,21 @@ import { connectMemory, type MemoryClient } from "../memory/client.ts";
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
 let memP: Promise<MemoryClient> | null = null;
-/** 접속은 첫 도구 호출 시 1회 — 실패하면 다음 호출이 재시도 */
-function mem(): Promise<MemoryClient> {
-  memP ??= connectMemory(projectDir).catch((e) => {
+/** 접속은 첫 도구 호출 시 1회 — 실패하면 다음 호출이 재시도.
+ *  캐시된 클라이언트의 소켓이 죽었으면(서버 재시작·창 닫힘) 버리고 재연결한다 —
+ *  재연결이 connectMemory를 다시 타므로 auto-start 스폰 경로도 함께 복원된다. */
+async function mem(): Promise<MemoryClient> {
+  if (memP) {
+    try {
+      const c = await memP;
+      if (c.connected) return c;
+      c.close(); // 죽은 소켓 정리 후 재연결
+    } catch {
+      /* 이전 연결이 reject됨 — 아래서 재시도 */
+    }
+    memP = null;
+  }
+  memP = connectMemory(projectDir).catch((e) => {
     memP = null;
     throw e; // ProjectMismatchError 안내문도 그대로 도구 에러로 전달된다
   });
