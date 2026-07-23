@@ -113,3 +113,52 @@ test("이벤트 ts는 행 updated_at과 동일 (replay 동등성의 전제)", ()
   const ev = db.query(`SELECT ts FROM events WHERE entry_id = ?`).get(id) as { ts: string };
   expect(ev.ts).toBe(row.updated_at);
 });
+
+test("promote: 관찰 → 항목 승격, 계보 보존, 잘못된 대상 거부", () => {
+  const { s } = make();
+  const o1 = s.add({ section: "observe", area: "[ship: 과잉 의심]", rule: "PR 과잉?", evidence: "2026-07-20" });
+  const o2 = s.add({ section: "observe", area: "[ship: 과잉 의심]", rule: "PR 과잉 재발", evidence: "2026-07-24" });
+  const id = s.promote([o1, o2], { section: "forgive", area: "[ship: 배포 절차]", rule: "PR 단계 생략 가능", evidence: "2026-07-24 반복 관찰" });
+  expect(s.tree(id)!.sources.map((e) => e.id).sort()).toEqual([o1, o2]);
+  expect(s.tree(o1)!.promotedTo?.id).toBe(id);
+  expect(() => s.promote([o1], { section: "punish", area: "[x]", rule: "r", evidence: "e" })).toThrow(); // 이미 승격됨
+  const p = s.add({ section: "punish", area: "[y]", rule: "r", evidence: "e" });
+  expect(() => s.promote([p], { section: "punish", area: "[x]", rule: "r", evidence: "e" })).toThrow(); // 관찰 아님
+  const o3 = s.add({ section: "observe", area: "[z]", rule: "r", evidence: "e" });
+  expect(() => s.promote([o3], { section: "observe", area: "[x]", rule: "r", evidence: "e" })).toThrow(); // observe로 승격 불가
+  expect(() => s.promote([], { section: "punish", area: "[x]", rule: "r", evidence: "e" })).toThrow(); // 빈 sources
+});
+
+test("tree: 도메인 형제·자유 참조·canonical 부모", () => {
+  const { s } = make();
+  const a = s.add({ section: "forgive", area: "[ship: 배포 절차]", rule: "r", evidence: "e" });
+  const b = s.add({ section: "punish", area: "[ship: 테스트 게이트]", rule: "r", evidence: "e" });
+  const c = s.add({ section: "env", area: "[윈도우: 인코딩]", rule: "r", evidence: "e" });
+  const o = s.add({ section: "observe", area: "[ship: 의심]", rule: "r", evidence: "e", parent: a });
+  const t = s.tree(a)!;
+  expect(t.domain).toBe("ship");
+  expect(t.siblings.map((e) => e.id)).toEqual([b]); // observe·타 도메인 제외
+  expect(s.tree(o)!.parent?.id).toBe(a);
+  expect(s.link(a, [c])).toBe(true);
+  expect(s.tree(a)!.refs.map((e) => e.id)).toEqual([c]);
+  expect(s.link(a, [c, c])).toBe(true); // 중복은 병합
+  expect(s.tree(a)!.refs.length).toBe(1);
+  expect(() => s.link(a, [9999])).toThrow(); // 없는 참조 대상
+  expect(() => s.link(a, [a])).toThrow();    // 자기 참조만 남으면 거부
+  expect(s.tree(9999)).toBe(null);
+});
+
+test("replay: promote/link 이벤트 재현 + exportEvents 전량 반환", () => {
+  const { db, s } = make();
+  const o = s.add({ section: "observe", area: "[a: 의심]", rule: "r", evidence: "e" });
+  const pr = s.promote([o], { section: "punish", area: "[a: 확정]", rule: "r", evidence: "2026-07-24", confidence: 3 });
+  const f = s.add({ section: "forgive", area: "[b]", rule: "r", evidence: "e" });
+  s.link(f, [pr]);
+  const before = JSON.stringify(s.list({ withObserve: true }));
+  rebuildDerived(db);
+  expect(JSON.stringify(s.list({ withObserve: true }))).toBe(before);
+  expect(s.tree(o)!.promotedTo?.id).toBe(pr);
+  expect(s.tree(f)!.refs.map((e) => e.id)).toEqual([pr]);
+  expect(s.core().map((e) => e.id)).toEqual([pr]);
+  expect(s.exportEvents().map((e) => e.type)).toEqual(["observe", "promote", "add", "link"]);
+});

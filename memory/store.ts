@@ -47,6 +47,23 @@ export interface NewMemoryEntry {
 /** 상시 주입 코어 기준: punish AND confidence >= 3 (SKILL.md의 '높음') */
 export const CORE_CONFIDENCE = 3;
 
+/** 항목의 관계 트리 — 승격 계보(canonical) + 도메인 형제(파생) + 자유 참조(비권위) */
+export interface MemoryTree {
+  entry: MemoryEntry;
+  /** 관찰 기록 시 지정한 canonical 부모 */
+  parent: MemoryEntry | null;
+  /** 이 항목으로 승격된 관찰들 */
+  sources: MemoryEntry[];
+  /** 이 관찰이 승격된 항목 */
+  promotedTo: MemoryEntry | null;
+  /** area "[도메인: …]"의 도메인 */
+  domain: string | null;
+  /** 같은 도메인 항목 (observe 제외, 최대 10) */
+  siblings: MemoryEntry[];
+  /** 자유 참조 */
+  refs: MemoryEntry[];
+}
+
 const COLS = "id, section, area, rule, evidence, confidence, updated_at";
 
 /** memory 테이블 컬럼 정의 — 신규 생성과 재구축(§task 마이그레이션)이 동일 CHECK를
@@ -330,6 +347,22 @@ export function createMemoryStore(db: Database) {
      WHERE area LIKE ? OR rule LIKE ? OR evidence LIKE ? OR keywords LIKE ?
      ORDER BY updated_at DESC LIMIT 50`
   );
+  const promoteMark = db.prepare(`UPDATE memory SET promoted_to = ? WHERE id = ?`);
+  const linkStmt = db.prepare(`UPDATE memory SET refs = ? WHERE id = ?`);
+  const sourcesStmt = db.prepare(`SELECT ${COLS} FROM memory WHERE promoted_to = ? ORDER BY id`);
+  const parentEvStmt = db.prepare(
+    `SELECT parent_id FROM events WHERE entry_id = ? AND type IN ('add','observe')
+     ORDER BY seq DESC LIMIT 1`
+  );
+  const allStmt = db.prepare(
+    `SELECT ${COLS} FROM memory WHERE id != ? AND section != 'observe' ORDER BY updated_at DESC`
+  );
+  const exportStmt = db.prepare(
+    `SELECT seq, ts, type, entry_id, parent_id, refs, payload FROM events ORDER BY seq`
+  );
+  /** area "[도메인: …]" → 도메인. 관례 밖 표기는 null */
+  const domainOf = (area: string): string | null =>
+    /^\[([^:\]]+)/.exec(area)?.[1]?.trim() ?? null;
 
   return {
     add(e: NewMemoryEntry & { parent?: number }): number {
@@ -456,6 +489,71 @@ export function createMemoryStore(db: Database) {
         out = out.filter((r) => !(r.section === "punish" && r.confidence >= CORE_CONFIDENCE));
       out.sort((a, b) => a.rank - b.rank); // BM25 rank는 음수(낮을수록 관련) — 오름차순
       return out.slice(0, limit).map(({ rank: _r, ...e }) => e);
+    },
+    /** 관찰들 → 보정 항목 승격. 출처는 promote 이벤트의 sources와 관찰의 promoted_to로 보존 */
+    promote(sources: number[], e: NewMemoryEntry): number {
+      if (!sources.length) throw new Error("promote에는 근거 관찰 id가 1개 이상 필요하다");
+      if (e.section === "observe") throw new Error("승격 결과 섹션은 observe가 될 수 없다");
+      return db.transaction(() => {
+        for (const sid of sources) {
+          const cur = getStmt.get(sid) as Row | null;
+          if (!cur) throw new Error(`관찰 #${sid} 없음`);
+          if (cur.section !== "observe") throw new Error(`#${sid}는 관찰(observe)이 아니다 (${cur.section})`);
+          if (cur.promoted_to != null) throw new Error(`#${sid}는 이미 #${cur.promoted_to}로 승격됨`);
+        }
+        const id = (insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1) as { id: number }).id;
+        for (const sid of sources) promoteMark.run(id, sid);
+        logEvent("promote", id, {
+          section: e.section, area: e.area, rule: e.rule,
+          evidence: e.evidence, confidence: e.confidence ?? 1, sources,
+        });
+        return id;
+      })();
+    },
+    /** 자유 참조 링크 병합 (비권위 — 지워도 canonical 훼손 없음) */
+    link(id: number, refIds: number[]): boolean {
+      return db.transaction(() => {
+        const cur = getStmt.get(id) as Row | null;
+        if (!cur) return false;
+        const clean = [...new Set(refIds.filter((r) => r !== id))];
+        if (!clean.length) throw new Error("link에는 자신이 아닌 참조 id가 1개 이상 필요하다");
+        for (const r of clean) if (!getStmt.get(r)) throw new Error(`참조 대상 #${r} 없음`);
+        const merged = [...new Set([...(JSON.parse(cur.refs) as number[]), ...clean])];
+        linkStmt.run(JSON.stringify(merged), id);
+        logEvent("link", id, { refs: clean }, null, clean);
+        return true;
+      })();
+    },
+    /** 항목의 관계 트리: 승격 계보(canonical) + 도메인 형제(파생) + 자유 참조(비권위) */
+    tree(id: number): MemoryTree | null {
+      const row = getStmt.get(id) as Row | null;
+      if (!row) return null;
+      const byId = (i: number | null | undefined): MemoryEntry | null => {
+        if (i == null) return null;
+        const r = getStmt.get(i) as Row | null;
+        return r ? strip(r) : null;
+      };
+      const parentRow = parentEvStmt.get(id) as { parent_id: number | null } | null;
+      const domain = domainOf(row.area);
+      // ponytail: 수백 행 규모 — 도메인 형제는 JS 필터로 충분, 인덱스 불필요
+      const siblings = domain
+        ? (allStmt.all(id) as MemoryEntry[]).filter((e) => domainOf(e.area) === domain).slice(0, 10)
+        : [];
+      const refs = (JSON.parse(row.refs) as number[])
+        .map(byId).filter((e): e is MemoryEntry => e !== null);
+      return {
+        entry: strip(row),
+        parent: byId(parentRow?.parent_id),
+        sources: sourcesStmt.all(id) as MemoryEntry[],
+        promotedTo: byId(row.promoted_to),
+        domain,
+        siblings,
+        refs,
+      };
+    },
+    /** canonical 저널 전량 — JSONL 내보내기·감사용 */
+    exportEvents(): MemoryEvent[] {
+      return exportStmt.all() as MemoryEvent[];
     },
   };
 }
