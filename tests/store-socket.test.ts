@@ -96,6 +96,41 @@ test(
   20000
 );
 
+test(
+  "v0.13 왕복 — observe/promote/tree/link/export",
+  async () => {
+    const A = mkdtempSync(join(tmpdir(), "nunchi-ev-"));
+    await assignFreePort(A);
+    const mem = await connectMemory(A);
+    try {
+      const o1 = await mem.add({ section: "observe", area: "[ship: 의심]", rule: "PR 과잉 의심", evidence: "2026-07-20" });
+      const o2 = await mem.add({ section: "observe", area: "[ship: 의심]", rule: "PR 과잉 재발", evidence: "2026-07-24" });
+      // 관찰은 기본 회수·목록에서 제외
+      expect((await mem.search(["의심"])).length).toBe(0);
+      expect((await mem.list({})).length).toBe(0);
+      expect((await mem.list({ section: "observe" })).length).toBe(2);
+      const id = await mem.promote([o1, o2], {
+        section: "forgive", area: "[ship: 배포 절차]", rule: "PR 단계 생략 가능", evidence: "2026-07-24 반복 관찰",
+      });
+      const t = (await mem.tree(id))!;
+      expect(t.sources.map((e) => e.id).sort()).toEqual([o1, o2]);
+      expect((await mem.tree(o1))!.promotedTo?.id).toBe(id);
+      const env = await mem.add({ section: "env", area: "[윈도우: 인코딩]", rule: "BOM 주의", evidence: "2026-07-24 e" });
+      expect(await mem.link(id, [env])).toBe(true);
+      expect((await mem.tree(id))!.refs.map((e) => e.id)).toEqual([env]);
+      const ex = await mem.exportEvents();
+      expect(ex.count).toBe(5); // observe×2 + promote + add + link
+      expect(ex.jsonl.split("\n").length).toBe(5);
+      // 잘못된 promote는 소켓 에러로 전달
+      await expect(mem.promote([o1], { section: "punish", area: "[x]", rule: "r", evidence: "e" })).rejects.toThrow();
+    } finally {
+      await mem.shutdown();
+      await rmProject(A);
+    }
+  },
+  20000
+);
+
 test("noSpawn: 서버 미기동이면 스폰하지 않고 즉시 실패", async () => {
   const A = mkdtempSync(join(tmpdir(), "nunchi-ns-"));
   await assignFreePort(A); // 빈 포트 배정 — 서버 없음
