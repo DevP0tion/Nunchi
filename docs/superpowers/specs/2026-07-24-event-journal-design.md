@@ -68,8 +68,9 @@ memory-forest 원칙: canonical 트리는 승격 계보 하나. 나머지는 지
 
 ## 4. API·인터페이스 (호환 유지)
 
-- 소켓: 기존 `mem:*` 불변. 추가 — `mem:observe`, `mem:promote`, `mem:tree`(계보·도메인·참조 조회),
-  `mem:export`(events JSONL 덤프).
+- 소켓: 기존 `mem:*` 불변. 관찰 기록은 `mem:add`(section `observe` + 선택적 `parent`)로 통합,
+  자유 참조는 `mem:update`의 `link: number[]` 플래그로 통합(confirm/reverse 플래그와 동일 패턴).
+  신규 이벤트 — `mem:promote`, `mem:tree`(계보·도메인·참조 조회), `mem:export`(events JSONL 덤프).
 - MCP: `nunchi_record`에 `section: "observe"` 허용, `nunchi_update`에 `action: "promote" | "link"` 추가,
   `nunchi_list`/`nunchi_search`에 관찰 포함 옵션. 도구 신설 없음.
 - hooks: UserPromptSubmit 변경 없음(관찰 제외는 store 보장). Stop hook 점검 문구에
