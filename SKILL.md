@@ -1,6 +1,6 @@
 ---
 name: nunchi
-description: 작업 강도 보정("적당히") 규약. 프로젝트별 보정 DB(memory.db memory 테이블)에 예측-실제 불일치(예측 어긋남)를 기록하고 재귀 개선한다. 다음 상황에서 반드시 이 스킬을 사용할 것 - 사용자가 "눈치", "적당히", "보정", "캘리브레이션", "calibration"을 언급할 때, 과잉/과소 대응(over/under-engineering) 판단이 필요할 때, 보정 항목의 기록·갱신·정제(pruning)가 필요할 때, Stop hook 점검([nunchi] 주기 점검)에 응답할 때, 검증 깊이·테스트 범위·리서치 강도를 어느 수준으로 할지 애매할 때, 작업을 마무리해 기록/갱신이 필요할 때, 유사 작업의 플레이북(작업 기록)을 회수할 때.
+description: 작업 강도 보정("적당히") 규약. 프로젝트별 보정 DB(memory.db memory 테이블)에 예측-실제 불일치(예측 어긋남)를 기록하고 재귀 개선한다. 다음 상황에서 반드시 이 스킬을 사용할 것 - 사용자가 "눈치", "적당히", "보정", "캘리브레이션", "calibration"을 언급할 때, 과잉/과소 대응(over/under-engineering) 판단이 필요할 때, 보정 항목의 기록·갱신·정제(pruning)가 필요할 때, Stop hook 점검([nunchi] 주기 점검)에 응답할 때, 검증 깊이·테스트 범위·리서치 강도를 어느 수준으로 할지 애매할 때, 작업을 마무리해 기록/갱신이 필요할 때, 유사 작업의 플레이북(작업 기록)을 회수할 때, 확신 없는 어긋남 의심의 관찰(observe) 기록·승격이 필요할 때.
 ---
 
 # nunchi — 작업 강도 보정
@@ -9,7 +9,7 @@ description: 작업 강도 보정("적당히") 규약. 프로젝트별 보정 DB
 
 ## 저장소와 회수
 
-- 저장소: `{path 폴더}/memory.db`의 `memory` 테이블 (프로젝트별 독립, memory server가 단일 소유). 항목 필드: section(punish=벌주는 것 / forgive=용서하는 것 / env=환경 특이사항 / task=작업 기록), area("[영역: 짧은 상황 서술]"), rule, evidence, confidence.
+- 저장소: `{path 폴더}/memory.db`의 `memory` 테이블 (프로젝트별 독립, memory server가 단일 소유). 항목 필드: section(punish=벌주는 것 / forgive=용서하는 것 / env=환경 특이사항 / task=작업 기록 / observe=관찰), area("[영역: 짧은 상황 서술]"), rule, evidence, confidence. 모든 변경은 같은 DB의 append-only `events` 테이블(canonical 저널)에 남는다 — 파생 상태(memory·FTS)는 replay로 재구축 가능하고, 내보내기는 `mem:export`(JSONL)가 담당한다.
 - 회수 3계층:
   1. **자동 주입** — SessionStart가 규약 요약 + 코어('벌주는 것' 신뢰도 3+)를, UserPromptSubmit이 프롬프트 관련 보정 3건 + 작업 기록 2건을 각 쿼터로, SubagentStart가 서브에이전트에 규약+코어를 주입한다. 모델 개입 없음.
   2. **`nunchi_search`** — 주입으로 부족할 때. 원문 어휘에 얽매이지 말고 유의어·관련어·한/영 변형 쿼리 2-5개를 배열로 전달한다 (시맨틱 매칭은 쿼리를 만드는 쪽의 몫).
@@ -23,6 +23,16 @@ description: 작업 강도 보정("적당히") 규약. 프로젝트별 보정 DB
 - `rule`: 무엇을 한다 / 생략해도 된다
 - `evidence`: "YYYY-MM-DD 실제로 있었던 일 1줄" — 반드시 실제 사건. 일반론("보통 테스트는 중요하다")은 기록하지 않는다.
 - 신뢰도(confidence)는 규칙을 따라서 무사고였던 관측 횟수. 같은 규칙이 재확인되면 새 항목을 만들지 말고 `nunchi_update(action: confirm)`으로 +1 한다 (날짜 자동 갱신). 주입·조회 결과의 `(#id)`가 갱신 대상 id다.
+
+## 관찰 레인 (observe) — 승격 사다리의 최하층
+
+확신이 없는 예측 어긋남 의심은 보정 항목 대신 **관찰**로 남긴다 — 기록 부담을 없애되 회수 품질을 지킨다.
+
+- 관찰은 자동 회수(코어 주입·매 메시지 검색)에서 제외된다. `nunchi_search`/`nunchi_list`에 `section: observe`를 명시할 때만 조회된다.
+- 기록: `nunchi_record(section: observe, ...)`. 관련 기존 항목이 있으면 `parent`로 계보를 연결한다.
+- 승격: 같은 신호가 반복 확인되면 `nunchi_update(action: promote, id: 대표 관찰, sources: 추가 관찰 id, section/area/rule/evidence: 새 항목)` — 출처 관찰들이 계보(sources·promoted_to)로 보존된다. 승격 사다리: 관찰 → 보정 항목(신뢰도 1~2) → 코어(3+, confirm으로 승격).
+- 트리 조회: `nunchi_list(tree: id)`가 승격 계보·도메인 형제(area "[도메인: …]" 관례)·자유 참조(`nunchi_update(action: link, refs: [...])`)를 반환한다.
+- 정제: 30일 경과 또는 60건 초과의 미승격 관찰은 정제(pruning) 후보다. 자동 삭제는 없다 — remove로만 소멸한다.
 
 ## 예측 어긋남 판정 — 기록할 것과 기록하지 않을 것
 
@@ -80,7 +90,8 @@ description: 작업 강도 보정("적당히") 규약. 프로젝트별 보정 DB
 2. 신뢰도 낮음(1) 상태로 6주 이상 갱신이 없는 항목을 삭제한다.
 3. 신뢰도 높음(3+) 항목은 보존한다. 단 근거 사건이 리팩토링 등으로 무효화되었으면 사용자에게 확인 후 삭제한다.
 4. task 항목도 동일 기준으로 정제한다 — 유사 작업유형은 통합(신뢰도 최댓값 유지), 신뢰도 1로 6주 미갱신은 삭제한다.
-5. 정제 결과(통합 n건, 삭제 n건)를 사용자에게 보고한다.
+5. 미승격 관찰(observe)이 30일 경과 또는 60건을 초과하면 정제 후보로 보고한다 — 반복 신호는 promote, 나머지는 삭제를 제안한다.
+6. 정제 결과(통합 n건, 삭제 n건)를 사용자에게 보고한다.
 
 ## 설정 (config)
 
