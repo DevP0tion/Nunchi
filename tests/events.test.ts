@@ -94,6 +94,18 @@ test("replay는 keywords(파생 보강)를 보존한다", () => {
     .toBe("동의어, synonym");
 });
 
+test("관찰 레인: 기본 회수(search/list)·코어에서 제외, 명시 요청 시 조회", () => {
+  const { s } = make();
+  const o = s.add({ section: "observe", area: "[검증: 과잉 의심]", rule: "검증 과잉이었을 수도", evidence: "2026-07-24 의심", confidence: 3 });
+  s.add({ section: "punish", area: "[검증: 확정]", rule: "검증 생략 금지", evidence: "2026-07-24", confidence: 3 });
+  expect(s.search(["검증"]).map((e) => e.section)).not.toContain("observe");
+  expect(s.search(["검증"], { sections: ["observe"] }).map((e) => e.id)).toEqual([o]);
+  expect(s.list({}).map((e) => e.section)).not.toContain("observe");
+  expect(s.list({ section: "observe" }).length).toBe(1);
+  expect(s.list({ withObserve: true }).length).toBe(2);
+  expect(s.core().map((e) => e.section)).not.toContain("observe"); // core는 punish 전용 — 확인용
+});
+
 test("이벤트 ts는 행 updated_at과 동일 (replay 동등성의 전제)", () => {
   const { db, s } = make();
   const id = s.add({ section: "env", area: "[a]", rule: "r", evidence: "e" });

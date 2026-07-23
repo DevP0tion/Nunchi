@@ -391,11 +391,12 @@ export function createMemoryStore(db: Database) {
         return true;
       })();
     },
-    list(opts: { section?: MemorySection; minConfidence?: number } = {}): MemoryEntry[] {
-      // ponytail: 필터 2개뿐이라 동적 WHERE — 쿼리 빌더 불필요
+    list(opts: { section?: MemorySection; minConfidence?: number; withObserve?: boolean } = {}): MemoryEntry[] {
+      // ponytail: 필터 3개뿐이라 동적 WHERE — 쿼리 빌더 불필요
       const where: string[] = [];
       const args: (string | number)[] = [];
       if (opts.section) { where.push("section = ?"); args.push(opts.section); }
+      else if (!opts.withObserve) where.push("section != 'observe'"); // 관찰은 명시 요청 시에만
       if (opts.minConfidence) { where.push("confidence >= ?"); args.push(opts.minConfidence); }
       const sql = `SELECT ${COLS} FROM memory
         ${where.length ? "WHERE " + where.join(" AND ") : ""}
@@ -448,7 +449,9 @@ export function createMemoryStore(db: Database) {
         }
       }
       let out = [...best.values()];
+      // 관찰(observe)은 명시 요청 시에만 — 자동 회수(훅)와 기본 검색을 오염시키지 않는다
       if (opts.sections) out = out.filter((r) => opts.sections!.includes(r.section));
+      else out = out.filter((r) => r.section !== "observe");
       if (opts.excludeCore)
         out = out.filter((r) => !(r.section === "punish" && r.confidence >= CORE_CONFIDENCE));
       out.sort((a, b) => a.rank - b.rank); // BM25 rank는 음수(낮을수록 관련) — 오름차순
@@ -471,6 +474,7 @@ const SECTION_TITLE: Record<MemorySection, string> = {
   forgive: "용서하는 것 (생략 가능)",
   env: "환경 특이사항",
   task: "작업 기록",
+  observe: "관찰 (미승격 신호)",
 };
 
 /** 기존 calibration.md → 항목 배열. 규칙/근거가 없는 항목은 skipped로 센다 */
@@ -516,11 +520,11 @@ export function parseLegacyDoc(md: string): { entries: NewMemoryEntry[]; skipped
 
 /** DB → 기존 3섹션 markdown. external-address 구버전 클라이언트(mem:doc)와 내보내기 겸용 */
 export function renderMemoryDoc(store: MemoryStore, projectName: string): string | null {
-  const all = store.list({});
+  const all = store.list({ withObserve: true });
   if (!all.length) return null;
   const label = (c: number) => (c >= CORE_CONFIDENCE ? `높음(${c})` : c === 2 ? "중간(2)" : `낮음(${c})`);
   const parts = [`# 보정 — ${projectName}`];
-  for (const sec of ["punish", "forgive", "env", "task"] as MemorySection[]) {
+  for (const sec of ["punish", "forgive", "env", "task", "observe"] as MemorySection[]) {
     const rows = all.filter((e) => e.section === sec);
     if (!rows.length) continue;
     parts.push("", `## ${SECTION_TITLE[sec]}`);
