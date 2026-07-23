@@ -34,6 +34,10 @@
       <span class="tile-label"><span class="mark sec-task" aria-hidden="true"></span>task · 작업 기록</span>
       <span class="tile-num" id="n-task">–</span>
     </button>
+    <button class="tile" data-sec="observe" aria-pressed="false" title="확신 없는 어긋남 의심 — 자동 회수 제외, 반복 확인 시 승격">
+      <span class="tile-label"><span class="mark sec-observe" aria-hidden="true"></span>observe · 관찰</span>
+      <span class="tile-num" id="n-observe">–</span>
+    </button>
     <div class="tile" title="punish이면서 신뢰도 3 이상 — 세션마다 상시 주입되는 항목">
       <span class="tile-label"><span class="mark mark-core" aria-hidden="true"></span>코어 · 상시 주입</span>
       <span class="tile-num" id="n-core">–</span>
@@ -70,6 +74,7 @@
           <option value="forgive">forgive</option>
           <option value="env">env</option>
           <option value="task">task</option>
+          <option value="observe">observe</option>
         </select>
       </label>
       <label>영역 (area)
@@ -195,12 +200,13 @@
       $("n-forgive").textContent = n("forgive");
       $("n-env").textContent = n("env");
       $("n-task").textContent = n("task");
+      $("n-observe").textContent = n("observe");
       $("n-core").textContent = rows.filter(isCore).length;
     }
 
     // 전체 목록 1회 조회로 통계와 화면을 함께 갱신 — 필터는 클라이언트에서 거른다
     async function refresh() {
-      allRows = (await req("mem:list", {})).rows;
+      allRows = (await req("mem:list", { withObserve: true })).rows;
       renderStats(allRows);
       render(applyFilters(allRows));
     }
@@ -209,7 +215,11 @@
       const queries = $("q").value.split(",").map((s) => s.trim()).filter(Boolean);
       if (!queries.length) return refresh();
       // ponytail: 서버는 상위 50건만 반환 — 필터는 결과에 후적용이라 대형 DB에선 누락 가능. 필요해지면 서버 필터로
-      render(applyFilters((await req("mem:search", { queries })).rows));
+      // 서버 기본 검색은 observe를 제외하므로 대시보드는 전 섹션(또는 타일 필터)을 명시한다
+      render(applyFilters((await req("mem:search", {
+        queries,
+        sections: secFilter.size ? [...secFilter] : ["punish", "forgive", "env", "task", "observe"],
+      })).rows));
     }
 
     document.querySelectorAll(".tile[data-sec]").forEach((t) =>

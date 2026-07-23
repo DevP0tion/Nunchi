@@ -17,6 +17,7 @@
   --sec-forgive: #1baf7a;
   --sec-env: #2a78d6;
   --sec-task: #eda100; /* dataviz slot3 yellow — red/aqua/blue와 CVD 구별(worst ΔE 37.7), 도트+라벨 relief */
+  --sec-observe: #8250df; /* purple — 기존 4색(red/green/blue/yellow)과 구별, 미승격 신호용 */
   /* 상태 색 — dataviz status 팔레트, 양 테마 고정 (섹션 색과 분리: 시리즈 색이 상태를 겸하지 않도록) */
   --ok: #0ca30c;
   --err: #d03b3b;
@@ -37,6 +38,7 @@
     --sec-forgive: #199e70;
     --sec-env: #3987e5;
     --sec-task: #c98500; /* dataviz slot3 yellow(dark) — worst adjacent ΔE 35.9, 대비 ≥3:1 */
+    --sec-observe: #9a6ee8; /* purple(dark) */
   }
 }
 
@@ -132,6 +134,7 @@ button.tile[aria-pressed="true"] { border-color: var(--ink); }
 .mark.sec-forgive { background: var(--sec-forgive); }
 .mark.sec-env { background: var(--sec-env); }
 .mark.sec-task { background: var(--sec-task); }
+.mark.sec-observe { background: var(--sec-observe); }
 .mark.mark-core { background: var(--ink); }
 
 /* ── 툴바 ───────────────────────────────────────────────── */
