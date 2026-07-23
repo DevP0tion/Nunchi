@@ -192,11 +192,69 @@ function applyMemorySchemaInner(db: Database): void {
   db.run(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`);
 }
 
-/** 파생 상태(memory·FTS)를 events replay로 재구축 — Task 3에서 이벤트 타입별 적용 완성 */
+/** 파생 상태(memory·FTS)를 events replay로 재구축한다.
+ *  keywords는 파생 보강이라 이벤트에 없다 — 재구축 전 스냅숏을 떠 id 기준으로 복원.
+ *  이벤트 ts가 행 updated_at으로 재현되므로 결과는 원본 파생 상태와 완전 동일하다 */
 export function rebuildDerived(db: Database): void {
-  // v0.13 Task 1 시점: 드리프트 시 스탬프만 재동기화 (replay는 Task 3)
-  const max = (db.query(`SELECT COALESCE(max(seq), 0) AS m FROM events`).get() as { m: number }).m;
-  db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('applied_seq', ?)`, [String(max)]);
+  db.transaction(() => {
+    const kw = db.prepare(`SELECT id, keywords FROM memory WHERE keywords != ''`).all() as
+      { id: number; keywords: string }[];
+    db.run(`DELETE FROM memory`);
+    const ins = db.prepare(
+      `INSERT INTO memory (id, section, area, rule, evidence, confidence, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    const events = db.prepare(`SELECT * FROM events ORDER BY seq`).all() as MemoryEvent[];
+    for (const ev of events) {
+      const p = JSON.parse(ev.payload) as Record<string, unknown>;
+      switch (ev.type) {
+        case "add":
+        case "observe":
+        case "promote":
+          ins.run(ev.entry_id, p.section as string, p.area as string, p.rule as string,
+            p.evidence as string, (p.confidence as number) ?? 1, ev.ts);
+          if (ev.type === "promote")
+            for (const sid of (p.sources as number[]) ?? [])
+              db.run(`UPDATE memory SET promoted_to = ? WHERE id = ?`, [ev.entry_id, sid]);
+          break;
+        case "edit": {
+          const sets: string[] = [];
+          const args: (string | number)[] = [];
+          for (const k of ["section", "area", "rule", "evidence", "confidence"] as const)
+            if (p[k] !== undefined) { sets.push(`${k} = ?`); args.push(p[k] as string | number); }
+          db.run(`UPDATE memory SET ${sets.concat("updated_at = ?").join(", ")} WHERE id = ?`,
+            [...args, ev.ts, ev.entry_id]);
+          break;
+        }
+        case "confirm":
+          db.run(`UPDATE memory SET confidence = confidence + 1, updated_at = ? WHERE id = ?`,
+            [ev.ts, ev.entry_id]);
+          break;
+        case "reverse":
+          db.run(`UPDATE memory SET section = 'punish', confidence = 1, evidence = ?, updated_at = ? WHERE id = ?`,
+            [p.evidence as string, ev.ts, ev.entry_id]);
+          break;
+        case "remove":
+          db.run(`DELETE FROM memory WHERE id = ?`, [ev.entry_id]);
+          break;
+        case "link": {
+          const row = db.query(`SELECT refs FROM memory WHERE id = ?`).get(ev.entry_id) as
+            { refs: string } | null;
+          if (!row) break;
+          const merged = [
+            ...new Set([...(JSON.parse(row.refs) as number[]), ...((p.refs as number[]) ?? [])]),
+          ];
+          db.run(`UPDATE memory SET refs = ? WHERE id = ?`, [JSON.stringify(merged), ev.entry_id]);
+          break;
+        }
+      }
+    }
+    const restore = db.prepare(`UPDATE memory SET keywords = ? WHERE id = ?`);
+    for (const k of kw) restore.run(k.keywords, k.id);
+    db.run(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`);
+    const max = (db.query(`SELECT COALESCE(max(seq), 0) AS m FROM events`).get() as { m: number }).m;
+    db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('applied_seq', ?)`, [String(max)]);
+  })();
 }
 
 export function createMemoryStore(db: Database) {

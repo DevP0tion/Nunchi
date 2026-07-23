@@ -2,7 +2,7 @@
 // v0.13 이벤트 저널: 스키마·부트스트랩·이벤트 기록·replay·관찰 레인·승격·참조
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { applyMemorySchema, createMemoryStore } from "../memory/store.ts";
+import { applyMemorySchema, createMemoryStore, rebuildDerived } from "../memory/store.ts";
 
 const make = () => {
   const db = new Database(":memory:");
@@ -58,6 +58,40 @@ test("observe 기록: 이벤트 타입 observe + parent_id 계보", () => {
   expect(rows[1].parent_id).toBe(a);
   expect(() => s.add({ section: "observe", area: "[x]", rule: "r", evidence: "e", parent: 9999 })).toThrow();
   void o;
+});
+
+test("replay 재구축: 파생 상태 드리프트를 events에서 완전 복원", () => {
+  const { db, s } = make();
+  const f = s.add({ section: "forgive", area: "[a]", rule: "r", evidence: "e" });
+  s.confirm(f);
+  s.update(f, { rule: "r2" });
+  const x = s.add({ section: "task", area: "[t]", rule: "r", evidence: "e" });
+  s.remove(x);
+  const before = JSON.stringify(s.list({}));
+  db.run(`DELETE FROM memory WHERE id = ?`, [f]); // 파생 드리프트 시뮬레이션
+  rebuildDerived(db);
+  expect(JSON.stringify(s.list({}))).toBe(before);
+  expect(s.get(f)!.confidence).toBe(2);
+  expect(s.get(f)!.rule).toBe("r2");
+});
+
+test("기동 드리프트 검사: applied_seq 불일치 시 자동 재구축", () => {
+  const { db, s } = make();
+  const id = s.add({ section: "punish", area: "[a]", rule: "r", evidence: "e" });
+  // 외부 도구가 이벤트만 추가(파생 미반영)한 상황
+  db.run(`INSERT INTO events (type, entry_id, payload) VALUES ('confirm', ?, '{}')`, [id]);
+  applyMemorySchema(db);
+  expect(s.get(id)!.confidence).toBe(2);
+});
+
+test("replay는 keywords(파생 보강)를 보존한다", () => {
+  const { db, s } = make();
+  const id = s.add({ section: "env", area: "[a]", rule: "r", evidence: "e" });
+  const ts = (db.query(`SELECT updated_at FROM memory WHERE id = ?`).get(id) as { updated_at: string }).updated_at;
+  s.setKeywords(id, ts, "동의어, synonym");
+  rebuildDerived(db);
+  expect((db.query(`SELECT keywords FROM memory WHERE id = ?`).get(id) as { keywords: string }).keywords)
+    .toBe("동의어, synonym");
 });
 
 test("이벤트 ts는 행 updated_at과 동일 (replay 동등성의 전제)", () => {
