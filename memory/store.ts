@@ -6,7 +6,24 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 
-export type MemorySection = "punish" | "forgive" | "env" | "task";
+export type MemorySection = "punish" | "forgive" | "env" | "task" | "observe";
+
+export type EventType =
+  | "add" | "observe" | "promote" | "confirm" | "reverse" | "edit" | "remove" | "link";
+
+/** canonical 저널 행 — append-only. 파생 상태(memory·FTS)는 이걸 replay해 재구축한다 */
+export interface MemoryEvent {
+  seq: number;
+  ts: string;
+  type: EventType;
+  entry_id: number;
+  /** 승격 계보의 canonical 부모 (관찰 기록 시 지정) */
+  parent_id: number | null;
+  /** 자유 참조 링크 (JSON 배열 문자열, 비권위) */
+  refs: string;
+  /** 이벤트별 데이터 (JSON) */
+  payload: string;
+}
 
 export interface MemoryEntry {
   id: number;
@@ -36,13 +53,27 @@ const COLS = "id, section, area, rule, evidence, confidence, updated_at";
  *  쓰도록 한 곳에 둔다. CHECK 문자열이 두 곳에 흩어지면 안 된다. */
 const MEMORY_COLS_DDL = `
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  section TEXT NOT NULL CHECK (section IN ('punish','forgive','env','task')),
+  section TEXT NOT NULL CHECK (section IN ('punish','forgive','env','task','observe')),
   area TEXT NOT NULL,
   rule TEXT NOT NULL,
   evidence TEXT NOT NULL,
   confidence INTEGER NOT NULL DEFAULT 1,
   keywords TEXT NOT NULL DEFAULT '',
+  promoted_to INTEGER,
+  refs TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now'))
+`;
+
+/** canonical 저널(events) 컬럼 정의 — append-only, UPDATE/DELETE 금지 */
+const EVENTS_DDL = `
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+  type TEXT NOT NULL CHECK (type IN
+    ('add','observe','promote','confirm','reverse','edit','remove','link')),
+  entry_id INTEGER NOT NULL,
+  parent_id INTEGER,
+  refs TEXT NOT NULL DEFAULT '[]',
+  payload TEXT NOT NULL DEFAULT '{}'
 `;
 
 /** 테이블 + FTS5 인덱스 초기화 (멱등). 0.8.x DB는 memory 테이블 하나로 마이그레이션.
@@ -75,6 +106,20 @@ function applyMemorySchemaInner(db: Database): void {
       SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM memory
     `);
     db.run(`DROP TABLE memory`); // 트리거 3종(memory_fts_ai/ad/au)도 함께 삭제된다
+    db.run(`ALTER TABLE memory_new RENAME TO memory`);
+  }
+  // v0.13 마이그레이션 1/2: observe 섹션 + promoted_to/refs 컬럼 — CHECK 변경 = 테이블 재구축.
+  // task 블록과 같은 패턴. task 블록이 이미 신 DDL로 재구축한 경우 'observe'가 포함돼 건너뛴다
+  const ddl13 = db
+    .query(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory'`)
+    .get() as { sql: string } | null;
+  if (ddl13 && !ddl13.sql.includes("'observe'")) {
+    db.run(`CREATE TABLE memory_new (${MEMORY_COLS_DDL})`);
+    db.run(`
+      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, keywords, updated_at)
+      SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM memory
+    `);
+    db.run(`DROP TABLE memory`);
     db.run(`ALTER TABLE memory_new RENAME TO memory`);
   }
   db.run(`CREATE TABLE IF NOT EXISTS memory (${MEMORY_COLS_DDL})`);
@@ -116,8 +161,42 @@ function applyMemorySchemaInner(db: Database): void {
     db.run(`DROP TABLE calibration`);
     db.run(`DROP TABLE IF EXISTS calibration_fts`);
   }
+  // v0.13 마이그레이션 2/2: canonical 저널(events) + 파생 반영 스탬프(meta).
+  // events가 비어 있으면 기존 memory 행을 add 이벤트로 부트스트랩 — 이력은 이 시점부터 시작
+  db.run(`CREATE TABLE IF NOT EXISTS events (${EVENTS_DDL})`);
+  db.run(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+  const hasEvents = db.query(`SELECT 1 AS x FROM events LIMIT 1`).get();
+  if (!hasEvents) {
+    db.run(`
+      INSERT INTO events (ts, type, entry_id, payload)
+      SELECT updated_at,
+             CASE WHEN section = 'observe' THEN 'observe' ELSE 'add' END,
+             id,
+             json_object('section', section, 'area', area, 'rule', rule,
+                         'evidence', evidence, 'confidence', confidence)
+      FROM memory ORDER BY id
+    `);
+  }
+  // 드리프트 검사: 외부 도구가 이벤트만 추가(파생 미반영)한 경우 replay로 자가 치유.
+  // 스탬프가 아예 없으면(부트스트랩 직후) 현재 상태가 곧 파생 결과 — 스탬프만 기록
+  const maxSeq = (db.query(`SELECT COALESCE(max(seq), 0) AS m FROM events`).get() as { m: number }).m;
+  const applied = db.query(`SELECT value FROM meta WHERE key = 'applied_seq'`).get() as
+    | { value: string }
+    | null;
+  if (applied === null) {
+    db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('applied_seq', ?)`, [String(maxSeq)]);
+  } else if (Number(applied.value) !== maxSeq) {
+    rebuildDerived(db);
+  }
   // 시작 시 재구축: 백필 + 드리프트 자가 치유 (수백 행 규모 — ms 단위)
   db.run(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`);
+}
+
+/** 파생 상태(memory·FTS)를 events replay로 재구축 — Task 3에서 이벤트 타입별 적용 완성 */
+export function rebuildDerived(db: Database): void {
+  // v0.13 Task 1 시점: 드리프트 시 스탬프만 재동기화 (replay는 Task 3)
+  const max = (db.query(`SELECT COALESCE(max(seq), 0) AS m FROM events`).get() as { m: number }).m;
+  db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('applied_seq', ?)`, [String(max)]);
 }
 
 export function createMemoryStore(db: Database) {
