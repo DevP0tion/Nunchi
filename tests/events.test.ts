@@ -29,6 +29,41 @@ test("0.12 DB 마이그레이션: observe CHECK·promoted_to·refs 컬럼 + add 
   expect(JSON.parse(rows[0].payload).confidence).toBe(3);
 });
 
-// make/applyMemorySchema는 이후 태스크 테스트가 공유한다 — 미사용 경고 방지용 참조
-void make;
-void applyMemorySchema;
+test("부트스트랩 멱등: events가 있으면 재기동 시 중복 생성하지 않는다", () => {
+  const { db, s } = make();
+  s.add({ section: "punish", area: "[a]", rule: "r", evidence: "e" });
+  applyMemorySchema(db); // 재기동 시뮬레이션
+  expect(evs(db).length).toBe(1);
+});
+
+test("이벤트 기록: add/edit/confirm/reverse/remove가 events에 남는다", () => {
+  const { db, s } = make();
+  const f = s.add({ section: "forgive", area: "[a]", rule: "r", evidence: "e" });
+  s.update(f, { rule: "r2" });
+  s.confirm(f);
+  s.reverse(f, "2026-07-24 사고");
+  const p = s.add({ section: "punish", area: "[b]", rule: "r", evidence: "e" });
+  s.remove(p);
+  expect(evs(db).map((e) => e.type)).toEqual(["add", "edit", "confirm", "reverse", "add", "remove"]);
+  expect(JSON.parse(evs(db)[1].payload)).toEqual({ rule: "r2" }); // edit payload는 바뀐 필드만
+  expect(JSON.parse(evs(db)[3].payload)).toEqual({ evidence: "2026-07-24 사고" });
+});
+
+test("observe 기록: 이벤트 타입 observe + parent_id 계보", () => {
+  const { db, s } = make();
+  const a = s.add({ section: "punish", area: "[a]", rule: "r", evidence: "e" });
+  const o = s.add({ section: "observe", area: "[a: 의심]", rule: "r", evidence: "e", parent: a });
+  const rows = evs(db);
+  expect(rows[1].type).toBe("observe");
+  expect(rows[1].parent_id).toBe(a);
+  expect(() => s.add({ section: "observe", area: "[x]", rule: "r", evidence: "e", parent: 9999 })).toThrow();
+  void o;
+});
+
+test("이벤트 ts는 행 updated_at과 동일 (replay 동등성의 전제)", () => {
+  const { db, s } = make();
+  const id = s.add({ section: "env", area: "[a]", rule: "r", evidence: "e" });
+  const row = db.query(`SELECT updated_at FROM memory WHERE id = ?`).get(id) as { updated_at: string };
+  const ev = db.query(`SELECT ts FROM events WHERE entry_id = ?`).get(id) as { ts: string };
+  expect(ev.ts).toBe(row.updated_at);
+});

@@ -201,11 +201,49 @@ export function rebuildDerived(db: Database): void {
 
 export function createMemoryStore(db: Database) {
   applyMemorySchema(db);
+  type Row = MemoryEntry & { keywords: string; promoted_to: number | null; refs: string };
+  const strip = ({ keywords: _k, promoted_to: _p, refs: _r, ...e }: Row): MemoryEntry => e;
   const insStmt = db.prepare(
     `INSERT INTO memory (section, area, rule, evidence, confidence)
      VALUES (?, ?, ?, ?, ?) RETURNING id`
   );
-  const getStmt = db.prepare(`SELECT ${COLS}, keywords FROM memory WHERE id = ?`);
+  const getStmt = db.prepare(`SELECT ${COLS}, keywords, promoted_to, refs FROM memory WHERE id = ?`);
+  const evStmt = db.prepare(
+    `INSERT INTO events (ts, type, entry_id, parent_id, refs, payload)
+     VALUES (COALESCE(?, strftime('%Y-%m-%d %H:%M:%f','now')), ?, ?, ?, ?, ?) RETURNING seq`
+  );
+  const metaStmt = db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('applied_seq', ?)`);
+  const rowTsStmt = db.prepare(`SELECT updated_at FROM memory WHERE id = ?`);
+  /** canonical 이벤트 기록 + 반영 스탬프. 변경 연산과 같은 트랜잭션 안에서 호출한다.
+   *  ts는 행 updated_at과 동기화 — replay가 원본과 동일한 updated_at을 재현하기 위함 */
+  const logEvent = (
+    type: EventType,
+    entryId: number,
+    payload: Record<string, unknown>,
+    parentId: number | null = null,
+    refs: number[] = []
+  ) => {
+    const ts = (rowTsStmt.get(entryId) as { updated_at: string } | null)?.updated_at ?? null;
+    const { seq } = evStmt.get(
+      ts, type, entryId, parentId, JSON.stringify(refs), JSON.stringify(payload)
+    ) as { seq: number };
+    metaStmt.run(String(seq));
+  };
+  /** 파생 상태 필드 갱신 (이벤트 기록 없음) — update/reverse가 공유.
+   *  내용(area/rule/evidence) 변경 시 keywords를 비운다 (보강이 다시 채움) */
+  const applyFields = (cur: Row, fields: Partial<NewMemoryEntry>): void => {
+    const next = {
+      section: fields.section ?? cur.section,
+      area: fields.area ?? cur.area,
+      rule: fields.rule ?? cur.rule,
+      evidence: fields.evidence ?? cur.evidence,
+      confidence: fields.confidence ?? cur.confidence,
+    };
+    const contentChanged =
+      next.area !== cur.area || next.rule !== cur.rule || next.evidence !== cur.evidence;
+    updStmt.run(next.section, next.area, next.rule, next.evidence, next.confidence,
+      contentChanged ? "" : cur.keywords, cur.id);
+  };
   const updStmt = db.prepare(
     `UPDATE memory SET section = ?, area = ?, rule = ?, evidence = ?,
      confidence = ?, keywords = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
@@ -236,47 +274,64 @@ export function createMemoryStore(db: Database) {
   );
 
   return {
-    add(e: NewMemoryEntry): number {
-      return (insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1) as { id: number }).id;
+    add(e: NewMemoryEntry & { parent?: number }): number {
+      return db.transaction(() => {
+        if (e.parent != null && !getStmt.get(e.parent))
+          throw new Error(`parent #${e.parent} 없음`);
+        const id = (insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1) as { id: number }).id;
+        logEvent(e.section === "observe" ? "observe" : "add", id, {
+          section: e.section, area: e.area, rule: e.rule,
+          evidence: e.evidence, confidence: e.confidence ?? 1,
+        }, e.parent ?? null);
+        return id;
+      })();
     },
     get(id: number): MemoryEntry | null {
-      const row = getStmt.get(id) as (MemoryEntry & { keywords: string }) | null;
-      if (!row) return null;
-      const { keywords: _k, ...e } = row;
-      return e;
+      const row = getStmt.get(id) as Row | null;
+      return row ? strip(row) : null;
     },
     /** 부분 갱신 — 내용(area/rule/evidence)이 바뀌면 keywords를 비운다 (보강이 다시 채움) */
     update(id: number, fields: Partial<NewMemoryEntry>): boolean {
-      const cur = getStmt.get(id) as (MemoryEntry & { keywords: string }) | null;
-      if (!cur) return false;
-      const next = {
-        section: fields.section ?? cur.section,
-        area: fields.area ?? cur.area,
-        rule: fields.rule ?? cur.rule,
-        evidence: fields.evidence ?? cur.evidence,
-        confidence: fields.confidence ?? cur.confidence,
-      };
-      const contentChanged =
-        next.area !== cur.area || next.rule !== cur.rule || next.evidence !== cur.evidence;
-      updStmt.run(next.section, next.area, next.rule, next.evidence, next.confidence,
-        contentChanged ? "" : cur.keywords, id);
-      return true;
+      return db.transaction(() => {
+        const cur = getStmt.get(id) as Row | null;
+        if (!cur) return false;
+        // payload는 실제 지정된 필드만 — replay가 부분 갱신을 그대로 재현한다
+        const clean = Object.fromEntries(
+          Object.entries(fields).filter(([, v]) => v !== undefined)
+        ) as Partial<NewMemoryEntry>;
+        applyFields(cur, clean);
+        logEvent("edit", id, clean);
+        return true;
+      })();
     },
     /** 신뢰도 +1 (재확인) — 규약의 승격 연산 */
     confirm(id: number): boolean {
-      return confirmStmt.run(id).changes > 0;
+      return db.transaction(() => {
+        if (confirmStmt.run(id).changes === 0) return false;
+        logEvent("confirm", id, {});
+        return true;
+      })();
     },
     /** 반전: '용서하는 것'(forgive) 전용 — punish 이동 + 신뢰도 1 리셋 + 근거 교체.
      *  env·punish·task 대상은 규약 위반이므로 명확한 에러로 거부한다 */
     reverse(id: number, evidence: string): boolean {
-      const cur = getStmt.get(id) as (MemoryEntry & { keywords: string }) | null;
-      if (!cur) return false;
-      if (cur.section !== "forgive")
-        throw new Error(`reverse는 '용서하는 것'(forgive) 전용 — 대상 항목은 ${cur.section}`);
-      return this.update(id, { section: "punish", confidence: 1, evidence });
+      return db.transaction(() => {
+        const cur = getStmt.get(id) as Row | null;
+        if (!cur) return false;
+        if (cur.section !== "forgive")
+          throw new Error(`reverse는 '용서하는 것'(forgive) 전용 — 대상 항목은 ${cur.section}`);
+        applyFields(cur, { section: "punish", confidence: 1, evidence });
+        logEvent("reverse", id, { evidence });
+        return true;
+      })();
     },
     remove(id: number): boolean {
-      return delStmt.run(id).changes > 0;
+      return db.transaction(() => {
+        if (delStmt.run(id).changes === 0) return false;
+        // 행이 이미 삭제됨 — 이벤트 ts는 현재 시각 기본값 (의도된 동작)
+        logEvent("remove", id, {});
+        return true;
+      })();
     },
     list(opts: { section?: MemorySection; minConfidence?: number } = {}): MemoryEntry[] {
       // ponytail: 필터 2개뿐이라 동적 WHERE — 쿼리 빌더 불필요
