@@ -79,6 +79,92 @@ test(
 );
 
 test(
+  "MCP v0.13: observe 기록 → promote 승격 → tree 조회 → link, 일반 항목 promote는 isError",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-mcp4-"));
+    await assignFreePort(dir);
+    const proc = Bun.spawn(["bun", SERVER], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
+      stdin: "pipe", stdout: "pipe", stderr: "ignore",
+    });
+    const reader = proc.stdout.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    const responses = new Map<number, { result?: { isError?: boolean; content: { text: string }[] } }>();
+    const pump = (async () => {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value);
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          try { const msg = JSON.parse(line); if (msg.id != null) responses.set(msg.id, msg); } catch { /* 불완전 */ }
+        }
+      }
+    })().catch(() => {});
+    const send = (msg: object) => proc.stdin.write(JSON.stringify(msg) + "\n");
+    const waitFor = async (id: number) => {
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline) {
+        const r = responses.get(id);
+        if (r) return r;
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      throw new Error(`timeout waiting for id ${id}`);
+    };
+    const call = async (id: number, name: string, args: object) => {
+      send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+      await proc.stdin.flush();
+      return waitFor(id);
+    };
+    try {
+      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+        protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" },
+      }});
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      await proc.stdin.flush();
+      await waitFor(1);
+      // 1) 관찰 기록
+      const o = await call(2, "nunchi_record", {
+        section: "observe", area: "[ship: 의심]", rule: "PR 과잉 의심", evidence: "2026-07-24 의심",
+      });
+      expect(o.result?.isError).toBeFalsy();
+      const oId = JSON.parse(o.result!.content[0].text).id as number;
+      // 2) 승격
+      const pr = await call(3, "nunchi_update", {
+        id: oId, action: "promote", section: "forgive",
+        area: "[ship: 배포 절차]", rule: "PR 단계 생략 가능", evidence: "2026-07-24 반복 관찰",
+      });
+      expect(pr.result?.isError).toBeFalsy();
+      const prId = JSON.parse(pr.result!.content[0].text).id as number;
+      // 3) 트리 조회 — 승격 계보에 관찰 포함
+      const tr = await call(4, "nunchi_list", { tree: prId });
+      expect(tr.result?.isError).toBeFalsy();
+      const tree = JSON.parse(tr.result!.content[0].text).tree;
+      expect(tree.sources.map((e: { id: number }) => e.id)).toEqual([oId]);
+      // 4) 자유 참조 링크
+      const env = await call(5, "nunchi_record", {
+        section: "env", area: "[윈도우: 인코딩]", rule: "BOM 주의", evidence: "2026-07-24 e",
+      });
+      const envId = JSON.parse(env.result!.content[0].text).id as number;
+      const lk = await call(6, "nunchi_update", { id: prId, action: "link", refs: [envId] });
+      expect(lk.result?.isError).toBeFalsy();
+      // 5) 일반 항목 promote → isError
+      const bad = await call(7, "nunchi_update", {
+        id: prId, action: "promote", section: "punish", area: "[x]", rule: "r", evidence: "e",
+      });
+      expect(bad.result?.isError).toBe(true);
+    } finally {
+      proc.kill();
+      await pump;
+      await rmProject(dir);
+    }
+  },
+  25000
+);
+
+test(
   // 이슈 #1 회귀: memory server 재시작 후 죽은 캐시 소켓을 영구 재사용하던 문제.
   // 구코드는 재호출이 영구 timeout, 신규 코드는 connected 확인 → 재연결/재스폰으로 복구.
   "MCP: memory server 종료 후에도 도구 호출이 재연결로 복구된다",

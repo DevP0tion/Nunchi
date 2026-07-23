@@ -38,8 +38,8 @@ const fail = (e: unknown) => ({
 });
 
 const section = z
-  .enum(["punish", "forgive", "env", "task"])
-  .describe("punish=벌주는 것(반드시 한다), forgive=용서하는 것(생략 가능), env=환경 특이사항, task=작업 기록(완결 작업 플레이북)");
+  .enum(["punish", "forgive", "env", "task", "observe"])
+  .describe("punish=벌주는 것(반드시 한다), forgive=용서하는 것(생략 가능), env=환경 특이사항, task=작업 기록(완결 작업 플레이북), observe=관찰(확신 없는 예측 어긋남 의심 신호 — 자동 회수 제외, 반복 확인 시 update action: promote로 승격)");
 
 const server = new McpServer({ name: "nunchi", version: "0.12.2" });
 
@@ -47,12 +47,14 @@ server.registerTool(
   "nunchi_record",
   {
     description:
-      "예측 어긋남(예측-실제 불일치)을 보정 DB에 신규 기록한다. 과잉이었음→forgive, 과소였음→punish, 환경 특이사항→env. 근거는 반드시 실제 사건 1줄(YYYY-MM-DD 포함) — 일반론 금지. 같은 규칙이 이미 있으면 대신 nunchi_update(confirm)를 쓸 것. 완결된 작업의 플레이북은 section: task로 기록한다 — area='[작업유형: 상황]', rule='접근: 절차 / 주의: 함정', evidence='YYYY-MM-DD 결과 1줄'. 유사 task 항목이 이미 있으면 record 대신 nunchi_update(edit 교정 / confirm 재확인).",
+      "예측 어긋남(예측-실제 불일치)을 보정 DB에 신규 기록한다. 과잉이었음→forgive, 과소였음→punish, 환경 특이사항→env. 근거는 반드시 실제 사건 1줄(YYYY-MM-DD 포함) — 일반론 금지. 같은 규칙이 이미 있으면 대신 nunchi_update(confirm)를 쓸 것. 완결된 작업의 플레이북은 section: task로 기록한다 — area='[작업유형: 상황]', rule='접근: 절차 / 주의: 함정', evidence='YYYY-MM-DD 결과 1줄'. 유사 task 항목이 이미 있으면 record 대신 nunchi_update(edit 교정 / confirm 재확인). 확신이 없는 어긋남 의심은 section: observe로 관찰만 남긴다(부담 없음, 자동 회수 제외) — 관련 기존 항목이 있으면 parent로 계보를 연결한다.",
     inputSchema: {
       section,
       area: z.string().describe('"[영역: 짧은 상황 서술]" 형식'),
       rule: z.string().describe("무엇을 한다 / 생략해도 된다"),
       evidence: z.string().describe("YYYY-MM-DD 실제로 있었던 일 1줄"),
+      parent: z.number().int().optional()
+        .describe("observe 기록 시 관련 기존 항목 id — 승격 계보의 canonical 부모 (선택)"),
     },
   },
   async (a) => {
@@ -68,22 +70,38 @@ server.registerTool(
   "nunchi_update",
   {
     description:
-      "기존 항목 갱신. confirm=재확인(신뢰도 +1, 날짜 갱신 — task 재수행 무사고에도 사용), reverse=반전 규칙('용서하는 것'을 따르다 사고 → punish로 이동+신뢰도 1 리셋+근거 교체, evidence 필수, 보정 forgive 전용 — task 항목에는 사용 불가), edit=필드 수정(task 플레이북 절차 교정도 edit), remove=정제 삭제('벌주는 것'은 사용자 확인 없이 삭제 금지).",
+      "기존 항목 갱신. confirm=재확인(신뢰도 +1, 날짜 갱신 — task 재수행 무사고에도 사용), reverse=반전 규칙('용서하는 것'을 따르다 사고 → punish로 이동+신뢰도 1 리셋+근거 교체, evidence 필수, 보정 forgive 전용 — task 항목에는 사용 불가), edit=필드 수정(task 플레이북 절차 교정도 edit), remove=정제 삭제('벌주는 것'은 사용자 확인 없이 삭제 금지), promote=관찰 승격(id=대표 관찰, sources로 추가 관찰, 새 항목의 section/area/rule/evidence 필수 — 출처가 계보로 보존된다), link=자유 참조 연결(refs 필수).",
     inputSchema: {
       id: z.number().int(),
-      action: z.enum(["confirm", "reverse", "edit", "remove"]),
+      action: z.enum(["confirm", "reverse", "edit", "remove", "promote", "link"]),
       section: section.optional(),
       area: z.string().optional(),
       rule: z.string().optional(),
       evidence: z.string().optional(),
       confidence: z.number().int().min(1).optional(),
+      sources: z.array(z.number().int()).optional().describe("promote 시 추가 근거 관찰 id들"),
+      refs: z.array(z.number().int()).optional().describe("link 시 참조 항목 id들"),
     },
   },
-  async ({ id, action, ...f }) => {
+  async ({ id, action, sources, refs, ...f }) => {
     try {
       const m = await mem();
       if (action === "confirm") return ok({ updated: await m.update(id, { confirm: true }) });
       if (action === "remove") return ok({ removed: await m.remove(id) });
+      if (action === "promote") {
+        if (!f.section || !f.area || !f.rule || !f.evidence)
+          return fail("promote에는 새 항목의 section/area/rule/evidence가 필수다");
+        return ok({
+          id: await m.promote([id, ...(sources ?? [])], {
+            section: f.section, area: f.area, rule: f.rule,
+            evidence: f.evidence, confidence: f.confidence,
+          }),
+        });
+      }
+      if (action === "link") {
+        if (!refs?.length) return fail("link에는 refs(참조 항목 id 배열)가 필수다");
+        return ok({ updated: await m.link(id, refs) });
+      }
       if (action === "reverse") {
         if (!f.evidence) return fail("reverse에는 evidence(새 사건 1줄)가 필수다");
         // §5.4 서버 검증 경유 — forgive 아닌 대상(env·punish·task)은 서버가 거부한다
@@ -121,15 +139,19 @@ server.registerTool(
   "nunchi_list",
   {
     description:
-      "보정 항목·작업 기록 전량/필터 조회. 항목 전체가 몇 KB 규모이므로 판단이 중요할 때는 전량을 읽고 인컨텍스트에서 직접 선별하는 것이 가장 정확하다 (recall 100%). section: task로 작업 기록만 조회할 수 있다.",
+      "보정 항목·작업 기록 전량/필터 조회. 항목 전체가 몇 KB 규모이므로 판단이 중요할 때는 전량을 읽고 인컨텍스트에서 직접 선별하는 것이 가장 정확하다 (recall 100%). section: task로 작업 기록만, section: observe로 관찰만(기본 목록에서는 제외) 조회할 수 있다. tree: id를 지정하면 해당 항목의 관계 트리(승격 계보·도메인 형제·자유 참조)만 반환한다.",
     inputSchema: {
       section: section.optional(),
       minConfidence: z.number().int().min(1).optional(),
+      tree: z.number().int().optional()
+        .describe("지정 시 해당 항목의 관계 트리(entry/parent/sources/promotedTo/domain/siblings/refs)만 반환"),
     },
   },
-  async (opts) => {
+  async ({ tree, ...opts }) => {
     try {
-      return ok({ rows: await (await mem()).list(opts) });
+      const m = await mem();
+      if (tree !== undefined) return ok({ tree: await m.tree(tree) });
+      return ok({ rows: await m.list(opts) });
     } catch (e) {
       return fail(e);
     }
