@@ -616,7 +616,7 @@ export function parseLegacyDoc(md: string): { entries: NewMemoryEntry[]; skipped
   return { entries, skipped };
 }
 
-/** DB → 기존 3섹션 markdown. external-address 구버전 클라이언트(mem:doc)와 내보내기 겸용 */
+/** DB → 섹션별 markdown (observe 포함 전 섹션). external-address 구버전 클라이언트(mem:doc)와 내보내기 겸용 */
 export function renderMemoryDoc(store: MemoryStore, projectName: string): string | null {
   const all = store.list({ withObserve: true });
   if (!all.length) return null;

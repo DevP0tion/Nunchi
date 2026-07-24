@@ -51,7 +51,9 @@ CREATE TABLE events (
   자동 회수(UserPromptSubmit 검색)와 코어 주입에서 **제외** — 회수 품질 보존.
   `nunchi_search`/`nunchi_list`에서 명시 요청 시에만 조회.
 - **승격**: `promote` 이벤트가 새 보정 항목을 만들고 `sources`에 근거 관찰 id를 기록.
-  승격된 관찰은 파생 상태에서 `promoted_to`가 채워져 회수·정제 대상에서 영구 제외 (항목이 대표).
+  승격된 관찰은 파생 상태에서 `promoted_to`가 채워진다. 자동 회수 제외는 observe 섹션
+  전체 필터가 담당하고, `promoted_to`는 tree 조회로 노출된다 — 정제 시 미승격 관찰
+  구분은 `tree(id)`의 promotedTo로 확인 (항목이 대표).
 - **코어 승격**: 기존 `confirm`(신뢰도 +1) 그대로 — 신뢰도 3+ 도달 이력이 events에 남는다.
 - **관찰 retention**: 자동 삭제 없음. `/nunchi` 정제 모드가 30일 경과 또는 60건 초과 미승격
   관찰을 정제 후보로 표시하고, 소멸은 `remove` 이벤트로만.
@@ -81,7 +83,8 @@ memory-forest 원칙: canonical 트리는 승격 계보 하나. 나머지는 지
 ## 5. git·팀 공유 레인
 
 - `mem:export` → events JSONL 전체 덤프(사람이 읽는 텍스트, git 커밋 가능). `doc()` markdown 뷰 유지.
-- 복원: 빈 DB에 JSONL replay (온보딩). DB 간 병합은 범위 밖 — append-only 구조상 추후 seq 재부여로 확장 가능.
+- 복원(import)·DB 간 병합은 v0.13 범위 밖 — append-only 구조상 JSONL replay 인제스트와
+  seq 재부여 병합이 확장 경로로 예약된다 (현재는 내보내기만 구현).
 
 ## 6. 마이그레이션
 
@@ -94,4 +97,5 @@ memory-forest 원칙: canonical 트리는 승격 계보 하나. 나머지는 지
 - store: append→파생 일치, replay 동등성(재구축 DB = 원본 DB), 관찰 회수 제외,
   promote 계보 무결성, link/refs 병합, 마이그레이션 부트스트랩.
 - 소켓: 신규 4 이벤트 라운드트립, 구버전 페이로드 하위 호환.
-- hooks: Stop 점검 문구 (C) 항목 렌더링.
+- hooks: 문구만 변경 — 기존 hooks 테스트가 문구에 비강결합임을 확인하고 전체 스위트 통과로 검증
+  (전용 렌더링 테스트는 두지 않는다).

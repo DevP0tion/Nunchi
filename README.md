@@ -69,7 +69,7 @@ Claude Code든 Codex든, CLAUDE.md·AGENTS.md·메모리 문서에 경험을 적
 | 확장 경로 | 임베딩·랭킹을 붙이려면 결국 DB화 | embedding 컬럼 추가 등 업그레이드 경로 예약됨 |
 | 사람의 열람·직접 편집 | **문서 유리** — 에디터로 바로 읽고 고침, 잘못된 항목을 사용자가 즉시 삭제 | `nunchi_list`/`/nunchi`나 sqlite 클라이언트 필요 (완화: `doc()`이 markdown으로 렌더링) |
 | git 버전 관리 | **문서 유리** — diff·blame·리뷰·롤백이 공짜, 규칙의 유래를 git 이력으로 추적 | 바이너리라 직접 diff 불가 (완화: `mem:export`가 이벤트 저널 전체를 JSONL 텍스트로 내보내 커밋·리뷰 가능, 항목에 근거·날짜 내장) |
-| 팀 공유 | **문서 유리** — 저장소에 커밋하면 끝, 별도 인프라 없음 | 실시간 공유는 external-address 서버 필요 (완화: 내보낸 이벤트 JSONL을 빈 DB에 replay해 온보딩 복원 가능 — DB 간 병합은 미지원) |
+| 팀 공유 | **문서 유리** — 저장소에 커밋하면 끝, 별도 인프라 없음 | 실시간 공유는 external-address 서버 필요 (완화: `mem:export` JSONL로 이력 공유·리뷰 가능 — 자동 복원(import)·병합은 미구현, append-only 구조로 확장 경로만 예약) |
 | 인프라 의존성 | **문서 유리** — 파일만 있으면 어느 에이전트든 읽음 | Bun + memory server 필요, 서버가 죽으면 회수 중단 |
 | 실패 모드 | 문서 무한 성장 → 컨텍스트 잠식, 낡은 규칙 잔존, 기록 누락 | 근거 없는 생략 → 반전 규칙으로 방지 |
 
@@ -104,7 +104,7 @@ Claude Code든 Codex든, CLAUDE.md·AGENTS.md·메모리 문서에 경험을 적
 
 **작업 기록(task) — 완결 작업 플레이북.** 보정 항목이 예측 어긋남만 남긴다면, task는 완결된 작업(구현·수정·리팩토링·문서·설계·릴리스) 자체를 플레이북(`area`=[작업유형: 상황], `rule`=접근 절차/주의점, `evidence`=결과 1줄, `confidence`=무사고 재수행 횟수)으로 남긴다. 유사 작업 재수행 시 UserPromptSubmit이 자동 회수하고, 절차가 어긋났으면 그 자리에서 `nunchi_update(edit)`로 교정, 그대로 유효했으면 `confirm`한다. `reverse`는 보정 forgive 전용이라 task에는 쓰지 않는다. 같은 테이블 `section='task'`에 축적되며 대시보드에 별도 타일로 표시된다.
 
-**관찰(observe) — 승격 사다리의 최하층.** 확신이 없는 예측 어긋남 의심은 `nunchi_record(section: observe)`로 관찰만 남긴다 — 자동 회수(코어 주입·매 메시지 검색)에서 제외되므로 부담 없이 기록해도 회수 품질이 떨어지지 않는다. 같은 신호가 반복 확인되면 `nunchi_update(action: promote)`로 보정 항목으로 승격하며, 출처 관찰들이 계보(승격 이벤트의 sources·관찰의 promoted_to)로 보존된다. 승격 사다리는 관찰 → 보정 항목(신뢰도 1~2) → 코어(3+) 3단이다. (참고 모델: [memory-forest](https://github.com/hyungchulc/memory-forest)의 provenance 보존 승격 원칙)
+**관찰(observe) — 승격 사다리의 최하층.** 확신이 없는 예측 어긋남 의심은 `nunchi_record(section: observe)`로 관찰만 남긴다 — 자동 회수(코어 주입·매 메시지 검색)에서 제외되므로 부담 없이 기록해도 회수 품질이 떨어지지 않는다. 같은 신호가 반복 확인되면 `nunchi_update(action: promote)`로 보정 항목으로 승격하며, 출처 관찰들이 계보(승격 이벤트의 sources·관찰의 promoted_to)로 보존된다 — 승격 여부는 `nunchi_list(tree: id)`로 확인한다. 승격 사다리는 관찰 → 보정 항목(신뢰도 1~2) → 코어(3+) 3단이며, 대시보드에 별도 타일(observe)로 표시된다. (참고 모델: [memory-forest](https://github.com/hyungchulc/memory-forest)의 provenance 보존 승격 원칙)
 
 ## 구조
 
@@ -115,6 +115,7 @@ nunchi/
 │   ├── server.ts             # memory server: sqlite 단일 소유 + Socket.IO 노출 (mem:*)
 │   ├── store.ts              # 보정 항목 저장소: 스키마·이벤트 저널·replay·검색·파서·임포트
 │   ├── client.ts             # Socket.IO 클라이언트 (서버 미기동 시 자동 스폰, noSpawn 옵션)
+│   ├── dashboard/            # 웹 대시보드 정적 파일 (memory-config.json의 web: true 시 서빙)
 │   └── provider/             # 키워드 보강 CLI 공급자 (claude/codex/gemini)
 ├── mcp/
 │   └── server.ts             # MCP stdio 서버: nunchi_record/update/search/list
@@ -169,7 +170,7 @@ sqlite(`memory.db`)는 server.ts 단일 프로세스만 소유하고, MCP 서버
   - **알려진 제약 (구버전 외부 서버)**: `external-address`가 task 기능 이전 버전 서버를 가리키면, task 기록은 구 CHECK 제약으로 명확히 실패(에러가 도구 응답에 노출 — 서버 업그레이드 필요를 안내)하고, `reverse`는 구 서버가 플래그를 무시한 채 evidence만 갱신하는 부분 적용이 일어날 수 있다. 공유 서버는 접속 클라이언트와 같은 버전으로 유지할 것.
 - **API**: `doc()` / `shutdown()` + `add(parent 지정 가능)` / `update(id, {confirm?, reverse?, link?, ...fields})` / `remove` / `promote(sources[], entry)` / `tree(id)` / `exportEvents()`(mem:export JSONL) / `search(queries[], {sections?, limit, excludeCore})` / `list({section?, minConfidence?, withObserve?})` / `core` / `stamp`
 - **보정 검색**: `mem:search`는 다중 쿼리 OR-병합 — FTS5(trigram, BM25 랭킹), 3글자 미만·무결과 질의는 LIKE 폴백. 구버전 db는 기동 시 자동 마이그레이션·백필. 시맨틱 매칭은 쿼리를 확장하는 모델 쪽이 담당한다 — 임베딩 불필요. 필요해지면 `memory` 테이블에 embedding 컬럼을 추가하는 업그레이드 경로가 예약되어 있다.
-- **문서 요청**: `doc()`(`mem:doc`)은 보정 DB에서 3섹션 markdown을 렌더링해 반환한다 (없으면 `null`) — external-address 구버전 클라이언트·내보내기 겸용.
+- **문서 요청**: `doc()`(`mem:doc`)은 보정 DB에서 섹션별 markdown(punish/forgive/env/task/observe 전 섹션)을 렌더링해 반환한다 (없으면 `null`) — external-address 구버전 클라이언트·내보내기 겸용.
 - **키워드 보강**: memory-config.json에 `model`을 설정하면(예: `"haiku"`) 보정 기록마다 보강 CLI를 백그라운드로 돌려 유의어 키워드를 생성, 검색 대상에 포함한다. CLI는 `modelProvider`로 선택 — `"claude"`(기본, `claude -p --model <값>`), `"codex"`(`codex exec --model <값>`, 최종 메시지는 `--output-last-message` 임시 파일로 회수), `"gemini"`(`gemini -m <값>`, stdin 파이프 headless). 구현은 `memory/provider/`에 공급자별 파일로 분리 — 새 공급자는 파일 추가 후 `provider/index.ts`의 `PROVIDERS`에 등록. 값이 갱신되면 낡은 키워드는 자동 폐기. `model` 미설정 시 완전 비활성. 기동 시 1회 로드되므로 변경은 memory server 재시작 후 반영. (0.10.0에서 플러그인 config → memory-config.json으로 이동)
 
 ## 응용 — 절차형 워크플로 스킬 모음과 상호보완 (예: gstack)
