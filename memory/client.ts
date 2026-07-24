@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
 import { resolveMemoryConn } from "./server.ts";
 import { loadConfig } from "../hooks/config.ts";
-import type { MemoryEntry, MemorySection, NewMemoryEntry } from "./store.ts";
+import type { MemoryEntry, MemorySection, MemoryTree, NewMemoryEntry } from "./store.ts";
 
 const SERVER_PATH = fileURLToPath(new URL("./server.ts", import.meta.url));
 
@@ -83,14 +83,23 @@ export async function assignFreePort(
 export interface MemoryClient {
   /** 서버 프로젝트의 보정 문서 전문 (없으면 null). 구버전 서버는 timeout 에러 */
   doc(): Promise<string | null>;
-  add(e: NewMemoryEntry): Promise<number>;
+  /** parent: 관찰(observe) 기록 시 승격 계보의 canonical 부모 항목 id */
+  add(e: NewMemoryEntry & { parent?: number }): Promise<number>;
   update(id: number, fields: Partial<NewMemoryEntry> & { confirm?: boolean; reverse?: boolean }): Promise<boolean>;
   remove(id: number): Promise<boolean>;
+  /** 관찰들 → 보정 항목 승격 (출처 계보 보존) */
+  promote(sources: number[], e: NewMemoryEntry): Promise<number>;
+  /** 자유 참조 링크 병합 (mem:update의 link 플래그) */
+  link(id: number, refs: number[]): Promise<boolean>;
+  /** 항목의 관계 트리 — 승격 계보·도메인 형제·자유 참조 */
+  tree(id: number): Promise<MemoryTree | null>;
+  /** canonical 저널(events) 전량 JSONL */
+  exportEvents(): Promise<{ count: number; jsonl: string }>;
   search(
     queries: string[],
     opts?: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean }
   ): Promise<MemoryEntry[]>;
-  list(opts?: { section?: MemorySection; minConfidence?: number }): Promise<MemoryEntry[]>;
+  list(opts?: { section?: MemorySection; minConfidence?: number; withObserve?: boolean }): Promise<MemoryEntry[]>;
   /** 상시 주입 코어: 벌주는 것 신뢰도 높음(3+) */
   core(): Promise<MemoryEntry[]>;
   /** 마지막 기록 시각 — Stop hook 점검용 */
@@ -214,6 +223,13 @@ export async function connectMemory(
     add: async (e) => (await req("mem:add", e)).id,
     update: async (id, fields) => (await req("mem:update", { id, ...fields })).updated,
     remove: async (id) => (await req("mem:remove", { id })).removed,
+    promote: async (sources, e) => (await req("mem:promote", { ...e, sources })).id,
+    link: async (id, refs) => (await req("mem:update", { id, link: refs })).updated,
+    tree: async (id) => (await req("mem:tree", { id })).tree ?? null,
+    exportEvents: async () => {
+      const r = await req("mem:export");
+      return { count: r.count ?? 0, jsonl: r.jsonl ?? "" };
+    },
     search: async (queries, opts = {}) => (await req("mem:search", { queries, ...opts })).rows,
     list: async (opts = {}) => (await req("mem:list", opts)).rows,
     core: async () => (await req("mem:core")).rows,
