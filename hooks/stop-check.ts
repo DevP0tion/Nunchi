@@ -84,7 +84,9 @@ if (block) {
         `있었다면 nunchi_record(신규) 또는 nunchi_update(action: confirm 재확인 / reverse 반전). ` +
         `(B) 이번 구간에 완결된 작업(산출물이 남는 요청 단위)이 있는가? — ` +
         `있다면 유사 task 항목을 검색해 nunchi_update(edit 절차 교정 / confirm 재확인), 없으면 nunchi_record(section: task)로 기록. ` +
-        `둘 다 없었다면 "보정·작업 특이사항 없음" 한 줄만 답하고 종료할 것.`,
+        `(C) 확신은 없지만 과잉/과소가 의심된 순간이 있었는가? — ` +
+        `있다면 nunchi_record(section: observe)로 관찰만 남길 것 (자동 회수 제외 — 부담 없음, 반복되면 promote로 승격). ` +
+        `셋 다 없었다면 "보정·작업 특이사항 없음" 한 줄만 답하고 종료할 것.`,
     })
   );
 }

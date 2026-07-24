@@ -223,6 +223,8 @@ if (import.meta.main) {
   const ts = () => new Date().toTimeString().slice(0, 8);
   const summarize = (res: Record<string, unknown>): string => {
     if (Array.isArray(res.rows)) return `${res.rows.length}건`;
+    if (res.count !== undefined) return `${res.count}건`;
+    if ("tree" in res) return res.tree ? "1건" : "없음";
     if (res.id !== undefined) return `#${res.id}`;
     if (res.updated !== undefined) return `updated=${res.updated}`;
     if (res.removed !== undefined) return `removed=${res.removed}`;
@@ -278,15 +280,42 @@ if (import.meta.main) {
           section: p.section, area: String(p.area), rule: String(p.rule),
           evidence: String(p.evidence),
           confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined,
-        } as NewMemoryEntry);
+          parent: Number.isFinite(p.parent) ? Number(p.parent) : undefined,
+        } as NewMemoryEntry & { parent?: number });
+        // 관찰은 자동 회수 제외 대상 — 보강 비용을 쓰지 않는다 (승격 시 promote가 보강)
+        if (model && p.section !== "observe") void enrich(id);
+        return { id };
+      })(ack)
+    );
+    socket.on("mem:promote", (p, ack) =>
+      handle(`mem:promote [${p.area}]`, () => {
+        const id = store.promote(
+          (Array.isArray(p.sources) ? p.sources : []).map(Number),
+          {
+            section: p.section, area: String(p.area), rule: String(p.rule),
+            evidence: String(p.evidence),
+            confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined,
+          } as NewMemoryEntry
+        );
         if (model) void enrich(id);
         return { id };
       })(ack)
     );
+    socket.on("mem:tree", (p, ack) =>
+      handle(`mem:tree #${p.id}`, () => ({ tree: store.tree(Number(p.id)) }))(ack)
+    );
+    socket.on("mem:export", (ack) =>
+      handle("mem:export", () => {
+        const rows = store.exportEvents();
+        return { count: rows.length, jsonl: rows.map((e) => JSON.stringify(e)).join("\n") };
+      })(ack)
+    );
     socket.on("mem:update", (p, ack) =>
-      handle(`mem:update #${p.id}${p.confirm ? " confirm" : p.reverse ? " reverse" : ""}`, () => {
+      handle(`mem:update #${p.id}${p.confirm ? " confirm" : p.reverse ? " reverse" : Array.isArray(p.link) ? " link" : ""}`, () => {
         const id = Number(p.id);
         if (p.confirm) return { updated: store.confirm(id) };
+        if (Array.isArray(p.link))
+          return { updated: store.link(id, p.link.map(Number)) };
         if (p.reverse) {
           // reverse는 store가 forgive 전용을 검증한다 (env·punish·task 대상은 throw)
           if (p.evidence === undefined) throw new Error("reverse에는 evidence(새 사건 1줄)가 필요하다");
@@ -326,6 +355,7 @@ if (import.meta.main) {
         rows: store.list({
           section: p?.section,
           minConfidence: Number(p?.minConfidence) || undefined,
+          withObserve: Boolean(p?.withObserve),
         }),
       }))(ack)
     );
