@@ -8,13 +8,12 @@ import { fileURLToPath } from "node:url";
 import {
   loadConfig,
   resolveDocDir,
-  readStdinJson,
+  hookProjectDir,
   isPonytailEnabled,
   formatMemoryEntries,
 } from "./config.ts";
 
-const input = await readStdinJson();
-const projectDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
+const projectDir = hookProjectDir();
 const cfg = loadConfig(projectDir);
 
 // 초기화: path 폴더(db 위치)가 없으면 생성

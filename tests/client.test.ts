@@ -4,11 +4,13 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Server } from "socket.io";
 import {
   assignFreePort,
   connectMemory,
   ProjectMismatchError,
   sameProject,
+  type MemoryClient,
 } from "../memory/client.ts";
 import { rmProject } from "./helpers.ts";
 
@@ -58,26 +60,31 @@ test(
 );
 
 test(
-  "핸드셰이크: 같은 포트의 타 프로젝트 서버는 거부, force로만 연결",
+  "핸드셰이크: 같은 포트의 타 프로젝트 서버 — noSpawn은 거부, force는 공유, 스폰 경로는 새 포트 자동 할당",
   async () => {
     const A = mkdtempSync(join(tmpdir(), "nunchi-a-"));
     const B = mkdtempSync(join(tmpdir(), "nunchi-b-"));
-    // A와 B가 같은 포트를 쓰도록 구성 — 포트 충돌 상황 재현
+    // A와 B가 같은 포트를 쓰도록 구성 — 포트 충돌 상황 재현 (nunchi.json 없는 프로젝트가 모두 41720을 쓰는 상황)
     const port = await assignFreePort(A);
     mkdirSync(join(B, ".claude"), { recursive: true });
     writeFileSync(join(B, ".claude", "nunchi.json"), JSON.stringify({ port }));
 
     const a = await connectMemory(A); // 서버 스폰 + 자기 프로젝트 검증 통과
+    let b2: MemoryClient | null = null;
     try {
       const id = await a.add({
         section: "punish", area: "[from-A]", rule: "r", evidence: "2026-07-07 e",
       });
-      // B의 연결은 A 소유 서버 → ProjectMismatchError
-      await expect(connectMemory(B)).rejects.toBeInstanceOf(ProjectMismatchError);
+      // 훅의 빠른 경로(noSpawn)는 A 소유 서버를 거부만 한다 — 설정 파일을 건드리지 않음
+      await expect(connectMemory(B, { noSpawn: true })).rejects.toBeInstanceOf(ProjectMismatchError);
       // 강제 연결은 허용되고 A의 db를 공유한다
       const b = await connectMemory(B, { force: true });
       expect((await b.list({})).map((e) => e.id)).toEqual([id]);
       b.close();
+      // 스폰 경로(SessionStart·MCP): 빈 포트를 B의 nunchi.json에 기록하고 B 소유 서버를 띄운다
+      b2 = await connectMemory(B);
+      expect(JSON.parse(readFileSync(join(B, ".claude", "nunchi.json"), "utf8")).port).not.toBe(port);
+      expect(await b2.list({})).toEqual([]); // A의 db가 아닌 B 자신의 db
       // external-address: 스킴 생략 주소로 접속, 핸드셰이크 생략 (타 프로젝트 서버라도 연결)
       writeFileSync(
         join(B, ".claude", "nunchi.json"),
@@ -88,7 +95,25 @@ test(
       ext.close();
     } finally {
       await a.shutdown();
+      await b2?.shutdown();
       await cleanup(A, B);
+    }
+  },
+  30000
+);
+
+test(
+  "핸드셰이크: 소유를 알 수 없는 구버전 서버는 자동 재할당하지 않는다 (같은 db 이중 소유 방지)",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-old-"));
+    const port = await assignFreePort(dir);
+    const old = new Server(port); // mem:info 핸들러가 없는 서버 = 구버전 memory server
+    try {
+      await expect(connectMemory(dir)).rejects.toBeInstanceOf(ProjectMismatchError);
+      expect(JSON.parse(readFileSync(join(dir, ".claude", "nunchi.json"), "utf8")).port).toBe(port);
+    } finally {
+      old.close();
+      await cleanup(dir);
     }
   },
   20000

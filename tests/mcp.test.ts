@@ -69,6 +69,13 @@ test(
       const rev = await waitFor(3);
       expect(rev.result?.isError).toBe(true);
       expect(rev.result!.content[0].text).toContain("forgive");
+      // 필드 길이 상한 — 상한 초과 기록은 거부 (훅 주입 크기를 기록 시점에 묶는다)
+      send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "nunchi_record", arguments: {
+        section: "env", area: "[a]", rule: "r", evidence: "2026-10-06 " + "x".repeat(200),
+      }}});
+      await proc.stdin.flush();
+      const long = (await waitFor(4)) as { result?: { isError?: boolean }; error?: unknown };
+      expect(long.result?.isError || long.error).toBeTruthy();
     } finally {
       proc.kill();
       await pump;
@@ -273,4 +280,42 @@ test(
     rmSync(dir, { recursive: true, force: true });
   },
   20000
+);
+
+test(
+  "MCP: 클라이언트가 stdin을 닫으면 memory 소켓이 열려 있어도 종료 (고아 프로세스 방지)",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-mcp-exit-"));
+    await assignFreePort(dir);
+    const proc = Bun.spawn(["bun", SERVER], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
+      stdin: "pipe", stdout: "pipe", stderr: "ignore",
+    });
+    const reader = proc.stdout.getReader();
+    let buf = "";
+    const until = async (s: string) => {
+      while (!buf.includes(s)) buf += new TextDecoder().decode((await reader.read()).value);
+    };
+    const send = (msg: object) => proc.stdin.write(JSON.stringify(msg) + "\n");
+    try {
+      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+        protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" },
+      }});
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      // 도구 1회 호출 — memory server 소켓이 열린다 (이벤트 루프를 붙잡는 원인)
+      send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "nunchi_list", arguments: {} } });
+      await proc.stdin.flush();
+      await until('"id":2');
+      proc.stdin.end();
+      const exited = await Promise.race([
+        proc.exited.then(() => true),
+        new Promise<boolean>((r) => setTimeout(() => r(false), 3000)),
+      ]);
+      expect(exited).toBe(true);
+    } finally {
+      proc.kill();
+      await rmProject(dir);
+    }
+  },
+  25000
 );

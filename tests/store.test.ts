@@ -117,6 +117,35 @@ test("search: keywords 컬럼도 검색 대상", () => {
   expect(s.search(["defensive"], { limit: 5 }).map((r) => r.id)).toEqual([id]);
 });
 
+test("search: 다단어 쿼리는 단어로 나눠 찾고, 많이 걸린 항목이 먼저", () => {
+  const s = makeStore();
+  const btn = s.add({ section: "task", area: "[UI: 버튼 추가]", rule: "접근: 화면 변경은 스크린샷 확인", evidence: "2026-09-25 완료" });
+  const other = s.add({ section: "task", area: "[빌드: 캐시]", rule: "접근: 화면 캐시 비우기", evidence: "2026-09-26 완료" });
+  // 모델이 실제로 만드는 다단어 구문 — 구문 통째로는 어느 항목에도 없다
+  expect(s.search(["UI 버튼 추가 소규모 화면 변경"], { limit: 5 }).map((r) => r.id)).toEqual([btn, other]);
+});
+
+test("search: 한국어 어절 끝 조사를 떼고 찾는다", () => {
+  const s = makeStore();
+  const id = s.add({ section: "env", area: "[UI: 드롭다운]", rule: "드롭다운 키보드 탐색은 수동 확인", evidence: "2026-09-30 누락" });
+  expect(s.search(["드롭다운이"], { limit: 5 }).map((r) => r.id)).toEqual([id]);
+  expect(s.search(["키보드로"], { limit: 5 }).map((r) => r.id)).toEqual([id]);
+  expect(s.search(["탐색에서"], { limit: 5 }).map((r) => r.id)).toEqual([id]);
+});
+
+test("search strict(훅 자동 주입): 2자 ASCII 무시, 2자 단어 하나만 걸린 항목 제외", () => {
+  const s = makeStore();
+  const p = s.add({ section: "env", area: "[프롬프트: 길이]", rule: "prompt 길이는 8천자 상한", evidence: "2026-09-30 잘림" });
+  const d = s.add({ section: "env", area: "[UI: 드롭다운]", rule: "드롭다운 키보드 탐색 문제는 수동 확인", evidence: "2026-09-30 누락" });
+  // 비엄격(nunchi_search): "PR"이 prompt 속 부분 문자열로 걸린다
+  expect(s.search(["PR"], { limit: 5 }).map((r) => r.id)).toEqual([p]);
+  expect(s.search(["PR"], { limit: 5, strict: true })).toEqual([]);
+  // 흔한 2자 단어 하나만 걸리면 제외 — 3자 이상 단어 하나 또는 단어 둘이 걸려야 포함
+  expect(s.search(["문제", "고쳐줘"], { limit: 5, strict: true })).toEqual([]);
+  expect(s.search(["키보드", "고쳐줘"], { limit: 5, strict: true }).map((r) => r.id)).toEqual([d]);
+  expect(s.search(["탐색", "문제"], { limit: 5, strict: true }).map((r) => r.id)).toEqual([d]);
+});
+
 const SAMPLE_DOC = `# 보정 — my-project
 
 ## 벌주는 것 (반드시 한다)

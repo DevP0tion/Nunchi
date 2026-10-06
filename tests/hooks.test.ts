@@ -1,7 +1,7 @@
 // bun test tests/hooks.test.ts
 // 훅 4종 스모크: stdin에 hook JSON을 넣고 stdout을 검증한다. 실서버를 시드해서 사용.
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,12 +100,60 @@ test(
       expect(ctx).not.toContain("배포 게이트"); // 코어는 SessionStart 몫 — 제외
       // 무관련 프롬프트 → 무출력
       expect(await runHook("user-prompt-submit.ts", dir, { prompt: "zzqq xxyy" })).toBe("");
+      // 흔한 2자 단어 하나만 걸리는 프롬프트 → 무출력 (부분 문자열 적중 하나는 근거가 약하다)
+      expect(await runHook("user-prompt-submit.ts", dir, { prompt: "생략 관련 질문" })).toBe("");
       // 빈 프롬프트 → 무출력
       expect(await runHook("user-prompt-submit.ts", dir, { prompt: "" })).toBe("");
     } finally {
       await mem.shutdown();
       // 서버 종료 후: noSpawn이므로 조용히 통과 (스폰 없음)
       expect(await runHook("user-prompt-submit.ts", dir, { prompt: "테스트 스크립트" })).toBe("");
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
+  "user-prompt-submit: 시스템이 붙인 블록이 아닌 사용자 글로 검색, 비사용자 메시지는 무출력",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const run = (prompt: string) => runHook("user-prompt-submit.ts", dir, { prompt });
+      const q = "일회성 스크립트에도 테스트가 필요할까?";
+      // 앞에 붙은 안내문 블록이 8토큰을 다 차지해도 뒤의 사용자 질문으로 검색
+      const pre = `<ide_opened_file>The user opened the file tests/foo.ts in the IDE editor</ide_opened_file>\n${q}`;
+      expect(await run(pre)).toContain("일회성 스크립트 테스트 생략 가능");
+      // 백그라운드 작업 완료 알림 — 내용이 매칭돼도 사용자 입력이 아니므로 무출력
+      expect(await run("<task-notification><summary>일회성 스크립트 테스트 완료</summary></task-notification>")).toBe("");
+      // 다른 세션의 handback — 무출력
+      expect(await run("Another Claude session sent a message: 일회성 스크립트 테스트 결과")).toBe("");
+      // 붙여 넣은 자료만 있으면 그 내용으로 검색
+      expect(await run(`<pasted_content id="ab12">${q}</pasted_content id="ab12">`)).toContain("일회성 스크립트");
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
+  "user-prompt-submit: 긴 항목이 걸려도 주입은 8천자 이하 (additionalContext 1만자 상한 보호)",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-ups-cap-"));
+    await assignFreePort(dir);
+    const mem = await connectMemory(dir);
+    try {
+      // 상한 도입 전에 쌓인 긴 항목 (실측 최대 3,446자) — 쿼터 5건이 모두 걸리게 시드
+      for (const section of ["env", "env", "env", "task", "task"] as const)
+        await mem.add({ section, area: "[드롭다운: 키보드]", rule: "드롭다운 " + "가".repeat(3000), evidence: "2026-10-06 e" });
+      const raw = await runHook("user-prompt-submit.ts", dir, { prompt: "드롭다운 고쳐줘" });
+      const ctx = JSON.parse(raw).hookSpecificOutput.additionalContext as string;
+      expect(ctx.startsWith("[nunchi]")).toBe(true);
+      expect(ctx.length).toBeLessThanOrEqual(8000);
+    } finally {
+      await mem.shutdown();
       await rmProject(dir);
     }
   },
@@ -162,29 +210,94 @@ test(
 );
 
 test(
-  "stop-check: N턴째에 점검 강제, 구간 내 DB 기록이 있으면 생략",
+  "훅 공통: CLAUDE_PROJECT_DIR이 없으면(Claude Code 밖의 harness) 보정 DB를 싣지 않고 무출력",
   async () => {
     const { dir, mem } = await seeded();
+    const env: Record<string, string | undefined> = { ...process.env };
+    delete env.CLAUDE_PROJECT_DIR;
+    const runBare = async (name: string, input: object) => {
+      const proc = Bun.spawn(["bun", hookPath(name)], {
+        env, stdin: new TextEncoder().encode(JSON.stringify(input)), stdout: "pipe", stderr: "ignore",
+      });
+      const out = await new Response(proc.stdout).text();
+      await proc.exited;
+      return out;
+    };
+    try {
+      // stdin의 cwd가 시드된 프로젝트를 가리켜도 주입하지 않는다
+      expect(await runBare("user-prompt-submit.ts", { cwd: dir, prompt: "일회성 스크립트에도 테스트가 필요할까?" })).toBe("");
+      expect(await runBare("session-start.ts", { cwd: dir, source: "startup" })).toBe("");
+      expect(await runBare("subagent-start.ts", { cwd: dir, agent_type: "x" })).toBe("");
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+/** 기록 도구 호출 1건이 담긴 transcript 행 (Claude Code jsonl 형식) */
+const toolUseLine = (name: string) =>
+  JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t", name, input: {} }] } }) + "\n";
+
+test(
+  "stop-check: N턴째에 점검 강제, 구간 내 이 세션의 기록이 있으면 생략",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-stop-"));
+    const transcript = join(dir, "session.jsonl");
+    writeFileSync(transcript, '{"type":"user"}\n');
     const sid = `t${Date.now()}`;
-    const run = (id: string) => runHook("stop-check.ts", dir, { session_id: id, cwd: dir });
+    const run = (extra: object = {}) =>
+      runHook("stop-check.ts", dir, { session_id: sid, transcript_path: transcript, cwd: dir, ...extra });
     try {
       process.env.NUNCHI_CHECK_EVERY = "2"; // 최소 주기로 단축
       // 1턴: 통과, 2턴: 점검(block)
-      expect(await run(sid)).toBe("");
-      const out = await run(sid);
-      const parsed = JSON.parse(out);
+      expect(await run()).toBe("");
+      const parsed = JSON.parse(await run());
       expect(parsed.decision).toBe("block");
       expect(parsed.reason).toContain("nunchi_record"); // 기록 지시가 도구 기준
       expect(parsed.reason).toContain("완결된 작업"); // (B) 작업 점검 문구
-      // 다음 구간: 1턴째에 기록 발생 → 2턴째 점검 생략
-      expect(await run(sid)).toBe("");
-      await mem.add({ section: "env", area: "[x]", rule: "r", evidence: "2026-07-06 e" });
-      expect(await run(sid)).toBe("");
-      // stop_hook_active 가드
-      const guarded = await runHook("stop-check.ts", dir, {
-        session_id: sid, cwd: dir, stop_hook_active: true,
-      });
-      expect(guarded).toBe("");
+      // 다음 구간: 1턴째(Stop 전)에 기록 → 2턴째 점검 생략
+      appendFileSync(transcript, toolUseLine("mcp__plugin_nunchi_nunchi__nunchi_record"));
+      expect(await run()).toBe("");
+      expect(await run()).toBe("");
+      // 기록 없는 다음 구간은 다시 점검 — 지난 구간의 기록을 두 번 세지 않는다
+      expect(await run()).toBe("");
+      expect(JSON.parse(await run()).decision).toBe("block");
+      // 점검(block)에 응답해 기록한 턴(stop_hook_active — 루프 가드로 즉시 통과)은
+      // 다음 구간의 기록으로 세지 않는다 — 다음 구간도 기록이 없으면 다시 점검
+      appendFileSync(transcript, toolUseLine("mcp__plugin_nunchi_nunchi__nunchi_record"));
+      expect(await run({ stop_hook_active: true })).toBe("");
+      expect(await run()).toBe("");
+      expect(JSON.parse(await run()).decision).toBe("block");
+    } finally {
+      delete process.env.NUNCHI_CHECK_EVERY;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
+
+test(
+  "stop-check: 같은 DB를 쓰는 다른 세션의 기록은 이 세션의 점검을 생략시키지 않는다",
+  async () => {
+    const { dir, mem } = await seeded(); // 두 세션이 공유하는 memory server
+    const [ta, tb] = [join(dir, "a.jsonl"), join(dir, "b.jsonl")];
+    writeFileSync(ta, "");
+    writeFileSync(tb, "");
+    const stamp = Date.now();
+    const run = (sid: string, transcript_path: string) =>
+      runHook("stop-check.ts", dir, { session_id: sid, transcript_path, cwd: dir });
+    try {
+      process.env.NUNCHI_CHECK_EVERY = "2";
+      expect(await run(`a${stamp}`, ta)).toBe("");
+      // 세션 B가 같은 DB에 기록 — DB 전체의 마지막 기록 시각은 바뀌지만 A는 아무것도 기록하지 않았다
+      await mem.add({ section: "env", area: "[b]", rule: "r", evidence: "2026-10-06 세션 B" });
+      appendFileSync(tb, toolUseLine("mcp__plugin_nunchi_nunchi__nunchi_record"));
+      expect(JSON.parse(await run(`a${stamp}`, ta)).decision).toBe("block");
+      // transcript를 읽을 수 없으면 기록 없음으로 본다 (과검)
+      expect(await run(`c${stamp}`, join(dir, "missing.jsonl"))).toBe("");
+      expect(JSON.parse(await run(`c${stamp}`, join(dir, "missing.jsonl"))).decision).toBe("block");
     } finally {
       delete process.env.NUNCHI_CHECK_EVERY;
       await mem.shutdown();
@@ -195,37 +308,26 @@ test(
 );
 
 test(
-  "stop-check: null 기준선(서버 미접속 턴1) → 서버 접속(턴2) 시 과검 강제",
+  "stop-check: 7일 지난 세션 상태 파일은 점검 때 정리",
   async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-null-baseline-"));
-    const sid = `null-baseline-${Date.now()}`;
-    const run = (id: string) => runHook("stop-check.ts", dir, { session_id: id, cwd: dir });
-    let mem: MemoryClient | null = null;
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-stop3-"));
+    const stateDir = join(tmpdir(), "nunchi");
+    mkdirSync(stateDir, { recursive: true });
+    const old = join(stateDir, `old-${Date.now()}.json`);
+    writeFileSync(old, '{"count":3,"offset":0}');
+    const eightDaysAgo = (Date.now() - 8 * 86400_000) / 1000;
+    utimesSync(old, eightDaysAgo, eightDaysAgo);
+    const sid = `prune${Date.now()}`;
     try {
-      process.env.NUNCHI_CHECK_EVERY = "2"; // 최소 주기
-      await assignFreePort(dir); // 포트 할당
-
-      // Turn 1: 서버 미접속 → stamp=null, state.stamp=null
-      expect(await run(sid)).toBe("");
-
-      // 서버 기동: 기존 항목 1개 있음 (DB 구성하되 서버는 계속 켜 둠)
-      mem = await connectMemory(dir);
-      await mem.add({
-        section: "punish", area: "[setup]", rule: "baseline-entry",
-        evidence: "2026-07-06 pre-exist", confidence: 2,
-      });
-
-      // Turn 2: 서버는 접속 가능하지만 baseline은 여전히 null
-      // stamp는 변하지 않음 (새 항목 없음), 하지만 state.stamp=null이므로
-      // 기록이 없다고 판단 → block=true (과검)
-      const out = await run(sid);
-      const parsed = JSON.parse(out);
-      expect(parsed.decision).toBe("block");
-      expect(parsed.reason).toContain("nunchi_record");
+      process.env.NUNCHI_CHECK_EVERY = "2";
+      await runHook("stop-check.ts", dir, { session_id: sid, cwd: dir });
+      await runHook("stop-check.ts", dir, { session_id: sid, cwd: dir }); // 점검 턴
+      expect(existsSync(old)).toBe(false);
+      expect(existsSync(join(stateDir, `${sid}.json`))).toBe(true); // 현재 세션 상태는 보존
     } finally {
       delete process.env.NUNCHI_CHECK_EVERY;
-      if (mem) await mem.shutdown();
-      await rmProject(dir);
+      rmSync(join(stateDir, `${sid}.json`), { force: true });
+      rmSync(dir, { recursive: true, force: true });
     }
   },
   30000

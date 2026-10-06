@@ -51,6 +51,8 @@ export interface HookInput {
   source?: string;
   hook_event_name?: string;
   stop_hook_active?: boolean;
+  /** 공통 필드: 이 세션의 transcript(jsonl) 경로 — Stop 점검이 세션별 기록 여부를 판정 */
+  transcript_path?: string;
   /** UserPromptSubmit: 사용자 프롬프트 (일부 버전은 user_input) */
   prompt?: string;
   user_input?: string;
@@ -63,6 +65,15 @@ export async function readStdinJson(): Promise<HookInput> {
   } catch {
     return {};
   }
+}
+
+/** 훅 공통 프로젝트 루트. Claude Code는 모든 훅 명령에 CLAUDE_PROJECT_DIR을 넘긴다 — 없으면
+ *  다른 harness가 ~/.claude의 플러그인 훅을 빌려 실행한 것이므로, 보정 DB가 외부 모델 요청에
+ *  실리지 않도록 아무것도 출력하지 않고 종료한다 */
+export function hookProjectDir(): string {
+  const dir = process.env.CLAUDE_PROJECT_DIR;
+  if (!dir) process.exit(0);
+  return dir;
 }
 
 function readJson(p: string): Partial<NunchiConfig> {

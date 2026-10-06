@@ -274,6 +274,14 @@ export function rebuildDerived(db: Database): void {
   })();
 }
 
+/** 한국어 어절 끝 조사 — 떼어낸 어간은 원래 어절의 접두사라 부분 문자열 검색의 회수를 줄이지 않는다.
+ *  ponytail: 조사 목록 휴리스틱 — 어미(고쳐줘·확인해줘)는 다루지 않는다. 형태소 분석이 필요해지면 교체 */
+const JOSA = /(에서|으로|에게|까지|부터|처럼|보다|한테|이나|이랑|하고|[은는이가을를의에도만와과로랑])$/;
+const stem = (w: string): string => {
+  const s = w.replace(JOSA, "");
+  return s !== w && [...s].length >= 2 ? s : w;
+};
+
 export function createMemoryStore(db: Database) {
   applyMemorySchema(db);
   type Row = MemoryEntry & { keywords: string; promoted_to: number | null; refs: string };
@@ -447,20 +455,30 @@ export function createMemoryStore(db: Database) {
     setKeywords(id: number, updatedAt: string, keywords: string): void {
       keywordsStmt.run(keywords, id, updatedAt);
     },
-    /** 다중 쿼리 OR-병합 검색. FTS(BM25) 우선, 3글자 미만·무결과는 LIKE 폴백.
+    /** 다중 쿼리 OR-병합 검색. 쿼리는 공백 단위 단어로 나눠 각각 찾는다 (다단어 구문을
+     *  통째로 매칭하면 거의 항상 0건). 단어는 한국어 끝 조사를 뗀 어간으로 찾는다.
+     *  3글자 이상은 FTS(BM25), 3글자 미만·무결과는 LIKE 폴백. 걸린 단어 수 → BM25 순으로 정렬.
+     *  strict(훅 자동 주입): 2글자 ASCII(PR·UI·id)는 영어 단어 속 부분 문자열에 다 걸려 버리고,
+     *  2글자 단어 하나만 걸린 항목은 근거가 약해 뺀다 — 3글자 이상 단어나 단어 둘이 걸려야 한다.
      *  모델 쿼리 확장(nunchi_search)과 훅 자동 주입이 공유하는 유일한 검색 경로 */
     search(
       queries: string[],
-      opts: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean } = {}
+      opts: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean; strict?: boolean } = {}
     ): MemoryEntry[] {
       const limit = opts.limit ?? 3;
-      const best = new Map<number, MemoryEntry & { rank: number }>();
+      const best = new Map<number, MemoryEntry & { rank: number; hits: number; long: boolean }>();
       let pseudo = 1e9; // LIKE 결과는 랭크가 없다 — FTS 결과 뒤에 도착 순으로
-      for (const raw of queries) {
-        const q = String(raw ?? "").trim();
-        if (!q) continue;
+      const words = new Set(
+        queries
+          .flatMap((raw) => String(raw ?? "").trim().split(/\s+/))
+          .map(stem)
+          .filter((w) => [...w].length >= 2)
+      );
+      for (const q of words) {
+        const long = [...q].length >= 3;
+        if (opts.strict && !long && /^[\x00-\x7f]+$/.test(q)) continue;
         let rows: (MemoryEntry & { rank?: number })[] = [];
-        if ([...q].length >= 3) {
+        if (long) {
           try {
             const phrase = `"${q.replaceAll('"', '""')}"`;
             rows = ftsStmt.all(phrase) as (MemoryEntry & { rank: number })[];
@@ -476,19 +494,25 @@ export function createMemoryStore(db: Database) {
           }));
         }
         for (const r of rows) {
-          const rank = r.rank ?? pseudo++;
           const prev = best.get(r.id);
-          if (!prev || rank < prev.rank) best.set(r.id, { ...r, rank } as MemoryEntry & { rank: number });
+          best.set(r.id, {
+            ...r,
+            rank: Math.min(r.rank ?? pseudo++, prev?.rank ?? Infinity),
+            hits: (prev?.hits ?? 0) + 1,
+            long: long || (prev?.long ?? false),
+          });
         }
       }
       let out = [...best.values()];
+      if (opts.strict) out = out.filter((r) => r.long || r.hits >= 2);
       // 관찰(observe)은 명시 요청 시에만 — 자동 회수(훅)와 기본 검색을 오염시키지 않는다
       if (opts.sections) out = out.filter((r) => opts.sections!.includes(r.section));
       else out = out.filter((r) => r.section !== "observe");
       if (opts.excludeCore)
         out = out.filter((r) => !(r.section === "punish" && r.confidence >= CORE_CONFIDENCE));
-      out.sort((a, b) => a.rank - b.rank); // BM25 rank는 음수(낮을수록 관련) — 오름차순
-      return out.slice(0, limit).map(({ rank: _r, ...e }) => e);
+      // 걸린 단어 수 내림차순, 같으면 BM25 rank(음수, 낮을수록 관련) 오름차순
+      out.sort((a, b) => b.hits - a.hits || a.rank - b.rank);
+      return out.slice(0, limit).map(({ rank: _r, hits: _h, long: _l, ...e }) => e);
     },
     /** 관찰들 → 보정 항목 승격. 출처는 promote 이벤트의 sources와 관찰의 promoted_to로 보존 */
     promote(sources: number[], e: NewMemoryEntry): number {

@@ -13,8 +13,8 @@ import type { MemoryEntry, MemorySection, MemoryTree, NewMemoryEntry } from "./s
 
 const SERVER_PATH = fileURLToPath(new URL("./server.ts", import.meta.url));
 
-/** 포트의 서버가 다른 프로젝트 소유일 때 — 소비자(MCP)는 이 에러를 받으면
- *  사용자에게 강제 연결 / 새 포트 할당 중 하나를 물어봐야 한다 */
+/** 포트의 서버가 이 프로젝트 소유로 확인되지 않을 때. 다른 프로젝트 소유가 확인되면 스폰 경로가
+ *  새 포트를 자동 할당하므로, 이 에러는 구버전 서버(소유 불명)·noSpawn 경로에서만 소비자에게 닿는다 */
 export class ProjectMismatchError extends Error {
   constructor(
     readonly port: number,
@@ -26,9 +26,8 @@ export class ProjectMismatchError extends Error {
       [
         `[nunchi] port ${port}의 memory server는 이 프로젝트 소유가 아님`,
         `(서버: ${serverDir ?? "식별 불가 — 구버전 서버"}, 기대: ${expectedDir}).`,
-        "사용자에게 다음 중 하나를 선택하도록 물어볼 것:",
-        `1) 강제 연결 — connectMemory(projectDir, { force: true }). 다른 프로젝트의 memory.db를 공유하게 된다.`,
-        `2) 새 포트 할당 — assignFreePort(projectDir)가 빈 포트를 .claude/nunchi.json의 port에 기록한다. 이후 connectMemory 재호출.`,
+        `사용자에게 알릴 것: 제목이 "Nunchi [...]"인 해당 memory server 창을 닫고 세션을 다시 시작하거나,`,
+        `이 프로젝트 .claude/nunchi.json의 "port"에 다른 포트 번호를 지정하면 다음 세션부터 해결된다.`,
       ].join(" ")
     );
     this.name = "ProjectMismatchError";
@@ -97,7 +96,7 @@ export interface MemoryClient {
   exportEvents(): Promise<{ count: number; jsonl: string }>;
   search(
     queries: string[],
-    opts?: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean }
+    opts?: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean; strict?: boolean }
   ): Promise<MemoryEntry[]>;
   list(opts?: { section?: MemorySection; minConfidence?: number; withObserve?: boolean }): Promise<MemoryEntry[]>;
   /** 상시 주입 코어: 벌주는 것 신뢰도 높음(3+) */
@@ -132,7 +131,7 @@ function tryConnect(
 
 export async function connectMemory(
   projectDir: string = process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-  opts: { force?: boolean; noSpawn?: boolean } = {}
+  opts: { force?: boolean; noSpawn?: boolean; reassigned?: boolean } = {}
 ): Promise<MemoryClient> {
   const cfg = loadConfig(projectDir);
   // 토큰은 로컬 memory-config.json에서 읽는다 — 외부 서버가 토큰을 요구하는 경우에도
@@ -204,6 +203,13 @@ export async function connectMemory(
       const dir = await serverProjectDir(socket);
       if (dir === null || !sameProject(dir, projectDir)) {
         socket.close();
+        // 스폰 경로(SessionStart·MCP)에서 다른 프로젝트 소유가 확인되면 빈 포트를 이 프로젝트에
+        // 기록하고 자기 서버를 띄운다 — nunchi.json 없는 프로젝트는 모두 기본 포트를 쓰므로 흔한 충돌.
+        // 소유 불명(구버전 서버)은 같은 프로젝트일 수 있어 재할당하지 않는다 (같은 db 이중 소유 방지)
+        if (dir !== null && !opts.noSpawn && !opts.reassigned) {
+          await assignFreePort(projectDir);
+          return connectMemory(projectDir, { ...opts, reassigned: true });
+        }
         throw new ProjectMismatchError(port, projectDir, dir);
       }
     }

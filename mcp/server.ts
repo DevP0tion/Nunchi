@@ -41,6 +41,11 @@ const section = z
   .enum(["punish", "forgive", "env", "task", "observe"])
   .describe("punish=벌주는 것(반드시 한다), forgive=용서하는 것(생략 가능), env=환경 특이사항, task=작업 기록(완결 작업 플레이북), observe=관찰(확신 없는 예측 어긋남 의심 신호 — 자동 회수 제외, 반복 확인 시 update action: promote로 승격)");
 
+// 필드 길이 상한 — 매 메시지 자동 주입(보정 3 + 작업 2건)이 additionalContext 상한 안에 들도록 기록 시점에 묶는다
+const area = z.string().max(100).describe('"[영역: 짧은 상황 서술]" 형식, 100자 이내');
+const rule = z.string().max(500).describe("무엇을 한다 / 생략해도 된다 — 500자 이내");
+const evidence = z.string().max(200).describe("YYYY-MM-DD 실제로 있었던 일 1줄 — 200자 이내");
+
 const server = new McpServer({ name: "nunchi", version: "0.13.0" });
 
 server.registerTool(
@@ -50,9 +55,9 @@ server.registerTool(
       "예측 어긋남(예측-실제 불일치)을 보정 DB에 신규 기록한다. 과잉이었음→forgive, 과소였음→punish, 환경 특이사항→env. 근거는 반드시 실제 사건 1줄(YYYY-MM-DD 포함) — 일반론 금지. 같은 규칙이 이미 있으면 대신 nunchi_update(confirm)를 쓸 것. 완결된 작업의 플레이북은 section: task로 기록한다 — area='[작업유형: 상황]', rule='접근: 절차 / 주의: 함정', evidence='YYYY-MM-DD 결과 1줄'. 유사 task 항목이 이미 있으면 record 대신 nunchi_update(edit 교정 / confirm 재확인). 확신이 없는 어긋남 의심은 section: observe로 관찰만 남긴다(부담 없음, 자동 회수 제외) — 관련 기존 항목이 있으면 parent로 계보를 연결한다.",
     inputSchema: {
       section,
-      area: z.string().describe('"[영역: 짧은 상황 서술]" 형식'),
-      rule: z.string().describe("무엇을 한다 / 생략해도 된다"),
-      evidence: z.string().describe("YYYY-MM-DD 실제로 있었던 일 1줄"),
+      area,
+      rule,
+      evidence,
       parent: z.number().int().optional()
         .describe("observe 기록 시 관련 기존 항목 id — 승격 계보의 canonical 부모 (선택)"),
     },
@@ -75,9 +80,9 @@ server.registerTool(
       id: z.number().int(),
       action: z.enum(["confirm", "reverse", "edit", "remove", "promote", "link"]),
       section: section.optional(),
-      area: z.string().optional(),
-      rule: z.string().optional(),
-      evidence: z.string().optional(),
+      area: area.optional(),
+      rule: rule.optional(),
+      evidence: evidence.optional(),
       confidence: z.number().int().min(1).optional(),
       sources: z.array(z.number().int()).optional().describe("promote 시 추가 근거 관찰 id들"),
       refs: z.array(z.number().int()).optional().describe("link 시 참조 항목 id들"),
@@ -118,7 +123,7 @@ server.registerTool(
   "nunchi_search",
   {
     description:
-      "보정 항목·작업 기록 검색. 시맨틱 매칭은 호출자가 담당한다 — 원문 어휘에 얽매이지 말고 유의어·관련어·한/영 변형 쿼리를 2-5개 만들어 배열로 전달할 것 (서버는 FTS OR-병합). 유사 작업의 플레이북을 찾을 땐 section: task로 좁힌다. 결과가 부족하면 nunchi_list로 전량을 읽고 직접 선별한다.",
+      "보정 항목·작업 기록 검색. 시맨틱 매칭은 호출자가 담당한다 — 원문 어휘에 얽매이지 말고 유의어·관련어·한/영 변형 쿼리를 2-5개 만들어 배열로 전달할 것 (서버는 쿼리를 단어로 나눠 OR-병합하고, 걸린 단어가 많은 항목을 먼저 반환). 유사 작업의 플레이북을 찾을 땐 section: task로 좁힌다. 결과가 부족하면 nunchi_list로 전량을 읽고 직접 선별한다.",
     inputSchema: {
       queries: z.array(z.string()).min(1).describe("확장 쿼리 2-5개 권장"),
       section: section.optional(),
@@ -159,3 +164,6 @@ server.registerTool(
 );
 
 await server.connect(new StdioServerTransport());
+// 클라이언트(Claude Code)가 stdin을 닫으면 종료 — memory server 소켓이 이벤트 루프를 붙잡아
+// 세션이 비정상 종료돼도 프로세스가 고아로 남던 문제
+process.stdin.on("end", () => process.exit(0));
