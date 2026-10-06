@@ -46,7 +46,7 @@ const area = z.string().max(100).describe('"[영역: 짧은 상황 서술]" 형�
 const rule = z.string().max(500).describe("무엇을 한다 / 생략해도 된다 — 500자 이내");
 const evidence = z.string().max(200).describe("YYYY-MM-DD 실제로 있었던 일 1줄 — 200자 이내");
 
-const server = new McpServer({ name: "nunchi", version: "0.13.1" });
+const server = new McpServer({ name: "nunchi", version: "0.13.2" });
 
 server.registerTool(
   "nunchi_record",
