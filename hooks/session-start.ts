@@ -4,8 +4,9 @@
 // startup / resume / clear / compact 모두에서 실행 (matcher 미지정 = 전체).
 // 서버 스폰·external-address·핸드셰이크는 전부 connectMemory가 담당한다.
 import { mkdirSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import {
+  PLUGIN_ROOT,
   loadConfig,
   resolveDocDir,
   hookProjectDir,
@@ -54,7 +55,7 @@ if (core.length) {
 if (note) lines.push("", note);
 lines.push(
   "",
-  `[nunchi] 기록 규약 전문(SKILL.md): ${fileURLToPath(new URL("../SKILL.md", import.meta.url))}`
+  `[nunchi] 기록 규약 전문(SKILL.md): ${join(PLUGIN_ROOT, "SKILL.md")}`
 );
 
 // ponytail(고정 강도 정책) 공존: 우선순위가 결정돼 있으면 규칙 1줄, 미결정이면 질문 지시 1줄 주입
