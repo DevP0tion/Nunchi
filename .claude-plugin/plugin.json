@@ -1,14 +1,14 @@
 {
   "name": "nunchi",
   "description": "환경별 작업 강도 보정('적당히') passive skill — 예측 어긋남 기록과 재귀 개선",
-  "version": "0.13.1",
+  "version": "0.13.2",
   "author": {
     "name": "DevP0tion"
   },
   "mcpServers": {
     "nunchi": {
       "command": "bun",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.ts"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js"]
     }
   },
   "userConfig": {

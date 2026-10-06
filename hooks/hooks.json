@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.ts\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/session-start.js\"",
             "timeout": 15
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.ts\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/user-prompt-submit.js\"",
             "timeout": 10
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-start.ts\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/subagent-start.js\"",
             "timeout": 10
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-check.ts\"",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/stop-check.js\"",
             "timeout": 15
           }
         ]

@@ -4,6 +4,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 // zero-dependency 실행을 위한 최소 ambient 선언.
 // 에디터에서 타입을 제대로 보려면 `bun add -d @types/bun` 후 이 블록을 제거해도 된다.
@@ -17,6 +18,11 @@ declare global {
     };
   };
 }
+
+/** dist 번들로 실행 중인지 — build.ts가 define으로 "1"을 박는다 (소스 실행에서는 undefined) */
+export const BUNDLED = process.env.NUNCHI_BUNDLED === "1";
+/** 플러그인 루트. 번들에서는 import.meta.url이 이 모듈이 아니라 번들 파일(dist/<폴더>/<진입점>.js)을 가리킨다 */
+export const PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
 
 export interface NunchiConfig {
   /** true면 SessionStart 시 memory server(server.ts) 자동 시작 */

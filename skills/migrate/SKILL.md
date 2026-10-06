@@ -23,7 +23,7 @@ description: nunchi 보정 DB 마이그레이션이 필요할 때 사용 - 플�
 1. **이전 전 상태 기록** — 가능하면 `nunchi_list`로 현재 항목 수·id를 확보한다. 서버가 응답하지 않으면 DB 파일을 직접 읽어 `SELECT count(*) FROM calibration`(구) 또는 `FROM memory`(신)로 확인한다.
 2. **구버전 서버 종료** — 서버 프로세스가 살아 있는 한 구버전 코드가 DB를 계속 소유한다. Windows에서 확인·종료:
    ```powershell
-   Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'memory[/\\]server\.ts' }
+   Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'memory[/\\]server\.(ts|js)' }
    Stop-Process -Id <PID> -Force
    ```
 3. **재기동** — `nunchi_list`를 호출하면 auto-start가 새 코드로 서버를 스폰하며 이전이 실행된다.
