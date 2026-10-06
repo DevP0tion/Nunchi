@@ -347,6 +347,7 @@ if (import.meta.main) {
           sections: Array.isArray(p.sections) ? p.sections : p.section ? [p.section] : undefined,
           limit: Number(p.limit) || undefined,
           excludeCore: Boolean(p.excludeCore),
+          strict: Boolean(p.strict),
         }),
       }))(ack);
     });

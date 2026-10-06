@@ -3,23 +3,21 @@
 // 매 응답 종료 시 카운트를 올리고, CHECK_EVERY 턴마다 한 번
 // "이번 구간에 예측 어긋남이 있었나?" 점검을 강제한다 (decision: block).
 // - stop_hook_active 가드로 무한 루프 방지
-// - 구간 내에 보정 DB 기록이 이미 있었으면 점검 생략 (중복 잔소리 방지)
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+// - 구간 내에 이 세션이 보정 DB에 기록했으면 점검 생략 (중복 잔소리 방지)
+import { closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readStdinJson } from "./config.ts";
+import { hookProjectDir, readStdinJson } from "./config.ts";
+
+hookProjectDir(); // Claude Code 밖(다른 harness)이면 점검하지 않고 종료
 
 const CHECK_EVERY = Math.max(
   2,
   parseInt(process.env.NUNCHI_CHECK_EVERY || "10", 10) || 10
 );
+const STATE_TTL_MS = 7 * 86400_000;
 
 const input = await readStdinJson();
-
-// 직전 Stop hook이 이미 진행을 막은 상태면 즉시 통과 (루프 가드)
-if (input.stop_hook_active) process.exit(0);
-
-const projectDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd();
 
 const sessionId = String(input.session_id || "unknown").replace(/[^\w-]/g, "");
 const stateDir = join(tmpdir(), "nunchi");
@@ -27,52 +25,75 @@ const statePath = join(stateDir, `${sessionId}.json`);
 
 interface State {
   count: number;
-  /** 구간 시작 시점의 mem:stamp — null이면 서버 미접속 또는 항목 없음 */
-  stamp: string | null;
+  /** 지난 점검 시점의 transcript 바이트 길이 — 이번 구간은 여기서부터 */
+  offset: number;
 }
 
-let state: State = { count: 0, stamp: null };
+let state: State = { count: 0, offset: 0 };
 try {
   state = { ...state, ...JSON.parse(readFileSync(statePath, "utf8")) };
 } catch {
   /* 첫 실행 */
 }
 
-state.count += 1;
-
-// 보정 DB의 마지막 기록 시각 — 서버 미기동이면 null (스폰하지 않는다)
-let stamp: string | null = null;
-try {
-  const { connectMemory } = await import("../memory/client.ts");
-  const mem = await connectMemory(projectDir, { noSpawn: true });
+const save = () => {
   try {
-    stamp = await mem.stamp();
-  } finally {
-    mem.close();
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(statePath, JSON.stringify(state));
+  } catch {
+    /* 상태 저장 실패는 치명적이지 않음 */
   }
-} catch {
-  /* 서버 미접속 — 점검 자체는 그대로 진행 */
+};
+
+// 직전 Stop hook이 이미 진행을 막은 상태면 즉시 통과 (루프 가드).
+// 점검에 응답한 기록이 다음 구간의 "기록 있음"으로 세지지 않도록 기준선을 응답 뒤로 옮긴다
+if (input.stop_hook_active) {
+  try {
+    state.offset = statSync(String(input.transcript_path)).size;
+    save();
+  } catch {
+    /* transcript 없음 — 기준선 유지 */
+  }
+  process.exit(0);
 }
 
-// 구간 첫 턴에 stamp 기준선 기록
-if (state.count === 1) state.stamp = stamp;
+state.count += 1;
 
 let block = false;
 if (state.count >= CHECK_EVERY) {
-  // ponytail: 서버 단절 구간의 stamp 비교는 근사 — 오검(생략)보다 과검(한 번 더 점검)을 택한다
-  // — 기준선 미상(null)은 기록으로 치지 않는다
-  const recorded = state.stamp !== null && stamp !== null && stamp !== state.stamp;
+  // 이 세션의 transcript에서 구간 내 기록 도구 호출을 찾는다. DB 전체의 마지막 기록 시각은
+  // 같은 DB를 쓰는 동시 세션의 기록까지 세므로 쓰지 않는다.
+  // ponytail: 서브에이전트의 기록은 subagents/*.jsonl에 남아 보이지 않는다 — 과검(한 번 더 점검) 쪽으로 틀린다
+  let recorded = false;
+  try {
+    const fd = openSync(String(input.transcript_path), "r");
+    try {
+      const size = fstatSync(fd).size;
+      const from = size < state.offset ? 0 : state.offset; // 파일이 새로 쓰였으면 처음부터
+      const buf = Buffer.alloc(size - from);
+      readSync(fd, buf, 0, buf.length, from);
+      recorded = /"name":"[^"]*nunchi_(?:record|update)"/.test(buf.toString("utf8"));
+      state.offset = size;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    /* transcript 없음·읽기 실패 — 기록 없음으로 보고 점검한다 */
+  }
   block = !recorded;
   state.count = 0;
-  state.stamp = null;
+  // 끝난 세션의 상태 파일 정리 — 점검 턴에만 (매 턴 디렉터리를 훑지 않는다)
+  try {
+    for (const f of readdirSync(stateDir)) {
+      const p = join(stateDir, f);
+      if (Date.now() - statSync(p).mtimeMs > STATE_TTL_MS) rmSync(p, { force: true });
+    }
+  } catch {
+    /* 정리 실패는 치명적이지 않음 */
+  }
 }
 
-try {
-  mkdirSync(stateDir, { recursive: true });
-  writeFileSync(statePath, JSON.stringify(state));
-} catch {
-  /* 상태 저장 실패는 치명적이지 않음 */
-}
+save();
 
 if (block) {
   process.stdout.write(
