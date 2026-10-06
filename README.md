@@ -74,7 +74,7 @@ Claude Code든 Codex든, CLAUDE.md·AGENTS.md·메모리 문서에 경험을 적
 |---|---|---|
 | 기록 대상 | 제한 없음 — 사실, 선호, 코드 패턴, 프로젝트 지식 전부 | 의도적으로 좁음 — **예측과 실제가 어긋난 순간**(보정)과 **완결 작업 플레이북**(task)만, 작업 강도 판단·재사용 전용. 확신 없는 신호는 관찰(observe) 레인에 격리 |
 | 기록 트리거 | 모델 재량 또는 사용자 요청. 모델이 잊으면 유실 | Stop hook이 N턴마다 점검을 **강제** — 기록 기회가 시스템에 의해 보장 |
-| 회수·검색 | 모델 재량 — 전문 통째 주입(항목 수에 비례해 컨텍스트 비용 증가)이거나 grep 수준, 관련 문서를 안 읽고 지나칠 수 있음 | hook이 보장 — 코어 상시 주입 + 매 메시지 FTS5 BM25 검색 상위 3건, 보강 모델 설정 시 기록 시점 AI 유의어 보강으로 표현이 달라도 회수. 항목 수와 무관하게 비용 일정 |
+| 회수·검색 | 모델 재량 — 전문 통째 주입(항목 수에 비례해 컨텍스트 비용 증가)이거나 grep 수준, 관련 문서를 안 읽고 지나칠 수 있음 | hook이 보장 — 코어 상시 주입 + 매 메시지 FTS5 검색(보정 3건 + 작업 기록 2건), 보강 모델(기본 꺼짐) 설정 시 기록 시점 AI 유의어 보강으로 표현이 달라도 회수. 주입 비용은 항목 수가 아니라 걸린 항목의 길이에 비례하며, 기록 필드 상한과 주입 8천자 상한으로 묶인다 |
 | 규칙의 수명·갱신 | 한 번 적히면 영속 — 틀린 규칙도 자동 교정 없음, "신뢰도 +1" 같은 필드 갱신이 텍스트 편집이라 깨지기 쉬움 | 고정 스키마(규칙 · 근거 · 신뢰도) 위에서 confirm/reverse/정제가 안전한 연산 — 모든 항목이 반증 가능한 가설, 모든 변경이 append-only 이벤트 저널에 이력으로 남음 |
 | 동시 접근 | 여러 프로세스가 같은 파일을 쓰면 유실·충돌 | server 단일 소유 + 포트 락으로 구조적으로 안전 |
 | 확장 경로 | 임베딩·랭킹을 붙이려면 결국 DB화 | embedding 컬럼 추가 등 업그레이드 경로 예약됨 |
@@ -107,10 +107,10 @@ Claude Code든 Codex든, CLAUDE.md·AGENTS.md·메모리 문서에 경험을 적
 ## 동작
 
 1. **SessionStart** (startup/resume/clear/compact): 규약 요약 + 코어('벌주는 것' 신뢰도 3+)를 additionalContext로 조용히 주입. `auto-start: true`면 memory server 자동 기동. 기존 calibration.md는 서버 첫 기동 시 DB로 자동 임포트(`.imported`로 보존).
-2. **UserPromptSubmit** (매 메시지): 프롬프트 어절로 검색해 보정 항목 3건 + 작업 기록(task) 2건을 각 쿼터로 주입 (task가 보정 회수를 밀어내지 않도록 분리). 결과 0건이면 비용 0. 서버 미기동이면 조용히 통과.
+2. **UserPromptSubmit** (매 메시지): 사용자가 직접 친 글의 어절로 검색해 보정 항목 3건 + 작업 기록(task) 2건을 각 쿼터로 주입 (task가 보정 회수를 밀어내지 않도록 분리). Claude Code가 붙인 태그 블록(`<task-notification>`, `<ide_opened_file>` 등)은 검색어에서 빼고, 백그라운드 작업 알림·다른 세션 메시지처럼 사용자 글이 없는 메시지에는 주입하지 않는다. 정밀도 우선 — 흔한 2글자 단어 하나만 걸린 항목은 주입하지 않는다. 결과 0건이면 주입 없음, 주입은 최대 8천자. 서버 미기동이면 조용히 통과.
 3. **SubagentStart**: 서브에이전트에 규약 + 코어 주입 (SessionStart 주입을 못 받으므로).
 4. **모델 재량 (MCP 도구)**: `nunchi_search`(유의어 확장 쿼리 검색) · `nunchi_list`(전량 선별, `tree: id`로 관계 트리 조회) · `nunchi_record`(예측 어긋남·완결 작업 플레이북·관찰 기록) · `nunchi_update`(재확인·반전·정제·플레이북 교정·관찰 승격 promote·자유 참조 link).
-5. **Stop hook** (백업): 10턴마다 1회 "(A) 예측 어긋남이 있었나? (B) 완결된 작업이 있었나? (C) 확신 없는 어긋남 의심이 있었나?" 점검을 강제. 구간 내에 DB 기록이 이미 있으면 자동 생략.
+5. **Stop hook** (백업): 10턴마다 1회 "(A) 예측 어긋남이 있었나? (B) 완결된 작업이 있었나? (C) 확신 없는 어긋남 의심이 있었나?" 점검을 강제. 구간 내에 이 세션이 이미 기록했으면 자동 생략 — 세션 transcript의 `nunchi_record`/`nunchi_update` 호출로 판정하므로 같은 DB를 쓰는 동시 세션의 기록은 세지 않는다. 7일 지난 세션 상태 파일은 점검 때 정리된다.
 6. **`/nunchi`**: 수동 호출 시 항목 정제(pruning) 모드.
 
 **작업 기록(task) — 완결 작업 플레이북.** 보정 항목이 예측 어긋남만 남긴다면, task는 완결된 작업(구현·수정·리팩토링·문서·설계·릴리스) 자체를 플레이북(`area`=[작업유형: 상황], `rule`=접근 절차/주의점, `evidence`=결과 1줄, `confidence`=무사고 재수행 횟수)으로 남긴다. 유사 작업 재수행 시 UserPromptSubmit이 자동 회수하고, 절차가 어긋났으면 그 자리에서 `nunchi_update(edit)`로 교정, 그대로 유효했으면 `confirm`한다. `reverse`는 보정 forgive 전용이라 task에는 쓰지 않는다. 같은 테이블 `section='task'`에 축적되며 대시보드에 별도 타일로 표시된다.
@@ -175,12 +175,12 @@ sqlite(`memory.db`)는 server.ts 단일 프로세스만 소유하고, MCP 서버
 
 - **단일 실행**: 포트 바인딩이 락. 중복 실행하면 `EADDRINUSE` 감지 후 즉시 종료(exit 0).
 - **자동 연결**: `connectMemory()`는 `auto-start`와 무관하게 포트에 실행 중인 서버가 있으면 그대로 연결한다. 서버가 없으면 `auto-start: true`일 때만 스폰 후 재접속 (동시 스폰 경쟁은 포트 락이 정리), `false`면 에러.
-- **프로젝트 검증 핸드셰이크**: 여러 프로젝트가 같은 포트(기본 41720)를 쓰면 나중에 뜬 쪽이 남의 서버(= 남의 memory.db)에 붙을 수 있다. 이를 막기 위해 `connectMemory()`는 접속 직후 서버의 소유 프로젝트를 확인(`mem:info`)하고, 불일치면 `ProjectMismatchError`를 던진다. 이 에러를 받으면 사용자에게 물어본 뒤 둘 중 하나로 처리한다: ① `connectMemory(projectDir, { force: true })`로 강제 연결(타 프로젝트 db 공유), ② `assignFreePort(projectDir)`로 OS의 빈 포트를 받아 `.claude/nunchi.json`의 `port`에 기록 후 재연결. nunchi.json은 plugin userConfig(환경 변수)보다 우선하므로 즉시 반영된다.
+- **프로젝트 검증 핸드셰이크**: 여러 프로젝트가 같은 포트(기본 41720)를 쓰면 나중에 뜬 쪽이 남의 서버(= 남의 memory.db)에 붙을 수 있다. 이를 막기 위해 `connectMemory()`는 접속 직후 서버의 소유 프로젝트를 확인(`mem:info`)하고, 다른 프로젝트 소유로 확인되면 스폰 경로(SessionStart·MCP)는 `assignFreePort(projectDir)`로 OS의 빈 포트를 받아 `.claude/nunchi.json`의 `port`에 기록하고 자기 서버를 띄워 재연결한다 (nunchi.json은 plugin userConfig보다 우선하므로 즉시 반영). 소유를 알 수 없는 구버전 서버는 같은 프로젝트일 수 있어 재할당하지 않고 `ProjectMismatchError`로 사용자에게 알린다 — 같은 memory.db를 두 서버가 여는 것을 막기 위해서다. 매 메시지 훅(noSpawn)은 설정을 건드리지 않고 조용히 통과한다. 타 프로젝트 db를 일부러 공유하려면 `connectMemory(projectDir, { force: true })`.
 - **설정**: `{path}/memory-config.json` (서버 전용 — 플러그인 config와 별개). `db`(파일명, 기본 `memory.db`), `port`(기본 41720), `host`(불리언 — `false`=루프백, `true`=`0.0.0.0` 외부 공개, 기본 `false`. 구버전 문자열 값은 자동 정규화), `web`(불리언 — `true`면 같은 포트에서 웹 대시보드 서빙, 기본 `false`), `token`(설정 시 모든 소켓 접속에 핸드셰이크 토큰 요구, 기본 `null`), `model`(키워드 보강 모델, 기본 `null`), `modelProvider`(보강 CLI 공급자 `"claude"`/`"codex"`/`"gemini"`, 기본 `"claude"`). 플러그인 config의 `port`가 설정돼 있으면 그쪽이 우선.
 - **외부 서버**: 플러그인 config에 `external-address`를 설정하면 로컬 스폰 없이 해당 주소로 연결한다 (명시적 공유 서버이므로 프로젝트 검증 핸드셰이크 생략). 외부에 서비스하는 쪽은 memory-config.json의 `host`를 `true`로 바꿔 바인딩을 연다 — `token`을 함께 설정해 인증을 걸 것 (접속하는 쪽도 로컬 memory-config.json에 같은 `token`을 넣으면 자동 전달된다). token 없이 열면 신뢰할 수 있는 네트워크에서만.
   - **알려진 제약 (구버전 외부 서버)**: `external-address`가 task 기능 이전 버전 서버를 가리키면, task 기록은 구 CHECK 제약으로 명확히 실패(에러가 도구 응답에 노출 — 서버 업그레이드 필요를 안내)하고, `reverse`는 구 서버가 플래그를 무시한 채 evidence만 갱신하는 부분 적용이 일어날 수 있다. 공유 서버는 접속 클라이언트와 같은 버전으로 유지할 것.
 - **API**: `doc()` / `shutdown()` + `add(parent 지정 가능)` / `update(id, {confirm?, reverse?, link?, ...fields})` / `remove` / `promote(sources[], entry)` / `tree(id)` / `exportEvents()`(mem:export JSONL) / `search(queries[], {sections?, limit, excludeCore})` / `list({section?, minConfidence?, withObserve?})` / `core` / `stamp`
-- **보정 검색**: `mem:search`는 다중 쿼리 OR-병합 — FTS5(trigram, BM25 랭킹), 3글자 미만·무결과 질의는 LIKE 폴백. 구버전 db는 기동 시 자동 마이그레이션·백필. 시맨틱 매칭은 쿼리를 확장하는 모델 쪽이 담당한다 — 임베딩 불필요. 필요해지면 `memory` 테이블에 embedding 컬럼을 추가하는 업그레이드 경로가 예약되어 있다.
+- **보정 검색**: `mem:search`는 다중 쿼리 OR-병합 — 쿼리를 공백 단위 단어로 나누고 한국어 끝 조사를 뗀 어간으로 각각 찾는다. FTS5(trigram, BM25 랭킹), 3글자 미만·무결과 단어는 LIKE 폴백, 걸린 단어 수 → BM25 순으로 정렬. 훅 자동 주입은 `strict` — 2글자 ASCII 단어(PR·UI 등, 영어 단어 속 부분 문자열에 다 걸린다)를 무시하고, 2글자 단어 하나만 걸린 항목은 제외한다. 기록 필드 상한: area 100 · rule 500 · evidence 200자. 구버전 db는 기동 시 자동 마이그레이션·백필. 시맨틱 매칭은 쿼리를 확장하는 모델 쪽이 담당한다 — 임베딩 불필요. 필요해지면 `memory` 테이블에 embedding 컬럼을 추가하는 업그레이드 경로가 예약되어 있다.
 - **문서 요청**: `doc()`(`mem:doc`)은 보정 DB에서 섹션별 markdown(punish/forgive/env/task/observe 전 섹션)을 렌더링해 반환한다 (없으면 `null`) — external-address 구버전 클라이언트·내보내기 겸용.
 - **키워드 보강**: memory-config.json에 `model`을 설정하면(예: `"haiku"`) 보정 기록마다 보강 CLI를 백그라운드로 돌려 유의어 키워드를 생성, 검색 대상에 포함한다. CLI는 `modelProvider`로 선택 — `"claude"`(기본, `claude -p --model <값>`), `"codex"`(`codex exec --model <값>`, 최종 메시지는 `--output-last-message` 임시 파일로 회수), `"gemini"`(`gemini -m <값>`, stdin 파이프 headless). 구현은 `memory/provider/`에 공급자별 파일로 분리 — 새 공급자는 파일 추가 후 `provider/index.ts`의 `PROVIDERS`에 등록. 값이 갱신되면 낡은 키워드는 자동 폐기. `model` 미설정 시 완전 비활성. 기동 시 1회 로드되므로 변경은 memory server 재시작 후 반영. (0.10.0에서 플러그인 config → memory-config.json으로 이동)
 
