@@ -8,8 +8,8 @@ CLAUDE.md나 메모리 문서에 경험을 적어 두는 자기개선은 플러�
 
 ## 요구사항
 
-- **Bun** 이 PATH에 있어야 한다 (hooks가 `bun <script>.ts` 로 실행됨). 확인: `bun --version`
-- hooks·memory server·MCP의 의존성(socket.io, @modelcontextprotocol/sdk 등)은 Bun auto-install이 실행 시점에 자동 해석하므로 별도 `bun install`이 필요 없다.
+- **Bun** 이 PATH에 있어야 한다 (hooks·MCP·memory server가 `bun dist/<...>.js` 로 실행됨). 확인: `bun --version`
+- 설치본은 `bun install`이 필요 없다. hooks·MCP·memory server는 의존성(socket.io, @modelcontextprotocol/sdk 등)을 bun.lock 고정 버전으로 묶은 `dist/`의 단일 파일 번들로 실행되므로, 플러그인 폴더에 node_modules가 없어도 동작한다. Claude Code 설치기의 의존성 설치나 Bun auto-install에 기대지 않는다 — auto-install은 상위 디렉터리 어딘가에 node_modules가 있으면(예: 홈 디렉터리) 꺼진다.
 
 ## 설치
 
@@ -29,6 +29,14 @@ hooks는 자동 등록되며 **다음 세션 시작부터** 동작한다 (설치
 ```sh
 claude --plugin-dir /path/to/nunchi
 ```
+
+`--plugin-dir`도 설치본과 같이 `dist/`의 번들을 실행한다. 소스(`hooks/`·`mcp/`·`memory/`의 `.ts`)를 고쳤으면 다시 빌드해야 반영된다:
+
+```sh
+bun run build   # bun install --frozen-lockfile 후 dist/ 재생성 (저장소 루트에서)
+```
+
+빌드한 `dist/`는 소스와 함께 커밋한다 — `tests/dist.test.ts`가 `dist/build-info.json`의 입력 해시로 최신 여부를 검사한다. 테스트(`bun test`)는 소스를 직접 실행하므로 `bun install`이 필요하다.
 
 (hooks 파일 변경 시에는 dev 모드에서도 `/reload-plugins` 필요)
 
@@ -111,8 +119,13 @@ Claude Code든 Codex든, CLAUDE.md·AGENTS.md·메모리 문서에 경험을 적
 ```
 nunchi/
 ├── SKILL.md                  # 방법론 (기록·신뢰도·반전·정제 규약)
+├── build.ts                  # dist 빌드 (bun run build): 진입점 6개를 의존성 포함 단일 파일로 번들
+├── dist/                     # 빌드 결과 (커밋 대상) — hooks.json·plugin.json이 실행하는 파일
+│   ├── hooks/*.js · mcp/server.js · memory/server.js
+│   └── build-info.json       # 입력 해시 (dist 최신 여부 검사용)
 ├── memory/
 │   ├── server.ts             # memory server: sqlite 단일 소유 + Socket.IO 노출 (mem:*)
+│   ├── memory-config.ts      # memory-config.json 해석 (server·client 공용 — client가 server 진입 파일을 import하지 않도록 분리)
 │   ├── store.ts              # 보정 항목 저장소: 스키마·이벤트 저널·replay·검색·파서·임포트
 │   ├── client.ts             # Socket.IO 클라이언트 (서버 미기동 시 자동 스폰, noSpawn 옵션)
 │   ├── dashboard/            # 웹 대시보드 정적 파일 (memory-config.json의 web: true 시 서빙)

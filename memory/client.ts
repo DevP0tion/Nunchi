@@ -3,15 +3,14 @@
 // 서버 쪽 포트 락(EADDRINUSE 즉시 종료)으로 하나만 살아남으므로 안전하다.
 import { io, type Socket } from "socket.io-client";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
-import { resolveMemoryConn } from "./server.ts";
-import { loadConfig } from "../hooks/config.ts";
+import { resolveMemoryConn } from "./memory-config.ts";
+import { BUNDLED, PLUGIN_ROOT, loadConfig } from "../hooks/config.ts";
 import type { MemoryEntry, MemorySection, MemoryTree, NewMemoryEntry } from "./store.ts";
 
-const SERVER_PATH = fileURLToPath(new URL("./server.ts", import.meta.url));
+const SERVER_PATH = join(PLUGIN_ROOT, BUNDLED ? "dist/memory/server.js" : "memory/server.ts");
 
 /** 포트의 서버가 이 프로젝트 소유로 확인되지 않을 때. 다른 프로젝트 소유가 확인되면 스폰 경로가
  *  새 포트를 자동 할당하므로, 이 에러는 구버전 서버(소유 불명)·noSpawn 경로에서만 소비자에게 닿는다 */
