@@ -12,12 +12,12 @@ dev → main → codex-support 순서로 동기화하고 로컬 플러그인 캐
 | 파일 | 브랜치 |
 |---|---|
 | `.claude-plugin/plugin.json` `version` | dev·main |
-| `mcp/server.ts` `new McpServer({ ... version })` | dev·main·codex-support |
+| `hooks/config.ts` `VERSION` (MCP serverInfo·memory server 기동 정보 공용) | dev·main·codex-support |
 | `.codex-plugin/plugin.json` `version` | codex-support 전용 |
 
 한글이 든 파일이므로 수정은 Edit 도구로만 한다 (PowerShell Get/Set-Content 왕복은 CP949 파손).
 
-설치본은 소스가 아니라 `dist/` 번들을 실행한다 (hooks.json·plugin.json). `mcp/server.ts`의 version 문자열도 `dist/mcp/server.js`에 묶이므로 **범프 → 빌드 → dist 포함 커밋** 순서를 지킨다.
+설치본은 소스가 아니라 `dist/` 번들을 실행한다 (hooks.json·plugin.json). `hooks/config.ts`의 `VERSION`도 번들(`dist/`)에 묶이므로 **범프 → 빌드 → dist 포함 커밋** 순서를 지킨다.
 
 ## 절차
 

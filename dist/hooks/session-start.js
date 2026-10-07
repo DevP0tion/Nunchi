@@ -147,7 +147,7 @@ function formatMemoryEntries(rows) {
   return rows.map((r) => `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
 `);
 }
-var BUNDLED = true, PLUGIN_ROOT, DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL;
+var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.2", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL;
 var init_config = __esm(() => {
   PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
   DEFAULTS = {

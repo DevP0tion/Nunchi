@@ -12,7 +12,14 @@ import { Server } from "socket.io";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, extname, join, resolve, sep } from "node:path";
-import { PLUGIN_ROOT, loadConfig, resolveDocDir, resolveDocPath } from "../hooks/config.ts";
+import {
+  BUNDLED,
+  PLUGIN_ROOT,
+  VERSION,
+  loadConfig,
+  resolveDocDir,
+  resolveDocPath,
+} from "../hooks/config.ts";
 import {
   createMemoryStore,
   importLegacyDoc,
@@ -61,7 +68,7 @@ export function pickKeywordsLine(raw: string): string {
 
 if (import.meta.main) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const { dbPath, port, memoryConfig } = initMemory(projectDir);
+  const { dbPath, configPath, port, memoryConfig } = initMemory(projectDir);
   const pluginCfg = loadConfig(projectDir); // calibration.md 임포트 경로(path) 해석용
   // 보강 모델·공급자 — memory-config.json에서 기동 시 1회 로드. 변경은 memory server 재시작 후 반영
   const model = memoryConfig.model;
@@ -307,7 +314,19 @@ if (import.meta.main) {
     });
   });
 
-  console.log(`[nunchi] memory server 시작: port ${port}, db ${dbPath}`);
+  // 기동 정보 — 창이 여럿 떠 있을 때 어느 버전·설치 경로·프로젝트의 서버인지 식별용 (token 값은 출력 금지)
+  console.log(
+    [
+      `[nunchi] memory server v${VERSION} 시작 — pid ${process.pid}, bun ${Bun.version}, ${BUNDLED ? "번들" : "소스"} 실행`,
+      `  프로젝트: ${projectDir}`,
+      `  DB: ${dbPath}`,
+      `  설정: ${configPath}`,
+      `  주소: ${memoryConfig.host ? "0.0.0.0(외부 공개)" : "127.0.0.1(루프백)"}:${port}, 토큰 ${memoryConfig.token ? "사용" : "없음"}`,
+      `  대시보드: ${memoryConfig.web ? `http://127.0.0.1:${port}` : `비활성 (${MEMORY_CONFIG_FILENAME}의 web: true로 활성화)`}`,
+      `  키워드 보강: ${model ? `${model} (${PROVIDERS[memoryConfig.modelProvider] ? memoryConfig.modelProvider : DEFAULT_PROVIDER})` : "비활성"}`,
+      `  실행 파일: ${process.argv[1]}`,
+    ].join("\n")
+  );
 
   // 'o' 키로 웹 대시보드 열기 — 새 터미널 창에서 서버가 뜨는 환경(win32) 편의 기능.
   // detached 스폰(stdio ignore)에선 isTTY가 아니므로 자동으로 비활성화된다
