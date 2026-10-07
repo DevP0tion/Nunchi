@@ -25,7 +25,7 @@ export const BUNDLED = process.env.NUNCHI_BUNDLED === "1";
 /** 플러그인 루트. 번들에서는 import.meta.url이 이 모듈이 아니라 번들 파일(dist/<폴더>/<진입점>.js)을 가리킨다 */
 export const PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
 /** 플러그인 버전 — MCP serverInfo·memory server 기동 정보 공용. .claude-plugin/plugin.json version과 함께 범프 */
-export const VERSION = "0.13.2";
+export const VERSION = "0.13.3";
 
 export interface NunchiConfig {
   /** true면 SessionStart 시 memory server(server.ts) 자동 시작 */
