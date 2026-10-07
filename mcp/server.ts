@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { connectMemory, type MemoryClient } from "../memory/client.ts";
+import { VERSION } from "../hooks/config.ts";
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -46,7 +47,7 @@ const area = z.string().max(100).describe('"[영역: 짧은 상황 서술]" 형�
 const rule = z.string().max(500).describe("무엇을 한다 / 생략해도 된다 — 500자 이내");
 const evidence = z.string().max(200).describe("YYYY-MM-DD 실제로 있었던 일 1줄 — 200자 이내");
 
-const server = new McpServer({ name: "nunchi", version: "0.13.2" });
+const server = new McpServer({ name: "nunchi", version: VERSION });
 
 server.registerTool(
   "nunchi_record",
