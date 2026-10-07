@@ -10625,7 +10625,7 @@ function formatMemoryEntries(rows) {
   return rows.map((r) => `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
 `);
 }
-var BUNDLED = true, PLUGIN_ROOT, DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL;
+var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.3", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL;
 var init_config = __esm(() => {
   PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
   DEFAULTS = {
@@ -23508,6 +23508,7 @@ class StdioServerTransport {
 
 // mcp/server.ts
 init_client();
+init_config();
 var projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 var memP = null;
 async function mem() {
@@ -23535,7 +23536,7 @@ var section = enumType(["punish", "forgive", "env", "task", "observe"]).describe
 var area = stringType().max(100).describe('"[\uC601\uC5ED: \uC9E7\uC740 \uC0C1\uD669 \uC11C\uC220]" \uD615\uC2DD, 100\uC790 \uC774\uB0B4');
 var rule = stringType().max(500).describe("\uBB34\uC5C7\uC744 \uD55C\uB2E4 / \uC0DD\uB7B5\uD574\uB3C4 \uB41C\uB2E4 \u2014 500\uC790 \uC774\uB0B4");
 var evidence = stringType().max(200).describe("YYYY-MM-DD \uC2E4\uC81C\uB85C \uC788\uC5C8\uB358 \uC77C 1\uC904 \u2014 200\uC790 \uC774\uB0B4");
-var server = new McpServer({ name: "nunchi", version: "0.13.2" });
+var server = new McpServer({ name: "nunchi", version: VERSION });
 server.registerTool("nunchi_record", {
   description: "\uC608\uCE21 \uC5B4\uAE0B\uB0A8(\uC608\uCE21-\uC2E4\uC81C \uBD88\uC77C\uCE58)\uC744 \uBCF4\uC815 DB\uC5D0 \uC2E0\uADDC \uAE30\uB85D\uD55C\uB2E4. \uACFC\uC789\uC774\uC5C8\uC74C\u2192forgive, \uACFC\uC18C\uC600\uC74C\u2192punish, \uD658\uACBD \uD2B9\uC774\uC0AC\uD56D\u2192env. \uADFC\uAC70\uB294 \uBC18\uB4DC\uC2DC \uC2E4\uC81C \uC0AC\uAC74 1\uC904(YYYY-MM-DD \uD3EC\uD568) \u2014 \uC77C\uBC18\uB860 \uAE08\uC9C0. \uAC19\uC740 \uADDC\uCE59\uC774 \uC774\uBBF8 \uC788\uC73C\uBA74 \uB300\uC2E0 nunchi_update(confirm)\uB97C \uC4F8 \uAC83. \uC644\uACB0\uB41C \uC791\uC5C5\uC758 \uD50C\uB808\uC774\uBD81\uC740 section: task\uB85C \uAE30\uB85D\uD55C\uB2E4 \u2014 area='[\uC791\uC5C5\uC720\uD615: \uC0C1\uD669]', rule='\uC811\uADFC: \uC808\uCC28 / \uC8FC\uC758: \uD568\uC815', evidence='YYYY-MM-DD \uACB0\uACFC 1\uC904'. \uC720\uC0AC task \uD56D\uBAA9\uC774 \uC774\uBBF8 \uC788\uC73C\uBA74 record \uB300\uC2E0 nunchi_update(edit \uAD50\uC815 / confirm \uC7AC\uD655\uC778). \uD655\uC2E0\uC774 \uC5C6\uB294 \uC5B4\uAE0B\uB0A8 \uC758\uC2EC\uC740 section: observe\uB85C \uAD00\uCC30\uB9CC \uB0A8\uAE34\uB2E4(\uBD80\uB2F4 \uC5C6\uC74C, \uC790\uB3D9 \uD68C\uC218 \uC81C\uC678) \u2014 \uAD00\uB828 \uAE30\uC874 \uD56D\uBAA9\uC774 \uC788\uC73C\uBA74 parent\uB85C \uACC4\uBCF4\uB97C \uC5F0\uACB0\uD55C\uB2E4.",
   inputSchema: {

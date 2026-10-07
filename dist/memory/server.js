@@ -16777,7 +16777,7 @@ function formatMemoryEntries(rows) {
   return rows.map((r) => `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
 `);
 }
-var BUNDLED = true, PLUGIN_ROOT, DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL;
+var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.3", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL;
 var init_config = __esm(() => {
   PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
   DEFAULTS = {
@@ -17435,7 +17435,7 @@ function pickKeywordsLine(raw) {
 }
 if (import.meta.main) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const { dbPath, port, memoryConfig } = initMemory(projectDir);
+  const { dbPath, configPath, port, memoryConfig } = initMemory(projectDir);
   const pluginCfg = loadConfig(projectDir);
   const model = memoryConfig.model;
   const provider = PROVIDERS[memoryConfig.modelProvider] ?? PROVIDERS[DEFAULT_PROVIDER];
@@ -17653,7 +17653,17 @@ if (import.meta.main) {
         process.exit(0);
       });
     });
-    console.log(`[nunchi] memory server \uC2DC\uC791: port ${port}, db ${dbPath}`);
+    console.log([
+      `[nunchi] memory server v${VERSION} \uC2DC\uC791 \u2014 pid ${process.pid}, bun ${Bun.version}, ${BUNDLED ? "\uBC88\uB4E4" : "\uC18C\uC2A4"} \uC2E4\uD589`,
+      `  \uD504\uB85C\uC81D\uD2B8: ${projectDir}`,
+      `  DB: ${dbPath}`,
+      `  \uC124\uC815: ${configPath}`,
+      `  \uC8FC\uC18C: ${memoryConfig.host ? "0.0.0.0(\uC678\uBD80 \uACF5\uAC1C)" : "127.0.0.1(\uB8E8\uD504\uBC31)"}:${port}, \uD1A0\uD070 ${memoryConfig.token ? "\uC0AC\uC6A9" : "\uC5C6\uC74C"}`,
+      `  \uB300\uC2DC\uBCF4\uB4DC: ${memoryConfig.web ? `http://127.0.0.1:${port}` : `\uBE44\uD65C\uC131 (${MEMORY_CONFIG_FILENAME}\uC758 web: true\uB85C \uD65C\uC131\uD654)`}`,
+      `  \uD0A4\uC6CC\uB4DC \uBCF4\uAC15: ${model ? `${model} (${PROVIDERS[memoryConfig.modelProvider] ? memoryConfig.modelProvider : DEFAULT_PROVIDER})` : "\uBE44\uD65C\uC131"}`,
+      `  \uC2E4\uD589 \uD30C\uC77C: ${process.argv[1]}`
+    ].join(`
+`));
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(true);
       process.stdin.resume();
