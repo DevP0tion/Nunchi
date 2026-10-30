@@ -66,6 +66,18 @@ export function pickKeywordsLine(raw: string): string {
   return (lines.at(-1) ?? "").slice(0, 500);
 }
 
+/** 보강 CLI 스폰 — 프롬프트는 stdin, 응답은 stdout 파이프 */
+export function spawnProvider(argv: string[], prompt: string) {
+  const cmd = process.platform === "win32" ? ["cmd", "/c", ...argv] : argv;
+  return Bun.spawn(cmd, {
+    stdin: new TextEncoder().encode(prompt),
+    stdout: "pipe",
+    stderr: "ignore",
+    // 서버 창 콘솔을 공유하면 자식 CLI(claude 등)가 창 제목을 덮어쓴다
+    windowsHide: true,
+  });
+}
+
 if (import.meta.main) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const { dbPath, configPath, port, memoryConfig } = initMemory(projectDir);
@@ -91,13 +103,7 @@ if (import.meta.main) {
       `value: ${body}`,
     ].join("\n");
     const outFile = join(tmpdir(), `nunchi-kw-${process.pid}-${++kwSeq}.txt`);
-    const argv = provider.argv(model!, outFile);
-    const cmd = process.platform === "win32" ? ["cmd", "/c", ...argv] : argv;
-    const proc = Bun.spawn(cmd, {
-      stdin: new TextEncoder().encode(prompt),
-      stdout: "pipe",
-      stderr: "ignore",
-    });
+    const proc = spawnProvider(provider.argv(model!, outFile), prompt);
     const timer = setTimeout(() => proc.kill(), ENRICH_TIMEOUT_MS);
     try {
       let text = await new Response(proc.stdout).text(); // stdout EOF = 프로세스 종료 대기
@@ -148,7 +154,9 @@ if (import.meta.main) {
     });
   }
 
-  const io = new Server(httpServer);
+  // serveClient: false — 번들은 socket.io의 __dirname을 빌드 머신 절대 경로로 박아 client-dist를 못 찾는다.
+  // 대시보드 클라이언트는 build.ts가 memory/dashboard에 복사한 socket.io.min.js를 위 정적 경로로 서빙
+  const io = new Server(httpServer, { serveClient: false });
   // token 설정 시 모든 접속에 핸드셰이크 토큰 요구 (대시보드·MCP 클라이언트 공통).
   // 구버전 external-address 클라이언트는 토큰을 못 보내므로, 그런 환경에선 token을 설정하지 말 것
   if (memoryConfig.token) {

@@ -1,1 +1,2 @@
 dist/** -text -diff
+memory/dashboard/socket.io.min.js -text -diff
