@@ -28,6 +28,11 @@ test(
       recursive: true,
       filter: (src) => !/^(node_modules|\.git|tests|docs)([\\/]|$)/.test(relative(ROOT, src)),
     });
+    // 다른 머신 재현: 번들은 CJS 의존성의 __dirname을 빌드 머신 절대 경로로 박는다(socket.io 클라이언트 서빙 등).
+    // 빌드 머신에선 그 경로가 실제로 있어 결함이 가려지므로 복사본의 빌드 루트를 없는 경로로 바꾼다
+    const esc = (p: string) => JSON.stringify(p).slice(1, -1);
+    const bundle = join(plugin, "dist/memory/server.js");
+    writeFileSync(bundle, readFileSync(bundle, "utf8").replaceAll(esc(ROOT), esc(join(tmp, "build-root"))));
     const proj = join(tmp, "project");
     mkdirSync(proj);
     const port = await assignFreePort(proj); // 실행 중인 프로젝트 서버와의 포트 충돌 방지
@@ -60,7 +65,13 @@ test(
         expect((await mem.exportEvents()).count).toBeGreaterThan(0);
         const dash = await fetch(`http://127.0.0.1:${port}/`);
         expect(dash.status).toBe(200);
-        expect(await dash.text()).toContain("<html");
+        const html = await dash.text();
+        expect(html).toContain("<html");
+        // 대시보드의 Socket.IO 클라이언트 — 빈 200이면 브라우저에서 io 미정의로 타일이 전부 "—"
+        const client = await fetch(`http://127.0.0.1:${port}${/<script src="([^"]+)">/.exec(html)![1]}`);
+        expect(client.status).toBe(200);
+        expect(client.headers.get("content-type")).toContain("javascript");
+        expect((await client.text()).length).toBeGreaterThan(0);
 
         const ups = JSON.parse(
           run("dist/hooks/user-prompt-submit.js", { prompt: "일회성 스크립트에도 테스트가 필요할까?" })

@@ -17433,6 +17433,15 @@ function pickKeywordsLine(raw) {
 `).map((l) => l.trim()).filter(Boolean);
   return (lines.at(-1) ?? "").slice(0, 500);
 }
+function spawnProvider(argv, prompt) {
+  const cmd = process.platform === "win32" ? ["cmd", "/c", ...argv] : argv;
+  return Bun.spawn(cmd, {
+    stdin: new TextEncoder().encode(prompt),
+    stdout: "pipe",
+    stderr: "ignore",
+    windowsHide: true
+  });
+}
 if (import.meta.main) {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const { dbPath, configPath, port, memoryConfig } = initMemory(projectDir);
@@ -17454,13 +17463,7 @@ if (import.meta.main) {
     ].join(`
 `);
     const outFile = join3(tmpdir(), `nunchi-kw-${process.pid}-${++kwSeq}.txt`);
-    const argv = provider.argv(model, outFile);
-    const cmd = process.platform === "win32" ? ["cmd", "/c", ...argv] : argv;
-    const proc = Bun.spawn(cmd, {
-      stdin: new TextEncoder().encode(prompt),
-      stdout: "pipe",
-      stderr: "ignore"
-    });
+    const proc = spawnProvider(provider.argv(model, outFile), prompt);
     const timer = setTimeout(() => proc.kill(), ENRICH_TIMEOUT_MS);
     try {
       let text = await new Response(proc.stdout).text();
@@ -17507,7 +17510,7 @@ if (import.meta.main) {
       res.end(readFileSync4(file));
     });
   }
-  const io = new Server(httpServer);
+  const io = new Server(httpServer, { serveClient: false });
   if (memoryConfig.token) {
     io.use((socket, next) => socket.handshake.auth?.token === memoryConfig.token ? next() : next(new Error("unauthorized")));
   }
@@ -17695,5 +17698,6 @@ export {
   loadMemoryConfig,
   pickKeywordsLine,
   resolveMemoryConn,
-  resolveMemoryPort
+  resolveMemoryPort,
+  spawnProvider
 };

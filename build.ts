@@ -6,7 +6,7 @@
 // 최신 여부는 dist/build-info.json의 입력 해시로 검사한다 (tests/dist.test.ts).
 // 출력 바이트는 Bun 버전·cwd(모듈 경로 주석)에 따라 달라 비교 기준으로 쓰지 않는다.
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = import.meta.dir;
@@ -59,6 +59,8 @@ if (import.meta.main) {
     for (const log of result.logs) console.error(log);
     process.exit(1);
   }
+  // 대시보드용 Socket.IO 클라이언트 — 서버는 serveClient: false라 정적 경로로 서빙한다 (memory/server.ts)
+  copyFileSync("node_modules/socket.io/client-dist/socket.io.min.js", "memory/dashboard/socket.io.min.js");
   writeFileSync(
     "dist/build-info.json",
     JSON.stringify({ inputs: inputHash(), bun: Bun.version }, null, 2) + "\n"
