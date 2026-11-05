@@ -9,6 +9,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { resolveMemoryConn } from "./memory-config.ts";
 import { BUNDLED, PLUGIN_ROOT, loadConfig } from "../hooks/config.ts";
 import type { MemoryEntry, MemorySection, MemoryTree, NewMemoryEntry } from "./store.ts";
+import type { Topic, TopicSummary } from "./topics.ts";
+import type { SessionStateFile } from "./session-state.ts";
 
 const SERVER_PATH = join(PLUGIN_ROOT, BUNDLED ? "dist/memory/server.js" : "memory/server.ts");
 
@@ -82,8 +84,11 @@ export interface MemoryClient {
   /** 서버 프로젝트의 보정 문서 전문 (없으면 null). 구버전 서버는 timeout 에러 */
   doc(): Promise<string | null>;
   /** parent: 관찰(observe) 기록 시 승격 계보의 canonical 부모 항목 id */
-  add(e: NewMemoryEntry & { parent?: number }): Promise<number>;
-  update(id: number, fields: Partial<NewMemoryEntry> & { confirm?: boolean; reverse?: boolean }): Promise<boolean>;
+  add(e: NewMemoryEntry & { parent?: number; sessionId?: string }): Promise<number>;
+  update(
+    id: number,
+    fields: Partial<NewMemoryEntry> & { confirm?: boolean; reverse?: boolean; sessionId?: string }
+  ): Promise<boolean>;
   remove(id: number): Promise<boolean>;
   /** 관찰들 → 보정 항목 승격 (출처 계보 보존) */
   promote(sources: number[], e: NewMemoryEntry): Promise<number>;
@@ -95,13 +100,29 @@ export interface MemoryClient {
   exportEvents(): Promise<{ count: number; jsonl: string }>;
   search(
     queries: string[],
-    opts?: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean; strict?: boolean }
-  ): Promise<MemoryEntry[]>;
-  list(opts?: { section?: MemorySection; minConfidence?: number; withObserve?: boolean }): Promise<MemoryEntry[]>;
+    opts?: {
+      sections?: MemorySection[]; limit?: number; excludeCore?: boolean; strict?: boolean;
+      /** 주제 소속으로 먼저 채우고 일반 검색으로 보충 (소속 행은 topic: true). sessionId는 그 세션의 주제 */
+      topicId?: number; sessionId?: string;
+    }
+  ): Promise<(MemoryEntry & { topic?: boolean })[]>;
+  list(opts?: { section?: MemorySection; minConfidence?: number; withObserve?: boolean; ids?: number[] }): Promise<MemoryEntry[]>;
   /** 상시 주입 코어: 벌주는 것·권장(방법) 신뢰도 높음(3+) */
   core(): Promise<MemoryEntry[]>;
   /** 마지막 기록 시각 — Stop hook 점검용 */
   stamp(): Promise<string | null>;
+  /** 주제 목록 (ws:board) */
+  topics(): Promise<TopicSummary[]>;
+  createTopic(t: { name: string; description?: string; folders?: string[] }): Promise<number>;
+  /** 추가된 소속 건수 */
+  linkTopic(topicId: number, memoryIds: number[]): Promise<number>;
+  unlinkTopic(topicId: number, memoryIds: number[]): Promise<number>;
+  topicByName(name: string): Promise<Topic | null>;
+  registerSession(p: { sessionId: string; title?: string | null; cwd?: string | null; prompt?: string }): Promise<void>;
+  endSession(sessionId: string): Promise<void>;
+  setSessionTopic(sessionId: string, topicId: number | null): Promise<SessionStateFile>;
+  /** 세션 행이 없으면 { rev: 0, topic: null, memberIds: [] } */
+  sessionState(sessionId: string): Promise<SessionStateFile & { memberIds: number[] }>;
   /** 서버 프로세스 종료 (모든 클라이언트에 영향) */
   shutdown(): Promise<void>;
   close(): void;
@@ -215,13 +236,15 @@ export async function connectMemory(
   }
 
   const s = socket;
-  const req = async (ev: string, payload?: unknown) => {
+  const req = async (ev: string, payload?: unknown, ms = 5000) => {
     const res = payload === undefined
-      ? await s.timeout(5000).emitWithAck(ev)
-      : await s.timeout(5000).emitWithAck(ev, payload);
+      ? await s.timeout(ms).emitWithAck(ev)
+      : await s.timeout(ms).emitWithAck(ev, payload);
     if (!res.ok) throw new Error(res.error);
     return res;
   };
+  // 훅이 매 메시지 호출하는 경로 — 서버가 느려도 세션을 오래 붙잡지 않도록 1.5초
+  const ws = (ev: string, payload?: unknown) => req(ev, payload, 1500);
 
   return {
     doc: async () => (await req("mem:doc")).doc ?? null,
@@ -239,6 +262,22 @@ export async function connectMemory(
     list: async (opts = {}) => (await req("mem:list", opts)).rows,
     core: async () => (await req("mem:core")).rows,
     stamp: async () => (await req("mem:stamp")).stamp ?? null,
+    topics: async () => (await ws("ws:board")).topics,
+    createTopic: async (t) => (await ws("ws:topic:create", t)).id,
+    linkTopic: async (topicId, memoryIds) => (await ws("ws:topic:link", { topicId, memoryIds })).count,
+    unlinkTopic: async (topicId, memoryIds) => (await ws("ws:topic:unlink", { topicId, memoryIds })).count,
+    topicByName: async (name) =>
+      ((await ws("ws:board")).topics as TopicSummary[]).find((t) => t.name === name.trim()) ?? null,
+    registerSession: async (p) => void (await ws("ws:session:register", p)),
+    endSession: async (sessionId) => void (await ws("ws:session:end", { sessionId })),
+    setSessionTopic: async (sessionId, topicId) => {
+      const { rev, topic } = await ws("ws:session:set", { sessionId, topicId });
+      return { rev, topic };
+    },
+    sessionState: async (sessionId) => {
+      const { rev, topic, memberIds } = await ws("ws:session", { sessionId });
+      return { rev, topic, memberIds };
+    },
     shutdown: async () => {
       // ack는 서버가 파일 핸들을 놓기 전에 도착할 수 있다 — disconnect까지 기다려야
       // 호출자가 곧바로 DB 디렉터리를 지워도 안전하다 (서버는 db.close 후 접속을 끊는다)
