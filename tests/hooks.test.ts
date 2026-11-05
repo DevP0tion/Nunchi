@@ -641,3 +641,109 @@ test(
   },
   30000
 );
+
+// ── 워크스페이스 탭: Pre/PostToolUse·SessionEnd 훅 ──
+test(
+  "pre-tool-use: 작업공간 밖 Edit만 경고, 안·주제 없음은 무출력",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const t = await mem.createTopic({ name: "탭 개발", folders: ["src/"] });
+      const edit = (file: string, sid = "s1", tool: Record<string, unknown> = { file_path: file }) =>
+        runHook("pre-tool-use.ts", dir, { session_id: sid, tool_name: "Edit", tool_input: tool });
+      expect(await edit(join(dir, "docs", "a.md"))).toBe(""); // 주제 없음
+      await mem.setSessionTopic("s1", t);
+      const out = JSON.parse(await edit(join(dir, "docs", "a.md")));
+      expect(out.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+      expect(out.hookSpecificOutput.permissionDecision).toBeUndefined();
+      expect(out.hookSpecificOutput.additionalContext).toContain("작업공간 밖");
+      expect(out.hookSpecificOutput.additionalContext).toContain("'탭 개발'");
+      expect(await edit(join(dir, "src", "a.ts"))).toBe("");
+      // NotebookEdit는 notebook_path
+      expect(await edit("", "s1", { notebook_path: join(dir, "docs", "n.ipynb") })).toContain("작업공간 밖");
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
+  "post-tool-use: rev 변경 시 1회 전달, 메인·서브에이전트 각각",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const t = await mem.createTopic({ name: "배포 주제" });
+      await mem.setSessionTopic("s1", t);
+      const run = (extra: object = {}) => runHook("post-tool-use.ts", dir, { session_id: "s1", tool_name: "Read", ...extra });
+      const first = JSON.parse(await run());
+      expect(first.hookSpecificOutput.hookEventName).toBe("PostToolUse");
+      expect(first.hookSpecificOutput.additionalContext).toContain("주제가 변경됨");
+      expect(first.hookSpecificOutput.additionalContext).toContain("현재 주제: 배포 주제");
+      expect(await run()).toBe("");
+      expect(ctxOf(await run({ agent_id: "a1" }))).toContain("현재 주제: 배포 주제");
+      expect(await run({ agent_id: "a1" })).toBe("");
+      // 주제 해제도 한 번만
+      await mem.setSessionTopic("s1", null);
+      expect(ctxOf(await run())).toContain("현재 주제 없음");
+      expect(await run()).toBe("");
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
+  "post-tool-use: 깨진 상태 파일 → 무출력 exit 0",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-"));
+    try {
+      const sessions = join(docDirOf(dir), "sessions");
+      mkdirSync(sessions, { recursive: true });
+      writeFileSync(join(sessions, "s1.json"), "{깨짐");
+      expect(await runHook("post-tool-use.ts", dir, { session_id: "s1" })).toBe("");
+      writeFileSync(join(sessions, "s1.json"), JSON.stringify({ rev: 1, topic: { name: 5 } })); // 형식 불일치
+      expect(await runHook("post-tool-use.ts", dir, { session_id: "s1" })).toBe("");
+      expect(await runHook("pre-tool-use.ts", dir, { session_id: "s1", tool_input: { file_path: "x" } })).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
+
+test(
+  "session-end: 세션 행·파일 삭제",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const t = await mem.createTopic({ name: "배포 주제" });
+      await mem.registerSession({ sessionId: "s1" });
+      await mem.setSessionTopic("s1", t);
+      const stateFile = join(docDirOf(dir), "sessions", "s1.json");
+      expect(existsSync(stateFile)).toBe(true);
+      expect((await boardSessions(dir)).some((x) => x.session_id === "s1")).toBe(true);
+      await runHook("session-end.ts", dir, { session_id: "s1" });
+      expect((await boardSessions(dir)).some((x) => x.session_id === "s1")).toBe(false);
+      expect(existsSync(stateFile)).toBe(false);
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test("build ENTRIES에 신규 훅 포함, hooks.json 등록", async () => {
+  const { ENTRIES } = await import("../build.ts");
+  for (const f of ["pre-tool-use", "post-tool-use", "session-end"]) expect(ENTRIES).toContain(`hooks/${f}.ts`);
+  const hooks = JSON.parse(await Bun.file(new URL("../hooks/hooks.json", import.meta.url)).text()).hooks;
+  expect(hooks.PreToolUse[0].matcher).toBe("Edit|Write|MultiEdit|NotebookEdit");
+  expect(hooks.PreToolUse[0].hooks[0].timeout).toBe(5);
+  expect(hooks.PostToolUse[0].matcher).toBeUndefined();
+  expect(hooks.PostToolUse[0].hooks[0].timeout).toBe(5);
+  expect(hooks.SessionEnd[0].hooks[0].command).toContain("dist/hooks/session-end.js");
+});
