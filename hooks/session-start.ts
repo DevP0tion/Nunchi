@@ -36,6 +36,7 @@ let note: string | null = null;
 let topic: import("../memory/session-state.ts").TopicState | null = null;
 let memberIds: number[] = [];
 let rev = 0;
+let stateOk = false; // 주제 조회 성공 여부 — 실패(구버전 서버)면 resume 무효화 줄도 내지 않는다
 let topicList: Awaited<ReturnType<import("../memory/client.ts").MemoryClient["topics"]>> | null = null;
 try {
   const { connectMemory } = await import("../memory/client.ts");
@@ -43,15 +44,18 @@ try {
   try {
     core = await mem.core();
     if (sid) {
-      try {
-        await mem.registerSession({ sessionId: sid, title: input.session_title, cwd: input.cwd });
-      } catch { /* 등록 실패 — 주입은 계속 */ }
-      try {
-        ({ topic, memberIds, rev } = await mem.sessionState(sid));
-      } catch { /* 주제 조회 실패 — 주제 없음으로 취급 */ }
-      try {
-        topicList = await mem.topics();
-      } catch { /* 목록 실패 — 생략 */ }
+      // 동시 호출: 구버전 서버는 ws:*에 응답하지 않아 순차 호출이면 호출마다 1.5초씩 쌓인다.
+      // 소켓은 emit 순서를 보존하고 서버 ws 핸들러는 동기라 등록이 조회보다 먼저 반영된다
+      const [, st, tl] = await Promise.allSettled([
+        mem.registerSession({ sessionId: sid, title: input.session_title, cwd: input.cwd }),
+        mem.sessionState(sid),
+        mem.topics(),
+      ]);
+      if (st.status === "fulfilled") {
+        ({ topic, memberIds, rev } = st.value);
+        stateOk = true;
+      }
+      if (tl.status === "fulfilled") topicList = tl.value;
     }
   } finally {
     mem.close();
@@ -68,20 +72,31 @@ const lines = [
   "작업 기록 규약: 완결된 작업(산출물이 남는 요청 단위)을 마무리하면 nunchi_search로 유사 task 항목을 찾아 — 절차가 어긋났으면 nunchi_update(edit)로 교정, 그대로 유효했으면 nunchi_update(confirm), 없으면 nunchi_record(section: task)로 신규 기록한다.",
   "관찰 레인: 확신이 없는 예측 어긋남 의심은 nunchi_record(section: observe)로 가볍게 남긴다 (자동 회수 제외). 같은 신호가 반복 확인되면 nunchi_update(action: promote, id: 대표 관찰, sources: 추가 관찰)로 보정 항목으로 승격한다 — 출처가 계보로 보존된다.",
 ];
+// additionalContext는 1만자를 넘으면 파일로 빠진다 — 주제 관련 추가분(세션 id 줄·주제 목록·주제 블록)은
+// 합쳐서 TOPIC_BUDGET으로 묶고, 코어는 8000에서 추가분을 뺀 만큼만 싣는다 (규약·SKILL·ponytail 줄 생존)
+const TOPIC_BUDGET = 2500;
+let extra = "";
 if (sid) {
-  lines.push(sessionIdLine(sid));
-  if (topicList) lines.push(formatTopicList(topicList));
-  if (input.source === "fork") lines.push(TOPIC_CLEARED); // fork는 부모 주제를 이어받지 않는다
-  else if (topic && (input.source === "resume" || input.source === "compact")) {
+  const head = [sessionIdLine(sid)];
+  if (input.source === "fork") head.push(TOPIC_CLEARED); // fork는 부모 주제를 이어받지 않는다
+  else if (input.source === "resume" || input.source === "compact") {
     try {
-      lines.push(formatTopicBlock(topic));
-      writeDelivered(docDir, sid, null, rev); // 첫 메시지에서 같은 주제를 다시 알리지 않는다
+      if (topic) head.push(formatTopicBlock(topic));
+      // resume: SessionEnd가 정상 종료 시 세션을 지우므로 옛 transcript의 주제 블록은 무효다
+      else if (stateOk && input.source === "resume") head.push(TOPIC_CLEARED);
+      if (topic || (stateOk && input.source === "resume")) writeDelivered(docDir, sid, null, rev); // 첫 메시지 재주입 방지
     } catch { /* 렌더링·기록 실패 — 첫 메시지 훅이 다시 알린다 */ }
   }
+  // 주제 목록은 남는 예산에 들어가는 만큼만 (규약 줄은 formatTopicList가 항상 마지막에 붙인다)
+  const fit = (n: number) => [...head, formatTopicList(topicList!.slice(0, n))].join("\n");
+  let n = topicList ? topicList.length : 0;
+  while (topicList && n > 0 && fit(n).length > TOPIC_BUDGET) n--;
+  extra = (topicList ? fit(n) : head.join("\n")).slice(0, TOPIC_BUDGET);
+  lines.push(extra);
 }
 if (core.length) {
-  // ponytail: 하드 슬라이스 — 코어가 8천자를 넘는 비정상 상황에서만 잘리며, 규약·ponytail 줄이 항상 살아남는 것이 우선
-  lines.push("", formatCoreBlock(core, topic ? memberIds : null).slice(0, 8000));
+  // ponytail: 하드 슬라이스 — 코어가 예산을 넘는 비정상 상황에서만 잘리며, 규약·ponytail 줄이 항상 살아남는 것이 우선
+  lines.push("", formatCoreBlock(core, topic ? memberIds : null).slice(0, Math.max(0, 8000 - extra.length)));
 }
 if (note) lines.push("", note);
 lines.push(

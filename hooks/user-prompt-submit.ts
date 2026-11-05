@@ -32,20 +32,25 @@ try {
   try {
     const blocks: string[] = [];
     let topicId: number | undefined;
-    // ws:* 호출은 각자 try — 구버전 서버·타임아웃이어도 코어·검색 주입은 그대로 나간다
+    // ws:* 실패(구버전 서버·타임아웃)는 코어·검색 주입을 막지 않는다
     if (sid) {
-      try {
-        await mem.registerSession({ sessionId: sid, title: input.session_title, cwd: input.cwd, prompt: prompt || undefined });
-      } catch { /* 등록 실패 — 주입은 계속 */ }
-      try {
-        const { rev, topic } = await mem.sessionState(sid);
+      // 동시 호출: 구버전 서버는 ws:*에 응답하지 않아 순차면 1.5초씩 쌓인다. 소켓은 emit 순서를 보존하고
+      // 서버 ws 핸들러는 동기라 등록이 조회보다 먼저 반영된다. 등록 실패는 무시, 조회 실패는 주제 없음 취급
+      const [, st] = await Promise.allSettled([
+        mem.registerSession({ sessionId: sid, title: input.session_title, cwd: input.cwd, prompt: prompt || undefined }),
+        mem.sessionState(sid),
+      ]);
+      if (st.status === "fulfilled") {
+        const { rev, topic } = st.value;
         topicId = topic?.id;
-        const docDir = resolveDocDir(projectDir, loadConfig(projectDir));
-        if (rev !== readDelivered(docDir, sid)) {
-          blocks.push(topic ? formatTopicBlock(topic, true) : TOPIC_CLEARED);
-          try { writeDelivered(docDir, sid, null, rev); } catch { /* 기록 실패 — 다음 메시지에 다시 알린다 */ }
-        }
-      } catch { /* 주제 조회 실패 — 주제 없음으로 취급 */ }
+        try {
+          const docDir = resolveDocDir(projectDir, loadConfig(projectDir));
+          if (rev !== readDelivered(docDir, sid)) {
+            blocks.push(topic ? formatTopicBlock(topic, true) : TOPIC_CLEARED);
+            writeDelivered(docDir, sid, null, rev);
+          }
+        } catch { /* 렌더링·기록 실패 — 다음 메시지에 다시 알린다 */ }
+      }
     }
     if (tokens.length) {
       try {
@@ -59,7 +64,7 @@ try {
           mem.search(tokens, { limit: 2, sections: ["task"], strict: true, ...t }),
         ]);
         const fmt = (rows: typeof cal) =>
-          rows.map((r) => (r.topic ? "[주제] " : "") + formatMemoryEntries([r])).join("\n");
+          rows.map((r) => { const l = formatMemoryEntries([r]); return r.topic ? l.replace(/^- /, "- [주제] ") : l; }).join("\n");
         if (cal.length) blocks.push(`[nunchi] 이번 요청 관련 보정 항목:\n${fmt(cal)}`);
         if (tasks.length)
           blocks.push(

@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Server } from "socket.io";
 import { io as ioc } from "socket.io-client";
 import { loadConfig, resolveDocDir } from "../hooks/config.ts";
 import { assignFreePort, connectMemory, type MemoryClient } from "../memory/client.ts";
@@ -500,7 +501,7 @@ test(
       await mem.setSessionTopic("s1", t);
       const ctx = ctxOf(await runHook("user-prompt-submit.ts", dir, { session_id: "s1", prompt: "zebra 관련 질문" }));
       const first = ctx.split(/\r?\n/).find((l) => l.includes("(#"));
-      expect(first).toContain("[주제]");
+      expect(first).toContain("- [주제] (#");
       expect(first).toContain("zebra beta");
     } finally {
       await mem.shutdown();
@@ -547,6 +548,94 @@ test(
       expect(ctx).toContain("nunchi_search");
       expect(ctx).toContain("이 세션 id: s1");
     } finally {
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
+  "session-start: 세션 id 줄·주제 목록·주제 블록이 붙어도 additionalContext 1만자 미만, 규약·SKILL·ponytail 줄 생존",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-budget-"));
+    await assignFreePort(dir);
+    const mem = await connectMemory(dir);
+    try {
+      const ids: number[] = [];
+      for (let i = 0; i < 60; i++)
+        ids.push(await mem.add({ section: "punish", area: `[area-${i}]`, rule: "A".repeat(100), evidence: "E".repeat(100), confidence: 3 }));
+      let t = 0;
+      for (let i = 0; i < 20; i++) t = await mem.createTopic({ name: `주제-${i}`, description: "설".repeat(200), folders: ["src"] });
+      await mem.linkTopic(t, ids); // 소속 코어는 전문이라 코어 블록이 8k를 채운다
+      await mem.setSessionTopic("s1", t);
+      mkdirSync(join(dir, ".claude"), { recursive: true });
+      writeFileSync(join(dir, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "ponytail@x": true } }));
+      writeFileSync(join(dir, ".claude", "nunchi.json"), JSON.stringify({ port: resolveMemoryPort(dir), "policy-priority": "ponytail" }));
+      const ctx = ctxOf(await runHook("session-start.ts", dir, { source: "compact", session_id: "s1" }));
+      expect(ctx).toContain("현재 주제: 주제-19");
+      expect(ctx.length).toBeLessThan(10000);
+      expect(ctx).toContain("기록 규약 전문(SKILL.md)");
+      expect(ctx).toContain("ponytail 활성");
+      // subagent-start도 같은 예산
+      const sa = ctxOf(await runHook("subagent-start.ts", dir, { session_id: "s1", agent_id: "a1" }));
+      expect(sa.length).toBeLessThan(10000);
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  60000
+);
+
+test(
+  "session-start resume: 주제가 없으면 주제 없음 줄 (compact는 아님), subagent는 주제 없어도 agent delivered 기록",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      expect(ctxOf(await runHook("session-start.ts", dir, { source: "resume", session_id: "s3" }))).toContain("현재 주제 없음");
+      expect(ctxOf(await runHook("session-start.ts", dir, { source: "compact", session_id: "s3" }))).not.toContain("현재 주제 없음");
+      await mem.registerSession({ sessionId: "s4" });
+      await runHook("subagent-start.ts", dir, { session_id: "s4", agent_id: "a9" });
+      expect(readDelivered(docDirOf(dir), "s4", "a9")).toBe(0); // 파일이 생겼는지는 아래서 확인
+      expect(existsSync(join(docDirOf(dir), "sessions", "s4.a9.delivered"))).toBe(true);
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
+  "ws:*에 응답하지 않는 구버전 서버: 훅이 2.5초 안에 끝나고 코어·검색 주입은 그대로",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-old-"));
+    const port = await assignFreePort(dir);
+    const row = { id: 7, section: "env", area: "[환경: 지브라]", rule: "zebra 규칙", evidence: "근거", confidence: 3 };
+    // mem:info·core·search만 답하는 가짜 구버전 서버 — ws:*는 ack를 영영 부르지 않는다
+    const srv = new Server();
+    srv.on("connection", (sock) =>
+      sock.onAny((ev: string, ...args: unknown[]) => {
+        const ack = args[args.length - 1] as (r: object) => void;
+        if (ev === "mem:info") ack({ ok: true, projectDir: dir });
+        else if (ev === "mem:core") ack({ ok: true, rows: [row] });
+        else if (ev === "mem:search") ack({ ok: true, rows: [{ ...row, confidence: 1 }] });
+      })
+    );
+    srv.listen(port);
+    try {
+      const t0 = Date.now();
+      const up = ctxOf(await runHook("user-prompt-submit.ts", dir, { session_id: "s1", prompt: "zebra 관련 질문" }));
+      expect(Date.now() - t0).toBeLessThan(2500);
+      expect(up).toContain("zebra 규칙");
+      const t1 = Date.now();
+      const ss = ctxOf(await runHook("session-start.ts", dir, { source: "resume", session_id: "s1" }));
+      expect(Date.now() - t1).toBeLessThan(2500);
+      expect(ss).toContain("zebra 규칙"); // 코어
+      expect(ss).toContain("이 세션 id: s1");
+      expect(ss).not.toContain("현재 주제 없음"); // 조회 실패면 무효화 줄도 내지 않는다
+    } finally {
+      await srv.close();
       await rmProject(dir);
     }
   },
