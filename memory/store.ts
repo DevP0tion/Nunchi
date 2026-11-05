@@ -3,7 +3,7 @@
 // 소켓 계층(server.ts)과 테스트가 공유하는 저장소 로직.
 // v0.9.0: 범용 KV memory 테이블을 제거하고 보정 항목을 memory 테이블 하나로 통합했다.
 // task: 완결 작업 플레이북을 같은 테이블 section='task'로 축적한다. reverse는 권장(level) 전용(store 소유).
-// v0.14: forgive(용서하는 것) → recommend(권장). kind로 강도 권고(level)·방법 기록(method)을 나눈다.
+// v0.13.5: forgive(용서하는 것) → recommend(권장). kind로 강도 권고(level)·방법 기록(method)을 나눈다.
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 
@@ -168,7 +168,7 @@ function applyMemorySchemaInner(db: Database): void {
     db.run(`DROP TABLE memory`);
     db.run(`ALTER TABLE memory_new RENAME TO memory`);
   }
-  // v0.14 마이그레이션: forgive → recommend + kind 컬럼 — CHECK 변경 = 테이블 재구축.
+  // v0.13.5 마이그레이션: forgive → recommend + kind 컬럼 — CHECK 변경 = 테이블 재구축.
   // 앞 블록이 이미 신 DDL로 재구축했으면 'recommend'가 포함돼 건너뛴다
   const ddl14 = db
     .query(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory'`)

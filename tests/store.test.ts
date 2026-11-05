@@ -306,7 +306,7 @@ test("importLegacyDoc: 1회 임포트 + .imported 리네임, 재실행은 no-op"
   rmSync(dir, { recursive: true, force: true });
 });
 
-// ---- v0.14 권장(recommend) kind 규칙 ----
+// ---- v0.13.5 권장(recommend) kind 규칙 ----
 const base = { area: "[a: b]", rule: "r", evidence: "e" };
 
 test("add: recommend kind 기본 level, 비recommend의 kind는 NULL", () => {

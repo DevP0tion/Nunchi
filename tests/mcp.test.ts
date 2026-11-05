@@ -162,7 +162,7 @@ test(
         id: prId, action: "promote", section: "punish", area: "[x]", rule: "r", evidence: "e",
       });
       expect(bad.result?.isError).toBe(true);
-      // 6) v0.14 권장(recommend) kind — method 기록·검색, method reverse 거부
+      // 6) v0.13.5 권장(recommend) kind — method 기록·검색, method reverse 거부
       const m = await call(8, "nunchi_record", {
         section: "recommend", kind: "method", area: "[리뷰: 요청]", rule: "리뷰 요청 먼저", evidence: "2026-11-05 사용자가 좋다고 함",
       });

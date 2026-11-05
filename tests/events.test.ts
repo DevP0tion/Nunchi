@@ -163,7 +163,7 @@ test("replay: promote/link 이벤트 재현 + exportEvents 전량 반환", () =>
   expect(s.exportEvents().map((e) => e.type)).toEqual(["observe", "promote", "add", "link"]);
 });
 
-// ---- v0.14 forgive → recommend(권장) 이관 ----
+// ---- v0.13.5 forgive → recommend(권장) 이관 ----
 const kw = (db: Database, id: number) =>
   (db.query(`SELECT keywords FROM memory WHERE id = ?`).get(id) as { keywords: string }).keywords;
 

@@ -1,7 +1,7 @@
 # forgive → recommend(권장) 섹션 전환 설계
 
 - 날짜: 2026-11-05
-- 대상 버전: 0.14.0 (섹션 의미 확장 = feat → minor)
+- 대상 버전: 0.13.5 (사용자 결정: 소규모 업데이트로 patch 처리)
 
 ## 1. 의도
 
@@ -99,5 +99,5 @@
 
 ## 6. 릴리스 메모
 
-- 0.14.0으로 범프, `version-update` 스킬 절차(빌드 → dist 포함 커밋 → main → codex-support). codex-support의 README Codex 섹션에 forgive 표기가 있으면 함께 갱신.
+- 0.13.5로 범프, `version-update` 스킬 절차(빌드 → dist 포함 커밋 → main → codex-support). codex-support의 README Codex 섹션에 forgive 표기가 있으면 함께 갱신.
 - 신 MCP/훅이 구버전 memory server(구 캐시 경로에 살아 있는 서버)에 `recommend`를 보내면 CHECK 위반으로 실패한다 — 절차 7번(구버전 서버 종료)이 이를 해소한다. 별도 대응은 하지 않는다.

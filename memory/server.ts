@@ -213,7 +213,7 @@ if (import.meta.main) {
     }
   }
 
-  /** 구 클라이언트 하위 호환: 섹션 구 이름 forgive → recommend (v0.14) */
+  /** 구 클라이언트 하위 호환: 섹션 구 이름 forgive → recommend (v0.13.5) */
   const sec = (s: unknown) => (s === "forgive" ? "recommend" : s);
   const kindOf = (k: unknown) => (k === "level" || k === "method" ? k : undefined);
 

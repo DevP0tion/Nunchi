@@ -99,7 +99,7 @@ test(
   20000
 );
 
-test("대시보드 정적 파일: 권장(recommend) 섹션·kind 선택란·코어 판정 (v0.14)", () => {
+test("대시보드 정적 파일: 권장(recommend) 섹션·kind 선택란·코어 판정 (v0.13.5)", () => {
   const dash = (f: string) => readFileSync(join(import.meta.dir, "..", "memory", "dashboard", f), "utf8");
   const html = dash("index.html");
   const css = dash("style.css");

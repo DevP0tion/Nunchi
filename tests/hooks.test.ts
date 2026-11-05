@@ -334,7 +334,7 @@ test(
 );
 
 test(
-  "v0.14 권장: 라벨 강도·방법, method 3+는 코어, ponytail 우선 문구에 권장(방법) 예외",
+  "v0.13.5 권장: 라벨 강도·방법, method 3+는 코어, ponytail 우선 문구에 권장(방법) 예외",
   async () => {
     const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-rec-"));
     await assignFreePort(dir);

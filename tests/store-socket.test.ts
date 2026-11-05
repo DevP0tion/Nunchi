@@ -139,7 +139,7 @@ test("noSpawn: 서버 미기동이면 스폰하지 않고 즉시 실패", async 
 });
 
 test(
-  "forgive 입력 하위 호환 + kind 왕복 (v0.14)",
+  "forgive 입력 하위 호환 + kind 왕복 (v0.13.5)",
   async () => {
     const A = mkdtempSync(join(tmpdir(), "nunchi-rec-"));
     await assignFreePort(A);
