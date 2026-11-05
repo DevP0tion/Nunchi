@@ -600,12 +600,13 @@
     }
     async function openDetail(id) {
       detailTid = id;
-      found = null;
+      detail = found = null;
       $("dt-q").value = $("dt-folder").value = "";
       $("dt-search").hidden = true;
       $("dt-add").setAttribute("aria-expanded", "false");
       await loadDetail();
       if (detailTid !== id) return;
+      if (!detail) return void (detailTid = null); // 조회 실패 — 빈 상세를 보이지 않는다
       $("ws-main").hidden = true;
       $("detail").hidden = false;
       $("dt-name").focus();
@@ -626,23 +627,25 @@
     const setFolders = (folders) => req("ws:topic:update", { id: detailTid, folders });
 
     $("dt-back").onclick = closeDetail;
-    $("dt-edit").onclick = () => openTopicForm(detail.topic);
-    $("dt-delete").onclick = () => deleteTopic(detail.topic);
+    $("dt-edit").onclick = () => detail && openTopicForm(detail.topic);
+    $("dt-delete").onclick = () => detail && deleteTopic(detail.topic);
     $("dt-folder-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const v = $("dt-folder").value.trim();
-      if (!v) return;
+      if (!v || !detail) return;
+      // shortcut: 마지막 조회본 기준 전체 교체 — 동시 편집 시 앞선 변경을 덮을 수 있음, 충돌이 실제로 생기면 서버에 폴더 단위 추가·삭제 이벤트를 둔다
       if (!detail.topic.folders.includes(v)) await setFolders([...detail.topic.folders, v]);
       $("dt-folder").value = "";
     });
     $("dt-folders").addEventListener("click", async (ev) => {
       const b = ev.target.closest('[data-act="rm-folder"]');
-      if (!b) return;
+      if (!b || !detail) return;
+      // shortcut: 마지막 조회본 기준 전체 교체 — 동시 편집 시 앞선 변경을 덮을 수 있음, 충돌이 실제로 생기면 서버에 폴더 단위 추가·삭제 이벤트를 둔다
       await setFolders(detail.topic.folders.filter((_, i) => i !== Number(b.dataset.i)));
     });
     $("dt-rows").addEventListener("click", async (ev) => {
       const b = ev.target.closest("button");
-      if (!b) return;
+      if (!b || !detail) return;
       const memoryId = Number(b.dataset.id);
       const m = detail.members.find((x) => x.id === memoryId);
       if (b.dataset.act === "up") await req("ws:topic:rate", { topicId: detailTid, memoryId, delta: 1 });
@@ -660,7 +663,7 @@
     $("dt-search-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const queries = $("dt-q").value.split(",").map((s) => s.trim()).filter(Boolean);
-      if (!queries.length) return;
+      if (!queries.length || !detail) return;
       // 주제 우선 검색(topicId)은 쓰지 않는다 — 이미 소속된 기억이 앞을 채운다. observe까지 전 섹션을 명시
       found = (await req("mem:search", {
         queries, limit: 10, sections: ["punish", "recommend", "env", "task", "observe"],
@@ -669,7 +672,7 @@
     });
     $("dt-results").addEventListener("click", async (ev) => {
       const b = ev.target.closest(".dt-pick");
-      if (!b || b.disabled) return;
+      if (!b || b.disabled || detailTid == null) return;
       await req("ws:topic:link", { topicId: detailTid, memoryIds: [Number(b.dataset.id)] });
     });
 
