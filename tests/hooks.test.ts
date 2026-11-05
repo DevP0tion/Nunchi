@@ -31,7 +31,7 @@ async function seeded(): Promise<{ dir: string; mem: MemoryClient }> {
     evidence: "2026-06-12 생략으로 장애", confidence: 3,
   });
   await mem.add({
-    section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략 가능",
+    section: "recommend", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략 가능",
     evidence: "2026-06-20 과잉이었음",
   });
   return { dir, mem };
@@ -163,10 +163,10 @@ test(
 test(
   "user-prompt-submit: 보정·작업 두 블록을 각 쿼터로 출력, 한쪽 0건이면 생략",
   async () => {
-    const { dir, mem } = await seeded(); // punish 코어 + forgive 저신뢰
+    const { dir, mem } = await seeded(); // punish 코어 + recommend 저신뢰
     try {
       await mem.add({ section: "task", area: "[리팩토링: 스토어]", rule: "접근: 테스트 먼저", evidence: "2026-07-09 완료" });
-      // "테스트" → forgive(테스트 생략) + task(테스트 먼저) 둘 다 매칭
+      // "테스트" → recommend(테스트 생략) + task(테스트 먼저) 둘 다 매칭
       const both = await runHook("user-prompt-submit.ts", dir, { prompt: "테스트 접근을 어떻게 잡을까" });
       const ctx = JSON.parse(both).hookSpecificOutput.additionalContext as string;
       expect(ctx).toContain("관련 보정 항목");
@@ -328,6 +328,39 @@ test(
       delete process.env.NUNCHI_CHECK_EVERY;
       rmSync(join(stateDir, `${sid}.json`), { force: true });
       rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30000
+);
+
+test(
+  "v0.14 권장: 라벨 강도·방법, method 3+는 코어, ponytail 우선 문구에 권장(방법) 예외",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-rec-"));
+    await assignFreePort(dir);
+    const mem = await connectMemory(dir);
+    try {
+      await mem.add({ section: "recommend", kind: "method", area: "[리뷰: 요청]", rule: "리뷰 요청을 먼저 보낸다", evidence: "2026-11-05 사용자가 좋다고 함", confidence: 3 });
+      await mem.add({ section: "recommend", kind: "level", area: "[문서: 오타]", rule: "오타 수정은 리뷰 없이 바로 반영한다", evidence: "2026-11-05 과잉이었음", confidence: 3 });
+      // ponytail 활성 + ponytail 우선
+      mkdirSync(join(dir, ".claude"), { recursive: true });
+      writeFileSync(join(dir, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "ponytail@x": true } }));
+      writeFileSync(join(dir, ".claude", "nunchi.json"), JSON.stringify({ "policy-priority": "ponytail" }));
+      const ss = JSON.parse(await runHook("session-start.ts", dir, { source: "startup" })).hookSpecificOutput.additionalContext as string;
+      expect(ss).toContain("[확정 규칙 — '벌주는 것'·'권장(방법)' 신뢰도 높음(3+). 항상 지킨다]");
+      expect(ss).toContain("(#1) [권장·방법·신뢰도3]"); // method 3+ → 코어
+      expect(ss).not.toContain("오타 수정은"); // level 3+ → 코어 아님
+      expect(ss).toContain("반복 확인된 사용자 선호이므로 예외로 지키고");
+      expect(ss).toContain("'권장(방법)'이 틀렸으면 edit·remove");
+      const sa = JSON.parse(await runHook("subagent-start.ts", dir, { agent_type: "general-purpose" })).hookSpecificOutput.additionalContext as string;
+      expect(sa).toContain("[확정 규칙 — '벌주는 것'·'권장(방법)' 신뢰도 높음(3+). 항상 지킨다]");
+      // 매 메시지 주입: level은 보정 쿼터로 회수, 라벨 강도
+      const up = JSON.parse(await runHook("user-prompt-submit.ts", dir, { prompt: "오타 수정 리뷰" })).hookSpecificOutput.additionalContext as string;
+      expect(up).toContain("[권장·강도·신뢰도3]");
+      expect(up).not.toContain("[권장·방법"); // method 3+는 코어라 excludeCore로 제외
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
     }
   },
   30000

@@ -175,20 +175,27 @@ export interface MemoryEntryLite {
   rule: string;
   evidence: string;
   confidence: number;
+  /** recommend 전용 — level=강도 권고, method=방법 기록 */
+  kind?: string | null;
 }
 
 export const SECTION_LABEL: Record<string, string> = {
   punish: "벌주는 것",
-  forgive: "용서하는 것",
+  recommend: "권장",
   env: "환경 특이사항",
   task: "작업 기록",
 };
+
+const label = (r: MemoryEntryLite): string =>
+  r.section === "recommend"
+    ? `권장·${r.kind === "method" ? "방법" : "강도"}`
+    : SECTION_LABEL[r.section] ?? r.section;
 
 export function formatMemoryEntries(rows: MemoryEntryLite[]): string {
   return rows
     .map(
       (r) =>
-        `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}·신뢰도${r.confidence}] ${r.area}: ${r.rule} (근거: ${r.evidence})`
+        `- (#${r.id}) [${label(r)}·신뢰도${r.confidence}] ${r.area}: ${r.rule} (근거: ${r.evidence})`
     )
     .join("\n");
 }
