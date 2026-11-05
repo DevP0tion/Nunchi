@@ -108,5 +108,9 @@ test("대시보드 정적 파일: 권장(recommend) 섹션·kind 선택란·코�
   expect(html).toContain('id="f-kind"');
   expect(html).toMatch(/const isCore = \(e\) =>[^\n]*e\.kind === "method"/);
   expect(css).toContain("--sec-recommend");
+  // #editor label의 display:flex가 UA [hidden]을 이기므로 명시 규칙이 있어야 kind 선택란이 숨겨진다
+  expect(css).toMatch(/#editor label\[hidden\]\s*\{\s*display:\s*none;?\s*\}/);
+  // kind 선택란은 1행(구분·영역·신뢰도) 뒤에 둬야 영역 입력이 90px 칸으로 밀리지 않는다
+  expect(html.indexOf('id="f-kind-label"')).toBeGreaterThan(html.indexOf('id="f-confidence"'));
   expect(css).not.toContain("forgive");
 });

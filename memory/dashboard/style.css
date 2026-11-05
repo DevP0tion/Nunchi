@@ -210,6 +210,7 @@ button.primary:hover { opacity: 0.85; }
   color: var(--muted);
 }
 #editor label.full { grid-column: 1 / -1; }
+#editor label[hidden] { display: none; } /* 위 display:flex가 UA [hidden]을 이기므로 명시 */
 #editor .editor-actions { display: flex; gap: 6px; margin-top: 12px; }
 @media (max-width: 640px) {
   #editor .grid { grid-template-columns: 1fr 1fr; }
