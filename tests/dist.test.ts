@@ -58,7 +58,7 @@ test(
       const mem = await connectMemory(proj, { noSpawn: true });
       try {
         const id = await mem.add({
-          section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략 가능",
+          section: "recommend", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략 가능",
           evidence: "2026-10-07 과잉이었음",
         });
         expect((await mem.list()).map((r) => r.id)).toContain(id);

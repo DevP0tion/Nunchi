@@ -16774,10 +16774,10 @@ function resolveDocPath(projectDir, cfg) {
   return join(resolveDocDir(projectDir, cfg), DOC_FILENAME);
 }
 function formatMemoryEntries(rows) {
-  return rows.map((r) => `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
+  return rows.map((r) => `- (#${r.id}) [${label(r)}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
 `);
 }
-var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.4", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL;
+var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.4", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL, label = (r) => r.section === "recommend" ? `\uAD8C\uC7A5\xB7${r.kind === "method" ? "\uBC29\uBC95" : "\uAC15\uB3C4"}` : SECTION_LABEL[r.section] ?? r.section;
 var init_config = __esm(() => {
   PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
   DEFAULTS = {
@@ -16789,7 +16789,7 @@ var init_config = __esm(() => {
   };
   SECTION_LABEL = {
     punish: "\uBC8C\uC8FC\uB294 \uAC83",
-    forgive: "\uC6A9\uC11C\uD558\uB294 \uAC83",
+    recommend: "\uAD8C\uC7A5",
     env: "\uD658\uACBD \uD2B9\uC774\uC0AC\uD56D",
     task: "\uC791\uC5C5 \uAE30\uB85D"
   };
@@ -16897,15 +16897,31 @@ import { basename, extname, join as join3, resolve, sep } from "path";
 
 // memory/store.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2, renameSync } from "fs";
+function fixKind(section, kind) {
+  if (section !== "recommend")
+    return null;
+  return kind ?? "level";
+}
+function normalizePayload(p) {
+  if (p.section !== "forgive")
+    return p;
+  return { ...p, section: "recommend", kind: p.kind ?? "level" };
+}
 var CORE_CONFIDENCE = 3;
-var COLS = "id, section, area, rule, evidence, confidence, updated_at";
+function isCore(e) {
+  return e.confidence >= CORE_CONFIDENCE && (e.section === "punish" || e.section === "recommend" && e.kind === "method");
+}
+var COLS = "id, section, area, rule, evidence, confidence, kind, updated_at";
+var SECTION_SQL = `CASE section WHEN 'forgive' THEN 'recommend' ELSE section END`;
+var KIND_SQL = `CASE section WHEN 'forgive' THEN 'level' END`;
 var MEMORY_COLS_DDL = `
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  section TEXT NOT NULL CHECK (section IN ('punish','forgive','env','task','observe')),
+  section TEXT NOT NULL CHECK (section IN ('punish','recommend','env','task','observe')),
   area TEXT NOT NULL,
   rule TEXT NOT NULL,
   evidence TEXT NOT NULL,
   confidence INTEGER NOT NULL DEFAULT 1,
+  kind TEXT CHECK (kind IS NULL OR kind IN ('level','method')),
   keywords TEXT NOT NULL DEFAULT '',
   promoted_to INTEGER,
   refs TEXT NOT NULL DEFAULT '[]',
@@ -16934,8 +16950,8 @@ function applyMemorySchemaInner(db) {
   if (memDdl && !memDdl.sql.includes("'task'")) {
     db.run(`CREATE TABLE memory_new (${MEMORY_COLS_DDL})`);
     db.run(`
-      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, keywords, updated_at)
-      SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM memory
+      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, kind, keywords, updated_at)
+      SELECT id, ${SECTION_SQL}, area, rule, evidence, confidence, ${KIND_SQL}, keywords, updated_at FROM memory
     `);
     db.run(`DROP TABLE memory`);
     db.run(`ALTER TABLE memory_new RENAME TO memory`);
@@ -16944,8 +16960,19 @@ function applyMemorySchemaInner(db) {
   if (ddl13 && !ddl13.sql.includes("'observe'")) {
     db.run(`CREATE TABLE memory_new (${MEMORY_COLS_DDL})`);
     db.run(`
-      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, keywords, updated_at)
-      SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM memory
+      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, kind, keywords, updated_at)
+      SELECT id, ${SECTION_SQL}, area, rule, evidence, confidence, ${KIND_SQL}, keywords, updated_at FROM memory
+    `);
+    db.run(`DROP TABLE memory`);
+    db.run(`ALTER TABLE memory_new RENAME TO memory`);
+  }
+  const ddl14 = db.query(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory'`).get();
+  if (ddl14 && !ddl14.sql.includes("'recommend'")) {
+    db.run(`CREATE TABLE memory_new (${MEMORY_COLS_DDL})`);
+    db.run(`
+      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, kind, keywords, promoted_to, refs, updated_at)
+      SELECT id, ${SECTION_SQL}, area, rule, evidence, confidence, ${KIND_SQL}, keywords, promoted_to, refs, updated_at
+      FROM memory
     `);
     db.run(`DROP TABLE memory`);
     db.run(`ALTER TABLE memory_new RENAME TO memory`);
@@ -16980,8 +17007,8 @@ function applyMemorySchemaInner(db) {
   const legacyTable = db.query(`SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'calibration'`).get();
   if (legacyTable) {
     db.run(`
-      INSERT INTO memory (id, section, area, rule, evidence, confidence, keywords, updated_at)
-      SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM calibration
+      INSERT INTO memory (id, section, area, rule, evidence, confidence, kind, keywords, updated_at)
+      SELECT id, ${SECTION_SQL}, area, rule, evidence, confidence, ${KIND_SQL}, keywords, updated_at FROM calibration
     `);
     db.run(`DROP TABLE calibration`);
     db.run(`DROP TABLE IF EXISTS calibration_fts`);
@@ -16996,7 +17023,7 @@ function applyMemorySchemaInner(db) {
              CASE WHEN section = 'observe' THEN 'observe' ELSE 'add' END,
              id,
              json_object('section', section, 'area', area, 'rule', rule,
-                         'evidence', evidence, 'confidence', confidence)
+                         'evidence', evidence, 'confidence', confidence, 'kind', kind)
       FROM memory ORDER BY id
     `);
   }
@@ -17013,16 +17040,17 @@ function rebuildDerived(db) {
   db.transaction(() => {
     const kw = db.prepare(`SELECT id, keywords FROM memory WHERE keywords != ''`).all();
     db.run(`DELETE FROM memory`);
-    const ins = db.prepare(`INSERT INTO memory (id, section, area, rule, evidence, confidence, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    const ins = db.prepare(`INSERT INTO memory (id, section, area, rule, evidence, confidence, kind, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    const fixKindStmt = db.prepare(`UPDATE memory SET kind = CASE WHEN section = 'recommend' THEN COALESCE(kind, 'level') END WHERE id = ?`);
     const events = db.prepare(`SELECT * FROM events ORDER BY seq`).all();
     for (const ev of events) {
-      const p = JSON.parse(ev.payload);
+      const p = normalizePayload(JSON.parse(ev.payload));
       switch (ev.type) {
         case "add":
         case "observe":
         case "promote":
-          ins.run(ev.entry_id, p.section, p.area, p.rule, p.evidence, p.confidence ?? 1, ev.ts);
+          ins.run(ev.entry_id, p.section, p.area, p.rule, p.evidence, p.confidence ?? 1, fixKind(p.section, p.kind), ev.ts);
           if (ev.type === "promote")
             for (const sid of p.sources ?? [])
               db.run(`UPDATE memory SET promoted_to = ? WHERE id = ?`, [ev.entry_id, sid]);
@@ -17030,19 +17058,20 @@ function rebuildDerived(db) {
         case "edit": {
           const sets = [];
           const args = [];
-          for (const k of ["section", "area", "rule", "evidence", "confidence"])
+          for (const k of ["section", "area", "rule", "evidence", "confidence", "kind"])
             if (p[k] !== undefined) {
               sets.push(`${k} = ?`);
               args.push(p[k]);
             }
           db.run(`UPDATE memory SET ${sets.concat("updated_at = ?").join(", ")} WHERE id = ?`, [...args, ev.ts, ev.entry_id]);
+          fixKindStmt.run(ev.entry_id);
           break;
         }
         case "confirm":
           db.run(`UPDATE memory SET confidence = confidence + 1, updated_at = ? WHERE id = ?`, [ev.ts, ev.entry_id]);
           break;
         case "reverse":
-          db.run(`UPDATE memory SET section = 'punish', confidence = 1, evidence = ?, updated_at = ? WHERE id = ?`, [p.evidence, ev.ts, ev.entry_id]);
+          db.run(`UPDATE memory SET section = 'punish', kind = NULL, confidence = 1, evidence = ?, updated_at = ? WHERE id = ?`, [p.evidence, ev.ts, ev.entry_id]);
           break;
         case "remove":
           db.run(`DELETE FROM memory WHERE id = ?`, [ev.entry_id]);
@@ -17075,8 +17104,8 @@ var stem = (w) => {
 function createMemoryStore(db) {
   applyMemorySchema(db);
   const strip = ({ keywords: _k, promoted_to: _p, refs: _r, ...e }) => e;
-  const insStmt = db.prepare(`INSERT INTO memory (section, area, rule, evidence, confidence)
-     VALUES (?, ?, ?, ?, ?) RETURNING id`);
+  const insStmt = db.prepare(`INSERT INTO memory (section, area, rule, evidence, confidence, kind)
+     VALUES (?, ?, ?, ?, ?, ?) RETURNING id`);
   const getStmt = db.prepare(`SELECT ${COLS}, keywords, promoted_to, refs FROM memory WHERE id = ?`);
   const evStmt = db.prepare(`INSERT INTO events (ts, type, entry_id, parent_id, refs, payload)
      VALUES (COALESCE(?, strftime('%Y-%m-%d %H:%M:%f','now')), ?, ?, ?, ?, ?) RETURNING seq`);
@@ -17093,20 +17122,22 @@ function createMemoryStore(db) {
       area: fields.area ?? cur.area,
       rule: fields.rule ?? cur.rule,
       evidence: fields.evidence ?? cur.evidence,
-      confidence: fields.confidence ?? cur.confidence
+      confidence: fields.confidence ?? cur.confidence,
+      kind: fields.kind !== undefined ? fields.kind : cur.kind
     };
     const contentChanged = next.area !== cur.area || next.rule !== cur.rule || next.evidence !== cur.evidence;
-    updStmt.run(next.section, next.area, next.rule, next.evidence, next.confidence, contentChanged ? "" : cur.keywords, cur.id);
+    updStmt.run(next.section, next.area, next.rule, next.evidence, next.confidence, next.kind, contentChanged ? "" : cur.keywords, cur.id);
   };
   const updStmt = db.prepare(`UPDATE memory SET section = ?, area = ?, rule = ?, evidence = ?,
-     confidence = ?, keywords = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`);
+     confidence = ?, kind = ?, keywords = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`);
   const confirmStmt = db.prepare(`UPDATE memory SET confidence = confidence + 1, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`);
   const delStmt = db.prepare(`DELETE FROM memory WHERE id = ?`);
   const stampStmt = db.prepare(`SELECT max(updated_at) AS m FROM memory`);
-  const coreStmt = db.prepare(`SELECT ${COLS} FROM memory WHERE section = 'punish' AND confidence >= ?
+  const coreStmt = db.prepare(`SELECT ${COLS} FROM memory
+     WHERE (section = 'punish' OR (section = 'recommend' AND kind = 'method')) AND confidence >= ?
      ORDER BY confidence DESC, updated_at DESC`);
   const keywordsStmt = db.prepare(`UPDATE memory SET keywords = ? WHERE id = ? AND updated_at = ?`);
-  const ftsStmt = db.prepare(`SELECT c.id, c.section, c.area, c.rule, c.evidence, c.confidence, c.updated_at,
+  const ftsStmt = db.prepare(`SELECT c.id, c.section, c.area, c.rule, c.evidence, c.confidence, c.kind, c.updated_at,
             f.rank AS rank
      FROM memory_fts f JOIN memory c ON c.id = f.rowid
      WHERE memory_fts MATCH ? ORDER BY f.rank LIMIT 50`);
@@ -17126,13 +17157,15 @@ function createMemoryStore(db) {
       return db.transaction(() => {
         if (e.parent != null && !getStmt.get(e.parent))
           throw new Error(`parent #${e.parent} \uC5C6\uC74C`);
-        const id = insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1).id;
+        const kind = fixKind(e.section, e.kind);
+        const id = insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1, kind).id;
         logEvent(e.section === "observe" ? "observe" : "add", id, {
           section: e.section,
           area: e.area,
           rule: e.rule,
           evidence: e.evidence,
-          confidence: e.confidence ?? 1
+          confidence: e.confidence ?? 1,
+          ...kind && { kind }
         }, e.parent ?? null);
         return id;
       })();
@@ -17146,7 +17179,15 @@ function createMemoryStore(db) {
         const cur = getStmt.get(id);
         if (!cur)
           return false;
-        const clean = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+        const { kind: wanted, ...rest } = fields;
+        const clean = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+        const section = clean.section ?? cur.section;
+        const kind = fixKind(section, wanted ?? (section === cur.section ? cur.kind : undefined));
+        if (kind !== cur.kind) {
+          clean.kind = kind;
+          if (kind !== null)
+            clean.confidence = 1;
+        }
         applyFields(cur, clean);
         logEvent("edit", id, clean);
         return true;
@@ -17165,9 +17206,11 @@ function createMemoryStore(db) {
         const cur = getStmt.get(id);
         if (!cur)
           return false;
-        if (cur.section !== "forgive")
-          throw new Error(`reverse\uB294 '\uC6A9\uC11C\uD558\uB294 \uAC83'(forgive) \uC804\uC6A9 \u2014 \uB300\uC0C1 \uD56D\uBAA9\uC740 ${cur.section}`);
-        applyFields(cur, { section: "punish", confidence: 1, evidence });
+        if (cur.section === "recommend" && cur.kind === "method")
+          throw new Error("reverse\uB294 \uAD8C\uC7A5(\uAC15\uB3C4) \uC804\uC6A9 \u2014 \uBC29\uBC95 \uAE30\uB85D(method)\uC740 edit\xB7remove\uB85C \uACE0\uCE5C\uB2E4");
+        if (cur.section !== "recommend")
+          throw new Error(`reverse\uB294 \uAD8C\uC7A5(\uAC15\uB3C4) \uC804\uC6A9 \u2014 \uB300\uC0C1 \uD56D\uBAA9\uC740 ${cur.section}`);
+        applyFields(cur, { section: "punish", confidence: 1, evidence, kind: null });
         logEvent("reverse", id, { evidence });
         return true;
       })();
@@ -17247,7 +17290,7 @@ function createMemoryStore(db) {
       else
         out = out.filter((r) => r.section !== "observe");
       if (opts.excludeCore)
-        out = out.filter((r) => !(r.section === "punish" && r.confidence >= CORE_CONFIDENCE));
+        out = out.filter((r) => !isCore(r));
       out.sort((a, b) => b.hits - a.hits || a.rank - b.rank);
       return out.slice(0, limit).map(({ rank: _r, hits: _h, long: _l, ...e }) => e);
     },
@@ -17266,7 +17309,8 @@ function createMemoryStore(db) {
           if (cur.promoted_to != null)
             throw new Error(`#${sid}\uB294 \uC774\uBBF8 #${cur.promoted_to}\uB85C \uC2B9\uACA9\uB428`);
         }
-        const id = insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1).id;
+        const kind = fixKind(e.section, e.kind);
+        const id = insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1, kind).id;
         for (const sid of sources)
           promoteMark.run(id, sid);
         logEvent("promote", id, {
@@ -17275,6 +17319,7 @@ function createMemoryStore(db) {
           rule: e.rule,
           evidence: e.evidence,
           confidence: e.confidence ?? 1,
+          ...kind && { kind },
           sources
         });
         return id;
@@ -17322,18 +17367,21 @@ function createMemoryStore(db) {
       };
     },
     exportEvents() {
-      return exportStmt.all();
+      return exportStmt.all().map((ev) => ({
+        ...ev,
+        payload: JSON.stringify(normalizePayload(JSON.parse(ev.payload)))
+      }));
     }
   };
 }
 var SECTION_OF = [
   [/\uBC8C\uC8FC\uB294/, "punish"],
-  [/\uC6A9\uC11C/, "forgive"],
+  [/\uC6A9\uC11C|\uAD8C\uC7A5/, "recommend"],
   [/\uD2B9\uC774\uC0AC\uD56D/, "env"]
 ];
 var SECTION_TITLE = {
   punish: "\uBC8C\uC8FC\uB294 \uAC83 (\uBC18\uB4DC\uC2DC \uD55C\uB2E4)",
-  forgive: "\uC6A9\uC11C\uD558\uB294 \uAC83 (\uC0DD\uB7B5 \uAC00\uB2A5)",
+  recommend: "\uAD8C\uC7A5 (\uC774\uB807\uAC8C \uD55C\uB2E4)",
   env: "\uD658\uACBD \uD2B9\uC774\uC0AC\uD56D",
   task: "\uC791\uC5C5 \uAE30\uB85D",
   observe: "\uAD00\uCC30 (\uBBF8\uC2B9\uACA9 \uC2E0\uD638)"
@@ -17386,7 +17434,7 @@ function renderMemoryDoc(store, projectName) {
     return null;
   const label = (c) => c >= CORE_CONFIDENCE ? `\uB192\uC74C(${c})` : c === 2 ? "\uC911\uAC04(2)" : `\uB0AE\uC74C(${c})`;
   const parts = [`# \uBCF4\uC815 \u2014 ${projectName}`];
-  for (const sec of ["punish", "forgive", "env", "task", "observe"]) {
+  for (const sec of ["punish", "recommend", "env", "task", "observe"]) {
     const rows = all.filter((e) => e.section === sec);
     if (!rows.length)
       continue;
@@ -17562,16 +17610,19 @@ if (import.meta.main) {
         console.log(`[${ts()}] enrich #${id} keywords: ${keywords}`);
       }
     }
+    const sec = (s) => s === "forgive" ? "recommend" : s;
+    const kindOf = (k) => k === "level" || k === "method" ? k : undefined;
     io.on("connection", (socket) => {
       socket.on("mem:info", (ack) => handle("mem:info", () => ({ projectDir, dbPath, port }))(ack));
       socket.on("mem:doc", (ack) => handle("mem:doc", () => ({ doc: renderMemoryDoc(store, basename(projectDir)) }))(ack));
       socket.on("mem:add", (p, ack) => handle(`mem:add [${p.area}]`, () => {
         const id = store.add({
-          section: p.section,
+          section: sec(p.section),
           area: String(p.area),
           rule: String(p.rule),
           evidence: String(p.evidence),
           confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined,
+          kind: kindOf(p.kind),
           parent: Number.isFinite(p.parent) ? Number(p.parent) : undefined
         });
         if (model && p.section !== "observe")
@@ -17580,11 +17631,12 @@ if (import.meta.main) {
       })(ack));
       socket.on("mem:promote", (p, ack) => handle(`mem:promote [${p.area}]`, () => {
         const id = store.promote((Array.isArray(p.sources) ? p.sources : []).map(Number), {
-          section: p.section,
+          section: sec(p.section),
           area: String(p.area),
           rule: String(p.rule),
           evidence: String(p.evidence),
-          confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined
+          confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined,
+          kind: kindOf(p.kind)
         });
         if (model)
           enrich(id);
@@ -17612,7 +17664,9 @@ if (import.meta.main) {
         }
         const fields = {};
         if (p.section !== undefined)
-          fields.section = p.section;
+          fields.section = sec(p.section);
+        if (kindOf(p.kind))
+          fields.kind = kindOf(p.kind);
         if (p.area !== undefined)
           fields.area = String(p.area);
         if (p.rule !== undefined)
@@ -17631,7 +17685,7 @@ if (import.meta.main) {
         const queries = Array.isArray(p.queries) ? p.queries.map(String) : [];
         handle(`mem:search [${queries.join(" | ")}]`, () => ({
           rows: store.search(queries, {
-            sections: Array.isArray(p.sections) ? p.sections : p.section ? [p.section] : undefined,
+            sections: Array.isArray(p.sections) ? p.sections.map(sec) : p.section ? [sec(p.section)] : undefined,
             limit: Number(p.limit) || undefined,
             excludeCore: Boolean(p.excludeCore),
             strict: Boolean(p.strict)
@@ -17640,7 +17694,7 @@ if (import.meta.main) {
       });
       socket.on("mem:list", (p, ack) => handle("mem:list", () => ({
         rows: store.list({
-          section: p?.section,
+          section: sec(p?.section),
           minConfidence: Number(p?.minConfidence) || undefined,
           withObserve: Boolean(p?.withObserve)
         })
