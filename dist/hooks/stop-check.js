@@ -144,10 +144,10 @@ function resolveDocPath(projectDir, cfg) {
   return join(resolveDocDir(projectDir, cfg), DOC_FILENAME);
 }
 function formatMemoryEntries(rows) {
-  return rows.map((r) => `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
+  return rows.map((r) => `- (#${r.id}) [${label(r)}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
 `);
 }
-var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.4", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL;
+var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.5", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL, label = (r) => r.section === "recommend" ? `\uAD8C\uC7A5\xB7${r.kind === "method" ? "\uBC29\uBC95" : "\uAC15\uB3C4"}` : SECTION_LABEL[r.section] ?? r.section;
 var init_config = __esm(() => {
   PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
   DEFAULTS = {
@@ -159,7 +159,7 @@ var init_config = __esm(() => {
   };
   SECTION_LABEL = {
     punish: "\uBC8C\uC8FC\uB294 \uAC83",
-    forgive: "\uC6A9\uC11C\uD558\uB294 \uAC83",
+    recommend: "\uAD8C\uC7A5",
     env: "\uD658\uACBD \uD2B9\uC774\uC0AC\uD56D",
     task: "\uC791\uC5C5 \uAE30\uB85D"
   };
@@ -225,7 +225,7 @@ save();
 if (block) {
   process.stdout.write(JSON.stringify({
     decision: "block",
-    reason: `[nunchi] \uC8FC\uAE30 \uC810\uAC80(${CHECK_EVERY}\uD134): ` + `(A) \uC774\uBC88 \uAD6C\uAC04\uC5D0 \uC608\uCE21\uACFC \uC2E4\uC81C\uAC00 \uC5B4\uAE0B\uB09C \uACBD\uC6B0\uAC00 \uC788\uC5C8\uB294\uAC00? (1) \uACFC\uC789 \uB300\uC751 (2) \uACFC\uC18C \uB300\uC751 (3) \uD658\uACBD \uD2B9\uC774\uC0AC\uD56D \u2014 ` + `\uC788\uC5C8\uB2E4\uBA74 nunchi_record(\uC2E0\uADDC) \uB610\uB294 nunchi_update(action: confirm \uC7AC\uD655\uC778 / reverse \uBC18\uC804). ` + `(B) \uC774\uBC88 \uAD6C\uAC04\uC5D0 \uC644\uACB0\uB41C \uC791\uC5C5(\uC0B0\uCD9C\uBB3C\uC774 \uB0A8\uB294 \uC694\uCCAD \uB2E8\uC704)\uC774 \uC788\uB294\uAC00? \u2014 ` + `\uC788\uB2E4\uBA74 \uC720\uC0AC task \uD56D\uBAA9\uC744 \uAC80\uC0C9\uD574 nunchi_update(edit \uC808\uCC28 \uAD50\uC815 / confirm \uC7AC\uD655\uC778), \uC5C6\uC73C\uBA74 nunchi_record(section: task)\uB85C \uAE30\uB85D. ` + `(C) \uD655\uC2E0\uC740 \uC5C6\uC9C0\uB9CC \uACFC\uC789/\uACFC\uC18C\uAC00 \uC758\uC2EC\uB41C \uC21C\uAC04\uC774 \uC788\uC5C8\uB294\uAC00? \u2014 ` + `\uC788\uB2E4\uBA74 nunchi_record(section: observe)\uB85C \uAD00\uCC30\uB9CC \uB0A8\uAE38 \uAC83 (\uC790\uB3D9 \uD68C\uC218 \uC81C\uC678 \u2014 \uBD80\uB2F4 \uC5C6\uC74C, \uBC18\uBCF5\uB418\uBA74 promote\uB85C \uC2B9\uACA9). ` + `\uC14B \uB2E4 \uC5C6\uC5C8\uB2E4\uBA74 "\uBCF4\uC815\xB7\uC791\uC5C5 \uD2B9\uC774\uC0AC\uD56D \uC5C6\uC74C" \uD55C \uC904\uB9CC \uB2F5\uD558\uACE0 \uC885\uB8CC\uD560 \uAC83.`
+    reason: `[nunchi] \uC8FC\uAE30 \uC810\uAC80(${CHECK_EVERY}\uD134): ` + `(A) \uC774\uBC88 \uAD6C\uAC04\uC5D0 \uC608\uCE21\uACFC \uC2E4\uC81C\uAC00 \uC5B4\uAE0B\uB09C \uACBD\uC6B0\uAC00 \uC788\uC5C8\uB294\uAC00? (1) \uACFC\uC789 \uB300\uC751 (2) \uACFC\uC18C \uB300\uC751 (3) \uD658\uACBD \uD2B9\uC774\uC0AC\uD56D (4) \uC608\uCE21\uBCF4\uB2E4 \uC88B\uC558\uB358 \uC811\uADFC\xB7\uC0AC\uC6A9\uC790\uAC00 \uC88B\uB2E4\uACE0 \uD55C \uBC29\uC2DD(\u2192 \uAD8C\uC7A5\xB7method) \u2014 ` + `\uC788\uC5C8\uB2E4\uBA74 nunchi_record(\uC2E0\uADDC) \uB610\uB294 nunchi_update(action: confirm \uC7AC\uD655\uC778 / '\uAD8C\uC7A5(\uAC15\uB3C4)'\uC744 \uB530\uB974\uB2E4 \uC0AC\uACE0 \u2192 reverse, '\uAD8C\uC7A5(\uBC29\uBC95)'\uC774 \uD2C0\uB838\uC73C\uBA74 edit\xB7remove). ` + `(B) \uC774\uBC88 \uAD6C\uAC04\uC5D0 \uC644\uACB0\uB41C \uC791\uC5C5(\uC0B0\uCD9C\uBB3C\uC774 \uB0A8\uB294 \uC694\uCCAD \uB2E8\uC704)\uC774 \uC788\uB294\uAC00? \u2014 ` + `\uC788\uB2E4\uBA74 \uC720\uC0AC task \uD56D\uBAA9\uC744 \uAC80\uC0C9\uD574 nunchi_update(edit \uC808\uCC28 \uAD50\uC815 / confirm \uC7AC\uD655\uC778), \uC5C6\uC73C\uBA74 nunchi_record(section: task)\uB85C \uAE30\uB85D. ` + `(C) \uD655\uC2E0\uC740 \uC5C6\uC9C0\uB9CC \uACFC\uC789/\uACFC\uC18C\uAC00 \uC758\uC2EC\uB41C \uC21C\uAC04\uC774 \uC788\uC5C8\uB294\uAC00? \u2014 ` + `\uC788\uB2E4\uBA74 nunchi_record(section: observe)\uB85C \uAD00\uCC30\uB9CC \uB0A8\uAE38 \uAC83 (\uC790\uB3D9 \uD68C\uC218 \uC81C\uC678 \u2014 \uBD80\uB2F4 \uC5C6\uC74C, \uBC18\uBCF5\uB418\uBA74 promote\uB85C \uC2B9\uACA9). ` + `\uC14B \uB2E4 \uC5C6\uC5C8\uB2E4\uBA74 "\uBCF4\uC815\xB7\uC791\uC5C5 \uD2B9\uC774\uC0AC\uD56D \uC5C6\uC74C" \uD55C \uC904\uB9CC \uB2F5\uD558\uACE0 \uC885\uB8CC\uD560 \uAC83.`
   }));
 }
 process.exit(0);

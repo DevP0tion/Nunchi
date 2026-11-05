@@ -20,7 +20,7 @@ try {
     if (core.length) {
       // ponytail: 하드 슬라이스 — session-start와 동일하게 8천자 캡 (additionalContext 상한 보호)
       const coreBlock = formatMemoryEntries(core).slice(0, 8000);
-      lines.push("", "[확정 규칙 — '벌주는 것' 신뢰도 높음(3+). 항상 지킨다]", coreBlock);
+      lines.push("", "[확정 규칙 — '벌주는 것'·'권장(방법)' 신뢰도 높음(3+). 항상 지킨다]", coreBlock);
     }
   } finally {
     mem.close();

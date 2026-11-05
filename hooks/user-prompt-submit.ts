@@ -30,7 +30,7 @@ try {
     // 단일 검색에 섞으면 보정 회수가 밀리므로 3(보정)+2(작업) 고정 쿼터로 나눈다.
     // strict: 매 메시지 자동 주입은 정밀도 우선 — 흔한 2자 단어 하나로는 주입하지 않는다
     const [cal, tasks] = await Promise.all([
-      mem.search(tokens, { limit: 3, excludeCore: true, sections: ["punish", "forgive", "env"], strict: true }),
+      mem.search(tokens, { limit: 3, excludeCore: true, sections: ["punish", "recommend", "env"], strict: true }),
       mem.search(tokens, { limit: 2, sections: ["task"], strict: true }),
     ]);
     const blocks: string[] = [];

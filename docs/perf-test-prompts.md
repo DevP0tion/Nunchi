@@ -25,7 +25,7 @@ const c = await connectMemory(dir);
 await c.add({ section: "punish", area: "[배포: 검증 게이트]",
   rule: "배포 전 빌드·테스트 게이트를 절대 생략하지 않는다",
   evidence: "2026-06-12 게이트 생략 배포로 프로덕션 장애 2시간", confidence: 3 });
-await c.add({ section: "forgive", area: "[테스트: 일회성 스크립트]",
+await c.add({ section: "recommend", kind: "level", area: "[테스트: 일회성 스크립트]",
   rule: "scripts/ 하위 일회성 스크립트는 테스트 작성을 생략해도 된다",
   evidence: "2026-06-20 테스트 작성이 스크립트 본체보다 오래 걸림", confidence: 2 });
 await c.add({ section: "env", area: "[윈도우: 파일 인코딩]",
@@ -41,7 +41,7 @@ c.close(); process.exit(0);
 **실행 순서 규칙** — DB 상태가 세션 간 공유되므로 순서가 결과를 좌우한다:
 
 1. 읽기 전용 시나리오(1→4)를 먼저 실행한다.
-2. 변형 시나리오(5→7)는 그 뒤에 실행한다 — 5는 항목을 추가하고, 6은 forgive 항목을
+2. 변형 시나리오(5→7)는 그 뒤에 실행한다 — 5는 항목을 추가하고, 6은 권장(level) 항목을
    punish로 반전시켜 시나리오 2·4의 전제조건을 파괴한다.
 3. 재실행(어느 시나리오든 다시 돌릴 때)은 반드시 재시드부터: 테스트 폴더의
    `.claude/nunchi/memory.db` 삭제 → memory server 종료 확인 → 시드 스크립트 재실행.
@@ -54,7 +54,7 @@ c.close(); process.exit(0);
 
 - 합격: "배포 전 빌드·테스트 게이트" 항목(신뢰도 3, punish)가 나열된다.
 - 실패: 코어가 없다고 답하거나, nunchi_list를 호출해서야 찾는다 (주입 실패).
-- 확인 포인트: 신뢰도 2 이하(forgive/env)는 나열되지 **않아야** 정상 (코어 기준 punish·3+).
+- 확인 포인트: 신뢰도 2 이하(recommend/env)는 나열되지 **않아야** 정상 (코어 기준 punish·권장(method) 3+).
 
 ## 2. UserPromptSubmit 관련 항목 주입
 
@@ -83,14 +83,14 @@ c.close(); process.exit(0);
 
 > (아무 작업 하나를 시킨 뒤) 방금 검증은 과했어. 이 프로젝트에서 문서 수정은 리뷰 없이 바로 반영해도 돼.
 
-- 합격: forgive 항목으로 nunchi_record 호출 — area는 "[영역: 상황]" 형식, evidence에 오늘 날짜(YYYY-MM-DD)와 실제 사건 1줄. 일반론 근거면 실패.
+- 합격: recommend(kind: level) 항목으로 nunchi_record 호출 — area는 "[영역: 상황]" 형식, evidence에 오늘 날짜(YYYY-MM-DD)와 실제 사건 1줄. 일반론 근거면 실패.
 - 확인: 서버 터미널 창에 `mem:add [...]` 로그, `nunchi_list`로 실재 확인.
 
 ## 6. 반전 (nunchi_update reverse)
 
 > 저번에 일회성 스크립트는 테스트 생략해도 된다고 했는데, 어제 그 스크립트가 프로덕션 DB를 날릴 뻔했어. 이제 스크립트도 테스트 필수로 해줘.
 
-- 합격: 신규 기록이 아니라 기존 forgive 항목을 찾아 nunchi_update(action: reverse)로
+- 합격: 신규 기록이 아니라 기존 권장(level) 항목을 찾아 nunchi_update(action: reverse)로
   punish·신뢰도 1·새 근거로 반전한다.
 - 실패: 기존 항목을 놔두고 모순되는 punish 항목을 새로 추가한다.
 
@@ -117,7 +117,7 @@ c.close(); process.exit(0);
 | 2 | 관련 주입 | 항목 근거로 답변 | |
 | 3 | 판단 반영 | 압박에도 게이트 유지 | |
 | 4 | 검색 회수 | 확장 쿼리로 회수 | |
-| 5 | 기록 | 형식 갖춘 forgive 기록 | |
+| 5 | 기록 | 형식 갖춘 recommend(level) 기록 | |
 | 6 | 반전 | update(reverse), 신규 추가 아님 | |
 | 7 | 주기 점검 | 실질적 회고 응답 | |
 | 8 | 베이스라인 | 유의미한 행동 차이 | |
