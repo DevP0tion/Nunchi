@@ -66,7 +66,14 @@ export function createTopicStore(db: Database) {
   const withFolders = <T extends Omit<Topic, "folders">>(r: T) => ({ ...r, folders: folders(r.id) });
   const setFolders = (id: number, paths: string[]) => {
     run(`DELETE FROM topic_folders WHERE topic_id = ?`, id);
-    for (const p of paths) if (p.trim()) run(`INSERT OR IGNORE INTO topic_folders (topic_id, path) VALUES (?, ?)`, id, p);
+    for (const p of paths) if (p.trim()) run(`INSERT OR IGNORE INTO topic_folders (topic_id, path) VALUES (?, ?)`, id, p.trim());
+  };
+  // 대시보드가 그대로 보여주므로 SQLite의 영문 UNIQUE 오류 대신 한국어 메시지를 던진다
+  const dupName = <T>(name: string, fn: () => T): T => {
+    try { return fn(); } catch (e) {
+      if (String(e).includes("UNIQUE")) throw new Error(`이미 있는 주제 이름: ${name.trim()}`);
+      throw e;
+    }
   };
   const cleanName = (n: string) => {
     const name = n.trim();
@@ -91,23 +98,23 @@ export function createTopicStore(db: Database) {
 
   return {
     create(t: { name: string; description?: string; folders?: string[] }): number {
-      return db.transaction(() => {
+      return dupName(t.name, () => db.transaction(() => {
         const id = (one<{ id: number }>(
           `INSERT INTO topics (name, description) VALUES (?, ?) RETURNING id`, cleanName(t.name), t.description ?? ""
         ))!.id;
         setFolders(id, t.folders ?? []);
         return id;
-      })();
+      })());
     },
     update(id: number, f: { name?: string; description?: string; folders?: string[] }): boolean {
-      return db.transaction(() => {
+      return dupName(f.name ?? "", () => db.transaction(() => {
         const cur = get(id);
         if (!cur) return false;
         run(`UPDATE topics SET name = ?, description = ?, updated_at = ${NOW} WHERE id = ?`,
           f.name !== undefined ? cleanName(f.name) : cur.name, f.description ?? cur.description, id);
         if (f.folders) setFolders(id, f.folders);
         return true;
-      })();
+      })());
     },
     /** 소속·폴더 삭제 + 그 주제였던 세션 해제(topic_rev +1). 기억은 지우지 않는다. 영향받은 session_id 반환 */
     remove(id: number): string[] {

@@ -582,6 +582,7 @@ export function createMemoryStore(db: Database) {
       else out = out.filter((r) => r.section !== "observe");
       if (opts.excludeCore)
         out = out.filter((r) => !isCore(r));
+      // shortcut: FTS 후보 50건 뒤 필터라 큰 DB에서 onlyIds 누락 가능, 주제 단위 검색이 느려지거나 놓치면 SQL로 내린다
       if (opts.onlyIds) out = out.filter((r) => opts.onlyIds!.includes(r.id));
       if (opts.excludeIds) out = out.filter((r) => !opts.excludeIds!.includes(r.id));
       // 걸린 단어 수 내림차순, 같으면 BM25 rank(음수, 낮을수록 관련) 오름차순

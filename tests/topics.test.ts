@@ -18,7 +18,15 @@ test("create: 빈 이름·중복 이름 throw", () => {
   const { topics } = setup();
   expect(() => topics.create({ name: "  " })).toThrow();
   topics.create({ name: "대시보드" });
-  expect(() => topics.create({ name: "대시보드" })).toThrow();
+  expect(() => topics.create({ name: "대시보드" })).toThrow("이미 있는 주제 이름: 대시보드");
+  const other = topics.create({ name: "기타" });
+  expect(() => topics.update(other, { name: " 대시보드 " })).toThrow("이미 있는 주제 이름: 대시보드");
+});
+
+test("setFolders: 공백 제거 저장, 빈 경로 무시", () => {
+  const { topics } = setup();
+  const t = topics.create({ name: "F", folders: ["  a/b  ", " ", "c"] });
+  expect(topics.get(t)?.folders).toEqual(["a/b", "c"]);
 });
 
 test("create/get/update/list: 폴더는 입력 순서, update는 폴더 전체 교체", () => {
