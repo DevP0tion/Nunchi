@@ -1,6 +1,6 @@
 /* [nunchi] memory 대시보드 — 계기판 장부.
    토큰 우선: 컬러는 전부 :root 커스텀 프로퍼티, 다크는 미디어쿼리에서 토큰만 재정의.
-   섹션 색(punish/forgive/env)은 dataviz 검증 통과 팔레트 — 텍스트에는 쓰지 않고
+   섹션 색(punish/recommend/env)은 dataviz 검증 통과 팔레트 — 텍스트에는 쓰지 않고
    도트 마크에만 쓴다 (라벨 텍스트가 항상 동반되므로 색맹·저대비에서도 식별 가능). */
 :root {
   color-scheme: light dark;
@@ -14,7 +14,7 @@
   --line-2: #c3c2b7;
   --wash: rgba(11, 11, 11, 0.04);
   --sec-punish: #e34948;
-  --sec-forgive: #1baf7a;
+  --sec-recommend: #1baf7a;
   --sec-env: #2a78d6;
   --sec-task: #eda100; /* dataviz slot3 yellow — red/aqua/blue와 CVD 구별(worst ΔE 37.7), 도트+라벨 relief */
   --sec-observe: #8250df; /* purple — 기존 4색(red/green/blue/yellow)과 구별, 미승격 신호용 */
@@ -35,7 +35,7 @@
     --line-2: #383835;
     --wash: rgba(255, 255, 255, 0.06);
     --sec-punish: #e66767;
-    --sec-forgive: #199e70;
+    --sec-recommend: #199e70;
     --sec-env: #3987e5;
     --sec-task: #c98500; /* dataviz slot3 yellow(dark) — worst adjacent ΔE 35.9, 대비 ≥3:1 */
     --sec-observe: #9a6ee8; /* purple(dark) */
@@ -86,7 +86,7 @@ h1 .tag { color: var(--muted); font-weight: 400; }
 .conn[data-state="on"] .dot { background: var(--ok); }
 .conn[data-state="off"] .dot { background: var(--err); }
 
-/* ── 통계 타일: punish/forgive/env는 클릭 = 섹션 필터 ────── */
+/* ── 통계 타일: punish/recommend/env는 클릭 = 섹션 필터 ────── */
 .stats {
   display: grid;
   /* 150px: 375px 뷰포트에서 2열이 성립하도록 (160px이면 1열로 무너져 세로 과점) */
@@ -131,7 +131,7 @@ button.tile[aria-pressed="true"] { border-color: var(--ink); }
   flex: none;
 }
 .mark.sec-punish { background: var(--sec-punish); }
-.mark.sec-forgive { background: var(--sec-forgive); }
+.mark.sec-recommend { background: var(--sec-recommend); }
 .mark.sec-env { background: var(--sec-env); }
 .mark.sec-task { background: var(--sec-task); }
 .mark.sec-observe { background: var(--sec-observe); }
@@ -210,6 +210,7 @@ button.primary:hover { opacity: 0.85; }
   color: var(--muted);
 }
 #editor label.full { grid-column: 1 / -1; }
+#editor label[hidden] { display: none; } /* 위 display:flex가 UA [hidden]을 이기므로 명시 */
 #editor .editor-actions { display: flex; gap: 6px; margin-top: 12px; }
 @media (max-width: 640px) {
   #editor .grid { grid-template-columns: 1fr 1fr; }

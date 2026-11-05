@@ -25,7 +25,7 @@ export const BUNDLED = process.env.NUNCHI_BUNDLED === "1";
 /** 플러그인 루트. 번들에서는 import.meta.url이 이 모듈이 아니라 번들 파일(dist/<폴더>/<진입점>.js)을 가리킨다 */
 export const PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
 /** 플러그인 버전 — MCP serverInfo·memory server 기동 정보 공용. .claude-plugin/plugin.json version과 함께 범프 */
-export const VERSION = "0.13.4";
+export const VERSION = "0.13.5";
 
 export interface NunchiConfig {
   /** true면 SessionStart 시 memory server(server.ts) 자동 시작 */
@@ -175,20 +175,27 @@ export interface MemoryEntryLite {
   rule: string;
   evidence: string;
   confidence: number;
+  /** recommend 전용 — level=강도 권고, method=방법 기록 */
+  kind?: string | null;
 }
 
 export const SECTION_LABEL: Record<string, string> = {
   punish: "벌주는 것",
-  forgive: "용서하는 것",
+  recommend: "권장",
   env: "환경 특이사항",
   task: "작업 기록",
 };
+
+const label = (r: MemoryEntryLite): string =>
+  r.section === "recommend"
+    ? `권장·${r.kind === "method" ? "방법" : "강도"}`
+    : SECTION_LABEL[r.section] ?? r.section;
 
 export function formatMemoryEntries(rows: MemoryEntryLite[]): string {
   return rows
     .map(
       (r) =>
-        `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}·신뢰도${r.confidence}] ${r.area}: ${r.rule} (근거: ${r.evidence})`
+        `- (#${r.id}) [${label(r)}·신뢰도${r.confidence}] ${r.area}: ${r.rule} (근거: ${r.evidence})`
     )
     .join("\n");
 }

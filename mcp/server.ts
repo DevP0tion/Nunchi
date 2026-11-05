@@ -39,12 +39,15 @@ const fail = (e: unknown) => ({
 });
 
 const section = z
-  .enum(["punish", "forgive", "env", "task", "observe"])
-  .describe("punish=벌주는 것(반드시 한다), forgive=용서하는 것(생략 가능), env=환경 특이사항, task=작업 기록(완결 작업 플레이북), observe=관찰(확신 없는 예측 어긋남 의심 신호 — 자동 회수 제외, 반복 확인 시 update action: promote로 승격)");
+  .enum(["punish", "recommend", "env", "task", "observe"])
+  .describe("punish=벌주는 것(반드시 한다), recommend=권장(이렇게 한다 — kind로 강도 권고·방법 기록 구분), env=환경 특이사항, task=작업 기록(완결 작업 플레이북), observe=관찰(확신 없는 예측 어긋남 의심 신호 — 자동 회수 제외, 반복 확인 시 update action: promote로 승격)");
 
 // 필드 길이 상한 — 매 메시지 자동 주입(보정 3 + 작업 2건)이 additionalContext 상한 안에 들도록 기록 시점에 묶는다
 const area = z.string().max(100).describe('"[영역: 짧은 상황 서술]" 형식, 100자 이내');
-const rule = z.string().max(500).describe("무엇을 한다 / 생략해도 된다 — 500자 이내");
+const rule = z.string().max(500).describe("무엇을 한다 / 이 수준으로 한다 — 500자 이내");
+const kind = z
+  .enum(["level", "method"])
+  .describe("section: recommend일 때 필수로 고른다 — level=강도 권고(과잉이었음: 이 상황에선 이 수준으로 한다), method=방법 기록(예측보다 결과가 좋았던 접근·사용자가 좋다고 한 방식: 이렇게 한다)");
 const evidence = z.string().max(200).describe("YYYY-MM-DD 실제로 있었던 일 1줄 — 200자 이내");
 
 const server = new McpServer({ name: "nunchi", version: VERSION });
@@ -53,12 +56,13 @@ server.registerTool(
   "nunchi_record",
   {
     description:
-      "예측 어긋남(예측-실제 불일치)을 보정 DB에 신규 기록한다. 과잉이었음→forgive, 과소였음→punish, 환경 특이사항→env. 근거는 반드시 실제 사건 1줄(YYYY-MM-DD 포함) — 일반론 금지. 같은 규칙이 이미 있으면 대신 nunchi_update(confirm)를 쓸 것. 완결된 작업의 플레이북은 section: task로 기록한다 — area='[작업유형: 상황]', rule='접근: 절차 / 주의: 함정', evidence='YYYY-MM-DD 결과 1줄'. 유사 task 항목이 이미 있으면 record 대신 nunchi_update(edit 교정 / confirm 재확인). 확신이 없는 어긋남 의심은 section: observe로 관찰만 남긴다(부담 없음, 자동 회수 제외) — 관련 기존 항목이 있으면 parent로 계보를 연결한다.",
+      "예측 어긋남(예측-실제 불일치)을 보정 DB에 신규 기록한다. 과잉이었음→recommend(kind: level), 예측보다 결과가 좋았음·사용자가 좋다고 함→recommend(kind: method), 과소였음→punish, 환경 특이사항→env. 근거는 반드시 실제 사건 1줄(YYYY-MM-DD 포함) — 일반론 금지. 같은 규칙이 이미 있으면 대신 nunchi_update(confirm)를 쓸 것. 완결된 작업의 플레이북은 section: task로 기록한다 — area='[작업유형: 상황]', rule='접근: 절차 / 주의: 함정', evidence='YYYY-MM-DD 결과 1줄'. 유사 task 항목이 이미 있으면 record 대신 nunchi_update(edit 교정 / confirm 재확인). 확신이 없는 어긋남 의심은 section: observe로 관찰만 남긴다(부담 없음, 자동 회수 제외) — 관련 기존 항목이 있으면 parent로 계보를 연결한다.",
     inputSchema: {
       section,
       area,
       rule,
       evidence,
+      kind: kind.optional(),
       parent: z.number().int().optional()
         .describe("observe 기록 시 관련 기존 항목 id — 승격 계보의 canonical 부모 (선택)"),
     },
@@ -76,7 +80,7 @@ server.registerTool(
   "nunchi_update",
   {
     description:
-      "기존 항목 갱신. confirm=재확인(신뢰도 +1, 날짜 갱신 — task 재수행 무사고에도 사용), reverse=반전 규칙('용서하는 것'을 따르다 사고 → punish로 이동+신뢰도 1 리셋+근거 교체, evidence 필수, 보정 forgive 전용 — task 항목에는 사용 불가), edit=필드 수정(task 플레이북 절차 교정도 edit), remove=정제 삭제('벌주는 것'은 사용자 확인 없이 삭제 금지), promote=관찰 승격(id=대표 관찰, sources로 추가 관찰, 새 항목의 section/area/rule/evidence 필수 — 출처가 계보로 보존된다), link=자유 참조 연결(refs 필수).",
+      "기존 항목 갱신. confirm=재확인(신뢰도 +1, 날짜 갱신 — task 재수행 무사고에도 사용), reverse=반전 규칙('권장(강도)'을 따르다 사고 → punish로 이동+신뢰도 1 리셋+근거 교체, evidence 필수, recommend·level 전용 — 방법 기록(method)과 task는 edit·remove), edit=필드 수정(task 플레이북 절차 교정도 edit), remove=정제 삭제('벌주는 것'은 사용자 확인 없이 삭제 금지), promote=관찰 승격(id=대표 관찰, sources로 추가 관찰, 새 항목의 section/area/rule/evidence 필수 — 출처가 계보로 보존된다), link=자유 참조 연결(refs 필수).",
     inputSchema: {
       id: z.number().int(),
       action: z.enum(["confirm", "reverse", "edit", "remove", "promote", "link"]),
@@ -84,6 +88,7 @@ server.registerTool(
       area: area.optional(),
       rule: rule.optional(),
       evidence: evidence.optional(),
+      kind: kind.optional(),
       confidence: z.number().int().min(1).optional(),
       sources: z.array(z.number().int()).optional().describe("promote 시 추가 근거 관찰 id들"),
       refs: z.array(z.number().int()).optional().describe("link 시 참조 항목 id들"),
@@ -100,7 +105,7 @@ server.registerTool(
         return ok({
           id: await m.promote([id, ...(sources ?? [])], {
             section: f.section, area: f.area, rule: f.rule,
-            evidence: f.evidence, confidence: f.confidence,
+            evidence: f.evidence, confidence: f.confidence, kind: f.kind,
           }),
         });
       }
@@ -110,7 +115,7 @@ server.registerTool(
       }
       if (action === "reverse") {
         if (!f.evidence) return fail("reverse에는 evidence(새 사건 1줄)가 필수다");
-        // §5.4 서버 검증 경유 — forgive 아닌 대상(env·punish·task)은 서버가 거부한다
+        // §5.4 서버 검증 경유 — 권장(level) 아닌 대상(method·env·punish·task)은 서버가 거부한다
         return ok({ updated: await m.update(id, { reverse: true, evidence: f.evidence }) });
       }
       return ok({ updated: await m.update(id, f) });

@@ -98,7 +98,7 @@ export interface MemoryClient {
     opts?: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean; strict?: boolean }
   ): Promise<MemoryEntry[]>;
   list(opts?: { section?: MemorySection; minConfidence?: number; withObserve?: boolean }): Promise<MemoryEntry[]>;
-  /** 상시 주입 코어: 벌주는 것 신뢰도 높음(3+) */
+  /** 상시 주입 코어: 벌주는 것·권장(방법) 신뢰도 높음(3+) */
   core(): Promise<MemoryEntry[]>;
   /** 마지막 기록 시각 — Stop hook 점검용 */
   stamp(): Promise<string | null>;

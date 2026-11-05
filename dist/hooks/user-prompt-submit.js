@@ -144,10 +144,10 @@ function resolveDocPath(projectDir, cfg) {
   return join(resolveDocDir(projectDir, cfg), DOC_FILENAME);
 }
 function formatMemoryEntries(rows) {
-  return rows.map((r) => `- (#${r.id}) [${SECTION_LABEL[r.section] ?? r.section}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
+  return rows.map((r) => `- (#${r.id}) [${label(r)}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
 `);
 }
-var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.4", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL;
+var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.5", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL, label = (r) => r.section === "recommend" ? `\uAD8C\uC7A5\xB7${r.kind === "method" ? "\uBC29\uBC95" : "\uAC15\uB3C4"}` : SECTION_LABEL[r.section] ?? r.section;
 var init_config = __esm(() => {
   PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
   DEFAULTS = {
@@ -159,7 +159,7 @@ var init_config = __esm(() => {
   };
   SECTION_LABEL = {
     punish: "\uBC8C\uC8FC\uB294 \uAC83",
-    forgive: "\uC6A9\uC11C\uD558\uB294 \uAC83",
+    recommend: "\uAD8C\uC7A5",
     env: "\uD658\uACBD \uD2B9\uC774\uC0AC\uD56D",
     task: "\uC791\uC5C5 \uAE30\uB85D"
   };
@@ -4364,7 +4364,7 @@ try {
   const mem = await connectMemory(projectDir, { noSpawn: true });
   try {
     const [cal, tasks] = await Promise.all([
-      mem.search(tokens, { limit: 3, excludeCore: true, sections: ["punish", "forgive", "env"], strict: true }),
+      mem.search(tokens, { limit: 3, excludeCore: true, sections: ["punish", "recommend", "env"], strict: true }),
       mem.search(tokens, { limit: 2, sections: ["task"], strict: true })
     ]);
     const blocks = [];

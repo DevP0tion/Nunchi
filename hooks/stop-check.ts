@@ -101,8 +101,8 @@ if (block) {
       decision: "block",
       reason:
         `[nunchi] 주기 점검(${CHECK_EVERY}턴): ` +
-        `(A) 이번 구간에 예측과 실제가 어긋난 경우가 있었는가? (1) 과잉 대응 (2) 과소 대응 (3) 환경 특이사항 — ` +
-        `있었다면 nunchi_record(신규) 또는 nunchi_update(action: confirm 재확인 / reverse 반전). ` +
+        `(A) 이번 구간에 예측과 실제가 어긋난 경우가 있었는가? (1) 과잉 대응 (2) 과소 대응 (3) 환경 특이사항 (4) 예측보다 좋았던 접근·사용자가 좋다고 한 방식(→ 권장·method) — ` +
+        `있었다면 nunchi_record(신규) 또는 nunchi_update(action: confirm 재확인 / '권장(강도)'을 따르다 사고 → reverse, '권장(방법)'이 틀렸으면 edit·remove). ` +
         `(B) 이번 구간에 완결된 작업(산출물이 남는 요청 단위)이 있는가? — ` +
         `있다면 유사 task 항목을 검색해 nunchi_update(edit 절차 교정 / confirm 재확인), 없으면 nunchi_record(section: task)로 기록. ` +
         `(C) 확신은 없지만 과잉/과소가 의심된 순간이 있었는가? — ` +
