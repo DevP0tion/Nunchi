@@ -104,8 +104,8 @@ Claude Code든 Codex든, CLAUDE.md·AGENTS.md·메모리 문서에 경험을 적
 
 ## 동작
 
-1. **SessionStart** (startup/resume/clear/compact): 규약 요약 + 코어('벌주는 것'·'권장(방법)' 신뢰도 3+)를 additionalContext로 조용히 주입. `auto-start: true`면 memory server 자동 기동. 기존 calibration.md는 서버 첫 기동 시 DB로 자동 임포트(`.imported`로 보존).
-2. **UserPromptSubmit** (매 메시지): 사용자가 직접 친 글의 어절로 검색해 보정 항목 3건 + 작업 기록(task) 2건을 각 쿼터로 주입 (task가 보정 회수를 밀어내지 않도록 분리). Claude Code가 붙인 태그 블록(`<task-notification>`, `<ide_opened_file>` 등)은 검색어에서 빼고, 백그라운드 작업 알림·다른 세션 메시지처럼 사용자 글이 없는 메시지에는 주입하지 않는다. 정밀도 우선 — 흔한 2글자 단어 하나만 걸린 항목은 주입하지 않는다. 결과 0건이면 주입 없음, 주입은 최대 8천자. 서버 미기동이면 조용히 통과.
+1. **SessionStart** (startup/resume/clear/compact): 규약 요약 + 코어('벌주는 것'·'권장(방법)' 신뢰도 3+)를 additionalContext로 조용히 주입. 세션 id 줄과 주제 목록(최대 20개)도 함께 싣고, 세션을 등록한다. 주제가 설정된 세션이 resume·compact되면 주제 블록을, 주제가 없으면 '현재 주제 없음'을 다시 알린다. `auto-start: true`면 memory server 자동 기동. 기존 calibration.md는 서버 첫 기동 시 DB로 자동 임포트(`.imported`로 보존).
+2. **UserPromptSubmit** (매 메시지): 사용자가 직접 친 글의 어절로 검색해 보정 항목 3건 + 작업 기록(task) 2건을 각 쿼터로 주입 (task가 보정 회수를 밀어내지 않도록 분리). Claude Code가 붙인 태그 블록(`<task-notification>`, `<ide_opened_file>` 등)은 검색어에서 빼고, 백그라운드 작업 알림·다른 세션 메시지처럼 사용자 글이 없는 메시지에는 주입하지 않는다. 정밀도 우선 — 흔한 2글자 단어 하나만 걸린 항목은 주입하지 않는다. 주제가 설정돼 있으면 보정 3 + 작업 2 쿼터를 주제 소속 기억으로 먼저 채우고 `- [주제]`로 표시한다. 주제가 바뀌었거나 해제됐으면(만료 후 되살아난 세션 포함) 주제 블록을 먼저 알린다. 결과 0건이면 주입 없음, 주입은 최대 8천자. 서버 미기동이면 조용히 통과.
 3. **SubagentStart**: 서브에이전트에 규약 + 코어 주입 (SessionStart 주입을 못 받으므로). 주제가 있으면 주제 블록도 주입.
 4. **모델 재량 (MCP 도구)**: `nunchi_search`(유의어 확장 쿼리 검색) · `nunchi_list`(전량 선별, `tree: id`로 관계 트리 조회) · `nunchi_record`(예측 어긋남·완결 작업 플레이북·관찰 기록) · `nunchi_update`(재확인·반전·정제·플레이북 교정·관찰 승격 promote·자유 참조 link).
 5. **Stop hook** (백업): 10턴마다 1회 "(A) 예측 어긋남이 있었나? (B) 완결된 작업이 있었나? (C) 확신 없는 어긋남 의심이 있었나?" 점검을 강제. 구간 내에 이 세션이 이미 기록했으면 자동 생략 — 세션 transcript의 `nunchi_record`/`nunchi_update` 호출로 판정하므로 같은 DB를 쓰는 동시 세션의 기록은 세지 않는다. 7일 지난 세션 상태 파일은 점검 때 정리된다.
@@ -124,9 +124,9 @@ Claude Code든 Codex든, CLAUDE.md·AGENTS.md·메모리 문서에 경험을 적
 - **세션 식별**: SessionStart가 세션 id를 주입하고 에이전트가 `session_id`로 넘긴다 (stdio MCP 서버는 세션 id를 받을 경로가 없다).
 - **주입**: 주제가 설정되면 규칙 전문 대신 주제 신뢰도 3+ 기억(코어·observe 제외, 최대 30개)의 `#id · area` 목록만 주입하고 전문은 `nunchi_list(ids)`로 조회한다. 매 메시지 검색은 보정 3 + 작업 2 쿼터를 주제 소속 기억으로 먼저 채우고 `- [주제]`로 표시한다. 코어 재주입(compact·resume·서브에이전트 시작) 때 주제 밖 코어는 `#id · area`만 나간다.
 - **주제 신뢰도**: 기억×주제 쌍마다 별도 신뢰도(소속 시 전체 신뢰도 복사). 대시보드 WorkSpace 상세의 👍👎는 주제 신뢰도만, `nunchi_update(confirm, session_id)`는 전체와 주제 신뢰도를 함께 올린다.
-- **작업공간 경고**: PreToolUse가 Edit·Write·MultiEdit·NotebookEdit 대상이 주제 폴더 밖이면 경고를 주입한다 (차단하지 않음, Bash 경유 수정은 검사하지 않음). 서버 미기동이면 조용히 통과.
+- **작업공간 경고**: PreToolUse가 Edit·Write·MultiEdit·NotebookEdit 대상이 주제 폴더 밖이면 경고를 주입한다 (차단하지 않음, Bash 경유 수정은 검사하지 않음). 이 훅은 소켓 없이 마지막 세션 상태 파일만 읽으므로, 상태 파일이 없으면(원격 서버·구버전 서버 등) 경고하지 않는다.
 - **진행 중인 턴에 전달**: 대시보드에서 주제를 바꾸면 PostToolUse가 다음 도구 호출 뒤 주제 블록을 주입한다. 이 경로는 소켓 없이 상태 파일(`<path>/sessions/<session_id>.json`과 전달한 rev를 적은 `.delivered`)만 읽는다. 원격 서버(`external-address`)는 파일이 없으므로 다음 메시지(UserPromptSubmit)에 전달된다.
-- **WorkSpace 탭**: 대시보드(`web: true`) 헤더 아래 **Memory** | **WorkSpace** 탭. 주제 카드 격자 안에 작업 중인 세션 칩이 있고("주제 없음" 점선 카드에 미설정 세션), 칩을 다른 카드로 드래그하거나 칩에서 Enter로 주제를 바꾼다. 카드 클릭 → 미리보기(설명·폴더·소속 기억 상위 5개), "자세히 보기" → 작업공간 폴더 편집, 에이전트 목록, 소속 기억 표(주제 신뢰도 👍👎·빼기·기억 추가). 주제 변경은 `ws:changed`로 즉시 갱신된다. 이 대시보드는 그 프로젝트의 memory server에 붙으므로 그 프로젝트의 세션만 보인다.
+- **WorkSpace 탭**: 대시보드(`web: true`) 헤더 아래 **Memory** | **WorkSpace** 탭. 주제 카드 격자 안에 작업 중인 에이전트 칩이 있고("주제 없음" 점선 카드에 미설정 세션), 칩을 다른 카드로 드래그하거나 칩에서 Enter로 주제를 바꾼다. 카드 클릭 → 미리보기(설명·폴더·소속 기억 상위 5개), "자세히 보기" → 작업공간 폴더 편집, 에이전트 목록, 소속 기억 표(주제 신뢰도 👍👎·빼기·기억 추가). 주제 변경은 `ws:changed`로 즉시 갱신된다. 이 대시보드는 그 프로젝트의 memory server에 붙으므로 그 프로젝트의 세션만 보인다.
 
 ## 구조
 
