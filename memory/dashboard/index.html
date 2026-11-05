@@ -16,15 +16,15 @@
     </span>
   </header>
 
-  <!-- 통계 타일 — punish/forgive/env 타일은 클릭 = 섹션 필터 토글 -->
+  <!-- 통계 타일 — punish/recommend/env 타일은 클릭 = 섹션 필터 토글 -->
   <section class="stats" aria-label="섹션별 현황">
     <button class="tile" data-sec="punish" aria-pressed="false">
       <span class="tile-label"><span class="mark sec-punish" aria-hidden="true"></span>punish · 벌주는 것</span>
       <span class="tile-num" id="n-punish">–</span>
     </button>
-    <button class="tile" data-sec="forgive" aria-pressed="false">
-      <span class="tile-label"><span class="mark sec-forgive" aria-hidden="true"></span>forgive · 용서하는 것</span>
-      <span class="tile-num" id="n-forgive">–</span>
+    <button class="tile" data-sec="recommend" aria-pressed="false" title="강도 권고(level)·방법 기록(method)">
+      <span class="tile-label"><span class="mark sec-recommend" aria-hidden="true"></span>recommend · 권장</span>
+      <span class="tile-num" id="n-recommend">–</span>
     </button>
     <button class="tile" data-sec="env" aria-pressed="false">
       <span class="tile-label"><span class="mark sec-env" aria-hidden="true"></span>env · 환경 특이사항</span>
@@ -38,7 +38,7 @@
       <span class="tile-label"><span class="mark sec-observe" aria-hidden="true"></span>observe · 관찰</span>
       <span class="tile-num" id="n-observe">–</span>
     </button>
-    <div class="tile" title="punish이면서 신뢰도 3 이상 — 세션마다 상시 주입되는 항목">
+    <div class="tile" title="punish 또는 권장(방법)이면서 신뢰도 3 이상 — 세션마다 상시 주입되는 항목">
       <span class="tile-label"><span class="mark mark-core" aria-hidden="true"></span>코어 · 상시 주입</span>
       <span class="tile-num" id="n-core">–</span>
     </div>
@@ -71,10 +71,16 @@
       <label>구분
         <select id="f-section">
           <option value="punish">punish</option>
-          <option value="forgive">forgive</option>
+          <option value="recommend">recommend</option>
           <option value="env">env</option>
           <option value="task">task</option>
           <option value="observe">observe</option>
+        </select>
+      </label>
+      <label id="f-kind-label" hidden>종류 (kind)
+        <select id="f-kind">
+          <option value="level">강도 권고</option>
+          <option value="method">방법 기록</option>
         </select>
       </label>
       <label>영역 (area)
@@ -115,7 +121,7 @@
   <script>
     // 서버(memory/server.ts)의 mem:* 이벤트를 same-origin Socket.IO로 직접 호출한다
     // — 별도 REST 레이어 없음. 응답 형식은 { ok, ...payload } (server.ts의 handle 참조).
-    const CORE_MIN = 3; // store.ts의 CORE_CONFIDENCE — punish & conf>=3 = 상시 주입
+    const CORE_MIN = 3; // store.ts의 CORE_CONFIDENCE — (punish 또는 권장·method) & conf>=3 = 상시 주입
     let rowCache = []; // 마지막 렌더 목록 — 수정 버튼이 폼을 채울 때 사용
     let allRows = []; // 마지막 전체 목록 — 통계 타일과 클라이언트 필터용
     const secFilter = new Set(); // 섹션 타일 클릭으로 토글되는 구분 필터 — 빈 셋 = 전체
@@ -144,7 +150,7 @@
 
     const esc = (s) => String(s).replace(/[&<>"']/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-    const isCore = (e) => e.section === "punish" && e.confidence >= CORE_MIN;
+    const isCore = (e) => e.confidence >= CORE_MIN && (e.section === "punish" || (e.section === "recommend" && e.kind === "method")); // store.ts isCore와 짝
     // "2026-07-08 19:05:37.123" → "2026-07-08 19:05" (전체는 title로)
     const shortDate = (s) => String(s).slice(0, 16);
     const meter = (c) => `<span class="meter" aria-hidden="true">${
@@ -197,7 +203,7 @@
     function renderStats(rows) {
       const n = (sec) => rows.filter((e) => e.section === sec).length;
       $("n-punish").textContent = n("punish");
-      $("n-forgive").textContent = n("forgive");
+      $("n-recommend").textContent = n("recommend");
       $("n-env").textContent = n("env");
       $("n-task").textContent = n("task");
       $("n-observe").textContent = n("observe");
@@ -218,7 +224,7 @@
       // 서버 기본 검색은 observe를 제외하므로 대시보드는 전 섹션(또는 타일 필터)을 명시한다
       render(applyFilters((await req("mem:search", {
         queries,
-        sections: secFilter.size ? [...secFilter] : ["punish", "forgive", "env", "task", "observe"],
+        sections: secFilter.size ? [...secFilter] : ["punish", "recommend", "env", "task", "observe"],
       })).rows));
     }
 
@@ -258,6 +264,8 @@
       $("editor-title").textContent = e ? `#${e.id} 수정` : "새 항목";
       $("f-id").value = e?.id ?? "";
       $("f-section").value = e?.section ?? "punish";
+      $("f-kind").value = e?.kind ?? "level";
+      syncKind();
       $("f-area").value = e?.area ?? "";
       $("f-rule").value = e?.rule ?? "";
       $("f-evidence").value = e?.evidence ?? "";
@@ -273,6 +281,8 @@
         rule: $("f-rule").value,
         evidence: $("f-evidence").value,
         confidence: Number($("f-confidence").value),
+        // kind는 recommend만 — 서버가 kind 변경 시 신뢰도를 1로 되돌린다
+        ...($("f-section").value === "recommend" && { kind: $("f-kind").value }),
       };
       const id = $("f-id").value;
       if (id) await req("mem:update", { id: Number(id), ...fields });
@@ -281,6 +291,9 @@
       await refresh();
     });
 
+    // 종류(kind) 선택란은 권장(recommend)일 때만
+    const syncKind = () => ($("f-kind-label").hidden = $("f-section").value !== "recommend");
+    $("f-section").addEventListener("change", syncKind);
     $("f-cancel").onclick = () => ($("editor").hidden = true);
     $("btn-add").onclick = () => openEditor(null);
     $("btn-search").onclick = search;

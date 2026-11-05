@@ -1,7 +1,7 @@
 // bun test tests/web.test.ts
 // 웹 대시보드: 설정 정규화 + 토큰 인증 + 정적 서빙
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { io as ioc } from "socket.io-client";
@@ -98,3 +98,15 @@ test(
   },
   20000
 );
+
+test("대시보드 정적 파일: 권장(recommend) 섹션·kind 선택란·코어 판정 (v0.14)", () => {
+  const dash = (f: string) => readFileSync(join(import.meta.dir, "..", "memory", "dashboard", f), "utf8");
+  const html = dash("index.html");
+  const css = dash("style.css");
+  expect(html).not.toContain("forgive");
+  expect(html).toContain('data-sec="recommend"');
+  expect(html).toContain('id="f-kind"');
+  expect(html).toMatch(/const isCore = \(e\) =>[^\n]*e\.kind === "method"/);
+  expect(css).toContain("--sec-recommend");
+  expect(css).not.toContain("forgive");
+});
