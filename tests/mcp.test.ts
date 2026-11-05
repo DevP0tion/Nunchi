@@ -61,14 +61,14 @@ test(
       expect(rec.result?.isError).toBeFalsy();
       const recId = JSON.parse(rec.result!.content[0].text).id as number;
       expect(typeof recId).toBe("number");
-      // task 대상 reverse → forgive 전용이라 isError로 거부
+      // task 대상 reverse → 권장(level) 전용이라 isError로 거부
       send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "nunchi_update", arguments: {
         id: recId, action: "reverse", evidence: "2026-07-09 x",
       }}});
       await proc.stdin.flush();
       const rev = await waitFor(3);
       expect(rev.result?.isError).toBe(true);
-      expect(rev.result!.content[0].text).toContain("forgive");
+      expect(rev.result!.content[0].text).toContain("권장(강도) 전용");
       // 필드 길이 상한 — 상한 초과 기록은 거부 (훅 주입 크기를 기록 시점에 묶는다)
       send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "nunchi_record", arguments: {
         section: "env", area: "[a]", rule: "r", evidence: "2026-10-06 " + "x".repeat(200),
@@ -140,7 +140,7 @@ test(
       const oId = JSON.parse(o.result!.content[0].text).id as number;
       // 2) 승격
       const pr = await call(3, "nunchi_update", {
-        id: oId, action: "promote", section: "forgive",
+        id: oId, action: "promote", section: "recommend",
         area: "[ship: 배포 절차]", rule: "PR 단계 생략 가능", evidence: "2026-07-24 반복 관찰",
       });
       expect(pr.result?.isError).toBeFalsy();
@@ -162,6 +162,23 @@ test(
         id: prId, action: "promote", section: "punish", area: "[x]", rule: "r", evidence: "e",
       });
       expect(bad.result?.isError).toBe(true);
+      // 6) v0.14 권장(recommend) kind — method 기록·검색, method reverse 거부
+      const m = await call(8, "nunchi_record", {
+        section: "recommend", kind: "method", area: "[리뷰: 요청]", rule: "리뷰 요청 먼저", evidence: "2026-11-05 사용자가 좋다고 함",
+      });
+      expect(m.result?.isError).toBeFalsy();
+      const mId = JSON.parse(m.result!.content[0].text).id as number;
+      const sr = await call(9, "nunchi_search", { queries: ["리뷰 요청"] });
+      expect(JSON.parse(sr.result!.content[0].text).rows[0]).toMatchObject({ id: mId, kind: "method" });
+      const mr = await call(10, "nunchi_update", { id: mId, action: "reverse", evidence: "2026-11-05 x" });
+      expect(mr.result?.isError).toBe(true);
+      expect(mr.result!.content[0].text).toContain("방법 기록(method)은 edit·remove");
+      // 도구 스키마: section enum에 forgive 없음·recommend 있음
+      send({ jsonrpc: "2.0", id: 11, method: "tools/list" });
+      await proc.stdin.flush();
+      const tl = JSON.stringify(await waitFor(11));
+      expect(tl).toContain('"recommend"');
+      expect(tl).not.toContain('"forgive"');
     } finally {
       proc.kill();
       await pump;
