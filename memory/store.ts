@@ -6,6 +6,7 @@
 // v0.13.5: forgive(용서하는 것) → recommend(권장). kind로 강도 권고(level)·방법 기록(method)을 나눈다.
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
+import { applyTopicSchema } from "./topics.ts";
 
 export type MemorySection = "punish" | "recommend" | "env" | "task" | "observe";
 /** 권장 항목의 종류 — level=강도 권고(과잉이었음), method=방법 기록(예측보다 좋았음·사용자가 좋다고 함) */
@@ -334,6 +335,7 @@ const stem = (w: string): string => {
 
 export function createMemoryStore(db: Database) {
   applyMemorySchema(db);
+  applyTopicSchema(db); // events 저널 밖 — replay가 건드리지 않는다
   type Row = MemoryEntry & { keywords: string; promoted_to: number | null; refs: string };
   const strip = ({ keywords: _k, promoted_to: _p, refs: _r, ...e }: Row): MemoryEntry => e;
   const insStmt = db.prepare(
@@ -386,6 +388,7 @@ export function createMemoryStore(db: Database) {
     `UPDATE memory SET confidence = confidence + 1, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
   );
   const delStmt = db.prepare(`DELETE FROM memory WHERE id = ?`);
+  const delMemberStmt = db.prepare(`DELETE FROM topic_members WHERE memory_id = ?`);
   const stampStmt = db.prepare(`SELECT max(updated_at) AS m FROM memory`);
   const coreStmt = db.prepare(
     // isCore()와 짝 — 조건을 바꾸면 둘 다 바꾼다
@@ -493,17 +496,19 @@ export function createMemoryStore(db: Database) {
     remove(id: number): boolean {
       return db.transaction(() => {
         if (delStmt.run(id).changes === 0) return false;
+        delMemberStmt.run(id); // 라이브 remove만 소속을 정리한다 — replay는 주제 테이블을 건드리지 않는다
         // 행이 이미 삭제됨 — 이벤트 ts는 현재 시각 기본값 (의도된 동작)
         logEvent("remove", id, {});
         return true;
       })();
     },
-    list(opts: { section?: MemorySection; minConfidence?: number; withObserve?: boolean } = {}): MemoryEntry[] {
-      // ponytail: 필터 3개뿐이라 동적 WHERE — 쿼리 빌더 불필요
+    list(opts: { section?: MemorySection; minConfidence?: number; withObserve?: boolean; ids?: number[] } = {}): MemoryEntry[] {
+      // ponytail: 필터 4개뿐이라 동적 WHERE — 쿼리 빌더 불필요
       const where: string[] = [];
       const args: (string | number)[] = [];
       if (opts.section) { where.push("section = ?"); args.push(opts.section); }
-      else if (!opts.withObserve) where.push("section != 'observe'"); // 관찰은 명시 요청 시에만
+      else if (!opts.withObserve && !opts.ids) where.push("section != 'observe'"); // 관찰은 명시 요청 시에만 (ids 지정 시 포함)
+      if (opts.ids) { where.push(`id IN (${opts.ids.map(() => "?").join(",") || "NULL"})`); args.push(...opts.ids); }
       if (opts.minConfidence) { where.push("confidence >= ?"); args.push(opts.minConfidence); }
       const sql = `SELECT ${COLS} FROM memory
         ${where.length ? "WHERE " + where.join(" AND ") : ""}
@@ -529,7 +534,8 @@ export function createMemoryStore(db: Database) {
      *  모델 쿼리 확장(nunchi_search)과 훅 자동 주입이 공유하는 유일한 검색 경로 */
     search(
       queries: string[],
-      opts: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean; strict?: boolean } = {}
+      opts: { sections?: MemorySection[]; limit?: number; excludeCore?: boolean; strict?: boolean;
+      onlyIds?: number[]; excludeIds?: number[] } = {}
     ): MemoryEntry[] {
       const limit = opts.limit ?? 3;
       const best = new Map<number, MemoryEntry & { rank: number; hits: number; long: boolean }>();
@@ -576,6 +582,8 @@ export function createMemoryStore(db: Database) {
       else out = out.filter((r) => r.section !== "observe");
       if (opts.excludeCore)
         out = out.filter((r) => !isCore(r));
+      if (opts.onlyIds) out = out.filter((r) => opts.onlyIds!.includes(r.id));
+      if (opts.excludeIds) out = out.filter((r) => !opts.excludeIds!.includes(r.id));
       // 걸린 단어 수 내림차순, 같으면 BM25 rank(음수, 낮을수록 관련) 오름차순
       out.sort((a, b) => b.hits - a.hits || a.rank - b.rank);
       return out.slice(0, limit).map(({ rank: _r, hits: _h, long: _l, ...e }) => e);
