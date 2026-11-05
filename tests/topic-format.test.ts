@@ -60,8 +60,8 @@ test("formatTopicBlock: 형식", () => {
   expect(b).toContain("- #41 접근성 대비");
   expect(b).toContain("- #57 토큰 우선 CSS");
   expect(b).toContain("nunchi_list(ids)");
-  expect(b).not.toContain("주제가 변경됨");
-  expect(formatTopicBlock(topic, true).split("\n")[0]).toBe("[nunchi] 주제가 변경됨 (대시보드·명령)");
+  expect(b).not.toContain("주제 정보가 갱신됨");
+  expect(formatTopicBlock(topic, true).split("\n")[0]).toBe("[nunchi] 주제 정보가 갱신됨");
   expect(formatTopicBlock(topic, true)).toContain("현재 주제: 대시보드 접근성");
 });
 

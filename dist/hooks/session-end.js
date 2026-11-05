@@ -4305,7 +4305,7 @@ async function connectMemory(projectDir = process.env.CLAUDE_PROJECT_DIR || proc
     linkTopic: async (topicId, memoryIds) => (await ws("ws:topic:link", { topicId, memoryIds })).count,
     unlinkTopic: async (topicId, memoryIds) => (await ws("ws:topic:unlink", { topicId, memoryIds })).count,
     topicByName: async (name) => (await ws("ws:board")).topics.find((t) => t.name === name.trim()) ?? null,
-    registerSession: async (p) => void await ws("ws:session:register", p),
+    registerSession: async (p) => ({ created: Boolean((await ws("ws:session:register", p)).created) }),
     endSession: async (sessionId) => void await ws("ws:session:end", { sessionId }),
     setSessionTopic: async (sessionId, topicId) => {
       const { rev, topic } = await ws("ws:session:set", { sessionId, topicId });

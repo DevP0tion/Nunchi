@@ -30,7 +30,7 @@ export function formatTopicList(topics: { name: string; description: string }[])
 /** 주제 블록 (set 결과·훅 주입 공통). changed면 변경 안내 줄을 앞에 붙인다 */
 export function formatTopicBlock(t: TopicState, changed = false): string {
   const lines: string[] = [];
-  if (changed) lines.push("[nunchi] 주제가 변경됨 (대시보드·명령)");
+  if (changed) lines.push("[nunchi] 주제 정보가 갱신됨");
   lines.push(`[nunchi] 현재 주제: ${t.name}${t.description ? ` — ${t.description}` : ""}`);
   lines.push(
     t.folders.length ? `작업공간: ${t.folders.join(", ")} — 이 폴더들 안에서 작업한다` : "작업공간: (지정 없음)"

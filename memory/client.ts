@@ -118,7 +118,7 @@ export interface MemoryClient {
   linkTopic(topicId: number, memoryIds: number[]): Promise<number>;
   unlinkTopic(topicId: number, memoryIds: number[]): Promise<number>;
   topicByName(name: string): Promise<Topic | null>;
-  registerSession(p: { sessionId: string; title?: string | null; cwd?: string | null; prompt?: string }): Promise<void>;
+  registerSession(p: { sessionId: string; title?: string | null; cwd?: string | null; prompt?: string }): Promise<{ created: boolean }>;
   endSession(sessionId: string): Promise<void>;
   setSessionTopic(sessionId: string, topicId: number | null): Promise<SessionStateFile>;
   /** 세션 행이 없으면 { rev: 0, topic: null, memberIds: [] } */
@@ -268,7 +268,7 @@ export async function connectMemory(
     unlinkTopic: async (topicId, memoryIds) => (await ws("ws:topic:unlink", { topicId, memoryIds })).count,
     topicByName: async (name) =>
       ((await ws("ws:board")).topics as TopicSummary[]).find((t) => t.name === name.trim()) ?? null,
-    registerSession: async (p) => void (await ws("ws:session:register", p)),
+    registerSession: async (p) => ({ created: Boolean((await ws("ws:session:register", p)).created) }),
     endSession: async (sessionId) => void (await ws("ws:session:end", { sessionId })),
     setSessionTopic: async (sessionId, topicId) => {
       const { rev, topic } = await ws("ws:session:set", { sessionId, topicId });

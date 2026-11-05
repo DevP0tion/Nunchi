@@ -10,7 +10,8 @@ import { io as ioc } from "socket.io-client";
 import { loadConfig, resolveDocDir } from "../hooks/config.ts";
 import { assignFreePort, connectMemory, type MemoryClient } from "../memory/client.ts";
 import { resolveMemoryPort } from "../memory/memory-config.ts";
-import { readDelivered } from "../memory/session-state.ts";
+import { Database } from "bun:sqlite";
+import { readDelivered, writeDelivered } from "../memory/session-state.ts";
 import { rmProject } from "./helpers.ts";
 
 const hookPath = (name: string) => fileURLToPath(new URL(`../hooks/${name}`, import.meta.url));
@@ -454,9 +455,9 @@ test(
       const run = () =>
         runHook("user-prompt-submit.ts", dir, { session_id: "s1", prompt: "일회성 스크립트에도 테스트가 필요할까?" });
       const first = ctxOf(await run());
-      expect(first).toContain("주제가 변경됨");
+      expect(first).toContain("주제 정보가 갱신됨");
       expect(first).toContain("일회성 스크립트 테스트 생략 가능"); // 검색 주입도 그대로
-      expect(ctxOf(await run())).not.toContain("주제가 변경됨");
+      expect(ctxOf(await run())).not.toContain("주제 정보가 갱신됨");
       // 주제 해제도 한 번만 알린다
       await mem.setSessionTopic("s1", null);
       expect(ctxOf(await run())).toContain("현재 주제 없음");
@@ -477,7 +478,7 @@ test(
       const t = await mem.createTopic({ name: "배포 주제" });
       await mem.setSessionTopic("s1", t);
       const ctx = ctxOf(await runHook("user-prompt-submit.ts", dir, { session_id: "s1", prompt: "a" }));
-      expect(ctx).toContain("주제가 변경됨");
+      expect(ctx).toContain("주제 정보가 갱신됨");
       expect((await boardSessions(dir)).some((x) => x.session_id === "s1")).toBe(true);
     } finally {
       await mem.shutdown();
@@ -588,12 +589,13 @@ test(
 );
 
 test(
-  "session-start resume: 주제가 없으면 주제 없음 줄 (compact는 아님), subagent는 주제 없어도 agent delivered 기록",
+  "session-start resume·compact: 주제가 없으면 주제 없음 줄 (startup은 아님), subagent는 주제 없어도 agent delivered 기록",
   async () => {
     const { dir, mem } = await seeded();
     try {
       expect(ctxOf(await runHook("session-start.ts", dir, { source: "resume", session_id: "s3" }))).toContain("현재 주제 없음");
-      expect(ctxOf(await runHook("session-start.ts", dir, { source: "compact", session_id: "s3" }))).not.toContain("현재 주제 없음");
+      expect(ctxOf(await runHook("session-start.ts", dir, { source: "compact", session_id: "s3" }))).toContain("현재 주제 없음"); // 요약에 옛 주제가 남을 수 있다
+      expect(ctxOf(await runHook("session-start.ts", dir, { source: "startup", session_id: "s3" }))).not.toContain("현재 주제 없음");
       await mem.registerSession({ sessionId: "s4" });
       await runHook("subagent-start.ts", dir, { session_id: "s4", agent_id: "a9" });
       expect(readDelivered(docDirOf(dir), "s4", "a9")).toBe(0); // 파일이 생겼는지는 아래서 확인
@@ -679,7 +681,7 @@ test(
       const run = (extra: object = {}) => runHook("post-tool-use.ts", dir, { session_id: "s1", tool_name: "Read", ...extra });
       const first = JSON.parse(await run());
       expect(first.hookSpecificOutput.hookEventName).toBe("PostToolUse");
-      expect(first.hookSpecificOutput.additionalContext).toContain("주제가 변경됨");
+      expect(first.hookSpecificOutput.additionalContext).toContain("주제 정보가 갱신됨");
       expect(first.hookSpecificOutput.additionalContext).toContain("현재 주제: 배포 주제");
       expect(await run()).toBe("");
       expect(ctxOf(await run({ agent_id: "a1" }))).toContain("현재 주제: 배포 주제");
@@ -688,6 +690,56 @@ test(
       await mem.setSessionTopic("s1", null);
       expect(ctxOf(await run())).toContain("현재 주제 없음");
       expect(await run()).toBe("");
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
+  "post-tool-use: 서브에이전트의 nunchi_topic set — 호출자 delivered만 맞추고 메인에는 다음 호출에서 전달",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const t = await mem.createTopic({ name: "배포 주제" });
+      const { rev } = await mem.setSessionTopic("s1", t);
+      writeDelivered(docDirOf(dir), "s1", null, rev); // MCP가 메인 delivered로 기록한 것과 같다
+      const call = { session_id: "s1", agent_id: "a1", tool_name: "mcp__plugin_nunchi_nunchi__nunchi_topic" };
+      expect(await runHook("post-tool-use.ts", dir, call)).toBe("");
+      expect(readDelivered(docDirOf(dir), "s1", "a1")).toBe(rev);
+      // 서브에이전트의 다음 도구 호출은 중복 블록이 없다
+      expect(await runHook("post-tool-use.ts", dir, { ...call, tool_name: "Read" })).toBe("");
+      // 메인은 한 번만 알게 된다
+      const main = { session_id: "s1", tool_name: "Read" };
+      expect(ctxOf(await runHook("post-tool-use.ts", dir, main))).toContain("현재 주제: 배포 주제");
+      expect(await runHook("post-tool-use.ts", dir, main)).toBe("");
+    } finally {
+      await mem.shutdown();
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
+  "user-prompt-submit: 만료 후 되살아난 세션에 주제 해제를 한 번 알린다",
+  async () => {
+    const { dir, mem } = await seeded();
+    try {
+      const t = await mem.createTopic({ name: "배포 주제" });
+      await mem.registerSession({ sessionId: "s1" });
+      await mem.setSessionTopic("s1", t);
+      const run = () => runHook("user-prompt-submit.ts", dir, { session_id: "s1", prompt: "일회성 스크립트에도 테스트가 필요할까?" });
+      expect(ctxOf(await run())).toContain("현재 주제: 배포 주제");
+      // 24시간 비활성으로 만료: last_seen을 과거로 돌리고 ws:board가 만료 처리하게 한다
+      const db = new Database(join(docDirOf(dir), "memory.db"));
+      db.run(`UPDATE sessions SET last_seen = strftime('%Y-%m-%d %H:%M:%f','now','-25 hours') WHERE session_id = 's1'`);
+      db.close();
+      expect((await boardSessions(dir)).some((x) => x.session_id === "s1")).toBe(false);
+      expect(ctxOf(await run())).toContain("현재 주제 없음");
+      expect(ctxOf(await run())).not.toContain("현재 주제 없음");
     } finally {
       await mem.shutdown();
       await rmProject(dir);

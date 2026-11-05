@@ -192,7 +192,7 @@ function formatTopicList(topics) {
 function formatTopicBlock(t, changed = false) {
   const lines = [];
   if (changed)
-    lines.push("[nunchi] \uC8FC\uC81C\uAC00 \uBCC0\uACBD\uB428 (\uB300\uC2DC\uBCF4\uB4DC\xB7\uBA85\uB839)");
+    lines.push("[nunchi] \uC8FC\uC81C \uC815\uBCF4\uAC00 \uAC31\uC2E0\uB428");
   lines.push(`[nunchi] \uD604\uC7AC \uC8FC\uC81C: ${t.name}${t.description ? ` \u2014 ${t.description}` : ""}`);
   lines.push(t.folders.length ? `\uC791\uC5C5\uACF5\uAC04: ${t.folders.join(", ")} \u2014 \uC774 \uD3F4\uB354\uB4E4 \uC548\uC5D0\uC11C \uC791\uC5C5\uD55C\uB2E4` : "\uC791\uC5C5\uACF5\uAC04: (\uC9C0\uC815 \uC5C6\uC74C)");
   if (t.areas.length) {
@@ -315,6 +315,12 @@ if (!sid)
 try {
   const docDir = resolveDocDir(projectDir, loadConfig(projectDir));
   const state = readSessionState(docDir, sid);
+  const act = input.tool_input?.action;
+  if (state && input.agent_id && String(input.tool_name ?? "").endsWith("nunchi_topic") && (act === undefined || act === "set" || act === "clear")) {
+    writeDelivered(docDir, sid, input.agent_id, state.rev);
+    writeDelivered(docDir, sid, null, 0);
+    process.exit(0);
+  }
   if (state && state.rev !== readDelivered(docDir, sid, input.agent_id)) {
     const block = state.topic ? formatTopicBlock(state.topic, true) : TOPIC_CLEARED;
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: block.slice(0, 8000) } }));

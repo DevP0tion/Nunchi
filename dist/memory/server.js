@@ -17031,12 +17031,14 @@ function createTopicStore(db) {
       return q(`SELECT topic_id FROM topic_members WHERE memory_id = ?`, memoryId).map((r) => r.topic_id);
     },
     registerSession(p) {
+      const created = !session(p.sessionId);
       run(`INSERT INTO sessions (session_id, title, first_prompt, cwd, last_seen) VALUES (?, ?, ?, ?, ${NOW})
            ON CONFLICT(session_id) DO UPDATE SET
              title = COALESCE(excluded.title, title),
              first_prompt = CASE WHEN first_prompt = '' THEN excluded.first_prompt ELSE first_prompt END,
              cwd = COALESCE(excluded.cwd, cwd),
              last_seen = excluded.last_seen`, p.sessionId, p.title || null, p.prompt ?? "", p.cwd || null);
+      return created;
     },
     endSession(sessionId) {
       run(`DELETE FROM sessions WHERE session_id = ?`, sessionId);
@@ -17263,6 +17265,8 @@ function rebuildDerived(db) {
     for (const k of kw)
       restore.run(k.keywords, k.id);
     db.run(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`);
+    if (db.query(`SELECT 1 FROM sqlite_master WHERE name = 'topic_members'`).get())
+      db.run(`DELETE FROM topic_members WHERE memory_id NOT IN (SELECT id FROM memory)`);
     const max = db.query(`SELECT COALESCE(max(seq), 0) AS m FROM events`).get().m;
     db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('applied_seq', ?)`, [String(max)]);
   })();
@@ -18068,13 +18072,13 @@ if (import.meta.main) {
         return { confidence: topics.rate(Number(p.topicId), Number(p.memoryId), delta) };
       }, true);
       ws("ws:session:register", (p) => {
-        topics.registerSession({
+        const created = topics.registerSession({
           sessionId: sid(p.sessionId),
           title: p.title == null ? null : String(p.title),
           cwd: p.cwd == null ? null : String(p.cwd),
           prompt: p.prompt == null ? undefined : String(p.prompt)
         });
-        return {};
+        return { created };
       }, true);
       ws("ws:session:end", (p) => {
         const id = sid(p.sessionId);

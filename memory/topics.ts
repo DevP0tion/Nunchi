@@ -175,8 +175,9 @@ export function createTopicStore(db: Database) {
     topicsOf(memoryId: number): number[] {
       return q<{ topic_id: number }>(`SELECT topic_id FROM topic_members WHERE memory_id = ?`, memoryId).map((r) => r.topic_id);
     },
-    /** upsert + last_seen 갱신. title은 값이 올 때만, first_prompt는 비어 있을 때만 채운다 */
-    registerSession(p: { sessionId: string; title?: string | null; cwd?: string | null; prompt?: string }): void {
+    /** upsert + last_seen 갱신 — 행이 새로 생겼으면 true. title은 값이 올 때만, first_prompt는 비어 있을 때만 채운다 */
+    registerSession(p: { sessionId: string; title?: string | null; cwd?: string | null; prompt?: string }): boolean {
+      const created = !session(p.sessionId);
       run(`INSERT INTO sessions (session_id, title, first_prompt, cwd, last_seen) VALUES (?, ?, ?, ?, ${NOW})
            ON CONFLICT(session_id) DO UPDATE SET
              title = COALESCE(excluded.title, title),
@@ -184,6 +185,7 @@ export function createTopicStore(db: Database) {
              cwd = COALESCE(excluded.cwd, cwd),
              last_seen = excluded.last_seen`,
         p.sessionId, p.title || null, p.prompt ?? "", p.cwd || null);
+      return created;
     },
     endSession(sessionId: string): void {
       run(`DELETE FROM sessions WHERE session_id = ?`, sessionId);

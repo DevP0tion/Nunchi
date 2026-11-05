@@ -86,6 +86,18 @@ test("remove(기억): 소속 행 정리", () => {
   expect(topics.memberIds(t)).not.toContain(m);
 });
 
+test("rebuildDerived: replay가 지운 기억의 소속 행 정리", () => {
+  const { db, mem, topics } = setup();
+  const m = add(mem);
+  const keep = add(mem);
+  const t = topics.create({ name: "A" });
+  topics.link(t, [m, keep]);
+  // 저널에는 remove가 있는데 소속 행은 남은 드리프트 상태 (기억 행·소속 행 정리 없이 이벤트만 추가)
+  db.run(`INSERT INTO events (type, entry_id, payload, ts) VALUES ('remove', ?, '{}', datetime('now'))`, [m]);
+  rebuildDerived(db);
+  expect(topics.memberIds(t)).toEqual([keep]);
+});
+
 test("replay 후 소속·주제 신뢰도 보존", () => {
   const { db, mem, topics } = setup();
   const m = add(mem);

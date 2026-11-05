@@ -4305,7 +4305,7 @@ async function connectMemory(projectDir = process.env.CLAUDE_PROJECT_DIR || proc
     linkTopic: async (topicId, memoryIds) => (await ws("ws:topic:link", { topicId, memoryIds })).count,
     unlinkTopic: async (topicId, memoryIds) => (await ws("ws:topic:unlink", { topicId, memoryIds })).count,
     topicByName: async (name) => (await ws("ws:board")).topics.find((t) => t.name === name.trim()) ?? null,
-    registerSession: async (p) => void await ws("ws:session:register", p),
+    registerSession: async (p) => ({ created: Boolean((await ws("ws:session:register", p)).created) }),
     endSession: async (sessionId) => void await ws("ws:session:end", { sessionId }),
     setSessionTopic: async (sessionId, topicId) => {
       const { rev, topic } = await ws("ws:session:set", { sessionId, topicId });
@@ -4387,7 +4387,7 @@ function formatTopicList(topics) {
 function formatTopicBlock(t, changed = false) {
   const lines = [];
   if (changed)
-    lines.push("[nunchi] \uC8FC\uC81C\uAC00 \uBCC0\uACBD\uB428 (\uB300\uC2DC\uBCF4\uB4DC\xB7\uBA85\uB839)");
+    lines.push("[nunchi] \uC8FC\uC81C \uC815\uBCF4\uAC00 \uAC31\uC2E0\uB428");
   lines.push(`[nunchi] \uD604\uC7AC \uC8FC\uC81C: ${t.name}${t.description ? ` \u2014 ${t.description}` : ""}`);
   lines.push(t.folders.length ? `\uC791\uC5C5\uACF5\uAC04: ${t.folders.join(", ")} \u2014 \uC774 \uD3F4\uB354\uB4E4 \uC548\uC5D0\uC11C \uC791\uC5C5\uD55C\uB2E4` : "\uC791\uC5C5\uACF5\uAC04: (\uC9C0\uC815 \uC5C6\uC74C)");
   if (t.areas.length) {
@@ -4523,7 +4523,7 @@ try {
     const blocks = [];
     let topicId;
     if (sid) {
-      const [, st] = await Promise.allSettled([
+      const [reg, st] = await Promise.allSettled([
         mem.registerSession({ sessionId: sid, title: input.session_title, cwd: input.cwd, prompt: prompt || undefined }),
         mem.sessionState(sid)
       ]);
@@ -4532,7 +4532,8 @@ try {
         topicId = topic?.id;
         try {
           const docDir = resolveDocDir(projectDir, loadConfig(projectDir));
-          if (rev !== readDelivered(docDir, sid)) {
+          const revived = reg.status === "fulfilled" && reg.value.created && !topic;
+          if (rev !== readDelivered(docDir, sid) || revived) {
             blocks.push(topic ? formatTopicBlock(topic, true) : TOPIC_CLEARED);
             writeDelivered(docDir, sid, null, rev);
           }

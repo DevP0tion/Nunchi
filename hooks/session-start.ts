@@ -82,9 +82,9 @@ if (sid) {
   else if (input.source === "resume" || input.source === "compact") {
     try {
       if (topic) head.push(formatTopicBlock(topic));
-      // resume: SessionEnd가 정상 종료 시 세션을 지우므로 옛 transcript의 주제 블록은 무효다
-      else if (stateOk && input.source === "resume") head.push(TOPIC_CLEARED);
-      if (topic || (stateOk && input.source === "resume")) writeDelivered(docDir, sid, null, rev); // 첫 메시지 재주입 방지
+      // resume: SessionEnd가 정상 종료 시 세션을 지우므로 옛 transcript의 주제 블록은 무효다. compact: 요약에 옛 주제가 남을 수 있다
+      else if (stateOk) head.push(TOPIC_CLEARED);
+      if (topic || stateOk) writeDelivered(docDir, sid, null, rev); // 첫 메시지 재주입 방지
     } catch { /* 렌더링·기록 실패 — 첫 메시지 훅이 다시 알린다 */ }
   }
   // 주제 목록은 남는 예산에 들어가는 만큼만 (규약 줄은 formatTopicList가 항상 마지막에 붙인다)

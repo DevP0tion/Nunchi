@@ -36,7 +36,7 @@ try {
     if (sid) {
       // 동시 호출: 구버전 서버는 ws:*에 응답하지 않아 순차면 1.5초씩 쌓인다. 소켓은 emit 순서를 보존하고
       // 서버 ws 핸들러는 동기라 등록이 조회보다 먼저 반영된다. 등록 실패는 무시, 조회 실패는 주제 없음 취급
-      const [, st] = await Promise.allSettled([
+      const [reg, st] = await Promise.allSettled([
         mem.registerSession({ sessionId: sid, title: input.session_title, cwd: input.cwd, prompt: prompt || undefined }),
         mem.sessionState(sid),
       ]);
@@ -45,7 +45,10 @@ try {
         topicId = topic?.id;
         try {
           const docDir = resolveDocDir(projectDir, loadConfig(projectDir));
-          if (rev !== readDelivered(docDir, sid)) {
+          // 만료로 행이 사라졌다 되살아난 세션(created)은 rev·delivered가 0으로 초기화돼 변경 비교가 안 맞는다 —
+          // transcript에는 옛 주제 블록이 남아 있으므로 주제가 없으면 해제를 한 번 알린다
+          const revived = reg.status === "fulfilled" && reg.value.created && !topic;
+          if (rev !== readDelivered(docDir, sid) || revived) {
             blocks.push(topic ? formatTopicBlock(topic, true) : TOPIC_CLEARED);
             writeDelivered(docDir, sid, null, rev);
           }

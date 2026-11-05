@@ -320,6 +320,9 @@ export function rebuildDerived(db: Database): void {
     const restore = db.prepare(`UPDATE memory SET keywords = ? WHERE id = ?`);
     for (const k of kw) restore.run(k.keywords, k.id);
     db.run(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`);
+    // replay가 지운 기억의 소속 행 정리 — 저널 밖 테이블이라 replay가 건드리지 않는다. 첫 스키마 적용 중(applyMemorySchema)에는 아직 없을 수 있다
+    if (db.query(`SELECT 1 FROM sqlite_master WHERE name = 'topic_members'`).get())
+      db.run(`DELETE FROM topic_members WHERE memory_id NOT IN (SELECT id FROM memory)`);
     const max = (db.query(`SELECT COALESCE(max(seq), 0) AS m FROM events`).get() as { m: number }).m;
     db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('applied_seq', ?)`, [String(max)]);
   })();

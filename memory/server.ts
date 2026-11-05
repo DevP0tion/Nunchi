@@ -446,13 +446,13 @@ if (import.meta.main) {
       return { confidence: topics.rate(Number(p.topicId), Number(p.memoryId), delta) };
     }, true);
     ws("ws:session:register", (p) => {
-      topics.registerSession({
+      const created = topics.registerSession({
         sessionId: sid(p.sessionId),
         title: p.title == null ? null : String(p.title),
         cwd: p.cwd == null ? null : String(p.cwd),
         prompt: p.prompt == null ? undefined : String(p.prompt),
       });
-      return {};
+      return { created };
     }, true);
     ws("ws:session:end", (p) => {
       const id = sid(p.sessionId);
