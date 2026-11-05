@@ -10836,12 +10836,13 @@ async function connectMemory(projectDir = process.env.CLAUDE_PROJECT_DIR || proc
     }
   }
   const s = socket;
-  const req = async (ev, payload) => {
-    const res = payload === undefined ? await s.timeout(5000).emitWithAck(ev) : await s.timeout(5000).emitWithAck(ev, payload);
+  const req = async (ev, payload, ms = 5000) => {
+    const res = payload === undefined ? await s.timeout(ms).emitWithAck(ev) : await s.timeout(ms).emitWithAck(ev, payload);
     if (!res.ok)
       throw new Error(res.error);
     return res;
   };
+  const ws = (ev, payload) => req(ev, payload, 1500);
   return {
     doc: async () => (await req("mem:doc")).doc ?? null,
     add: async (e) => (await req("mem:add", e)).id,
@@ -10858,6 +10859,21 @@ async function connectMemory(projectDir = process.env.CLAUDE_PROJECT_DIR || proc
     list: async (opts = {}) => (await req("mem:list", opts)).rows,
     core: async () => (await req("mem:core")).rows,
     stamp: async () => (await req("mem:stamp")).stamp ?? null,
+    topics: async () => (await ws("ws:board")).topics,
+    createTopic: async (t) => (await ws("ws:topic:create", t)).id,
+    linkTopic: async (topicId, memoryIds) => (await ws("ws:topic:link", { topicId, memoryIds })).count,
+    unlinkTopic: async (topicId, memoryIds) => (await ws("ws:topic:unlink", { topicId, memoryIds })).count,
+    topicByName: async (name) => (await ws("ws:board")).topics.find((t) => t.name === name.trim()) ?? null,
+    registerSession: async (p) => void await ws("ws:session:register", p),
+    endSession: async (sessionId) => void await ws("ws:session:end", { sessionId }),
+    setSessionTopic: async (sessionId, topicId) => {
+      const { rev, topic } = await ws("ws:session:set", { sessionId, topicId });
+      return { rev, topic };
+    },
+    sessionState: async (sessionId) => {
+      const { rev, topic, memberIds } = await ws("ws:session", { sessionId });
+      return { rev, topic, memberIds };
+    },
     shutdown: async () => {
       const gone = new Promise((resolve) => {
         const t = setTimeout(resolve, 2000);
@@ -23509,6 +23525,146 @@ class StdioServerTransport {
 // mcp/server.ts
 init_client();
 init_config();
+
+// hooks/topic.ts
+init_config();
+import { isAbsolute as isAbsolute2, resolve as resolve2 } from "path";
+var CORE_HEADING = "[\uD655\uC815 \uADDC\uCE59 \u2014 '\uBC8C\uC8FC\uB294 \uAC83'\xB7'\uAD8C\uC7A5(\uBC29\uBC95)' \uC2E0\uB8B0\uB3C4 \uB192\uC74C(3+). \uD56D\uC0C1 \uC9C0\uD0A8\uB2E4]";
+var CORE_OUTSIDE_HEADING = "[\uD655\uC815 \uADDC\uCE59 \u2014 \uC8FC\uC81C \uBC16, \uC804\uBB38\uC740 nunchi_list(ids)\uB85C \uC870\uD68C. \uD56D\uC0C1 \uC9C0\uD0A8\uB2E4]";
+var TOPIC_LIST_MAX = 20;
+var TOPIC_CLEARED = "[nunchi] \uD604\uC7AC \uC8FC\uC81C \uC5C6\uC74C \u2014 \uC774\uC804\uC5D0 \uC8FC\uC785\uB41C \uC8FC\uC81C \uBE14\uB85D\uC740 \uBB34\uD6A8";
+function sessionIdLine(sid) {
+  return `[nunchi] \uC774 \uC138\uC158 id: ${sid} \u2014 nunchi_topic\xB7nunchi_record\xB7nunchi_update\xB7nunchi_search \uD638\uCD9C \uC2DC session_id\uB85C \uB118\uAE34\uB2E4`;
+}
+function formatTopicList(topics) {
+  const lines = [];
+  if (topics.length) {
+    lines.push("[nunchi] \uC8FC\uC81C \uBAA9\uB85D:");
+    for (const t of topics.slice(0, TOPIC_LIST_MAX))
+      lines.push(`- ${t.name} \u2014 ${t.description}`);
+  }
+  lines.push("[nunchi] \uC791\uC5C5\uC744 \uC2DC\uC791\uD560 \uB54C \uB9DE\uB294 \uC8FC\uC81C\uAC00 \uC788\uC73C\uBA74 nunchi_topic(set)\uC73C\uB85C \uC124\uC815\uD55C\uB2E4. \uC0AC\uC6A9\uC790\uAC00 \uC8FC\uC81C \uBCC0\uACBD\uC744 \uC694\uCCAD\uD558\uBA74(`/nunchi:topic`, \uC790\uC5F0\uC5B4) \uB530\uB978\uB2E4. \uC791\uC5C5\uACF5\uAC04 \uBC16 \uD30C\uC77C\uC744 \uACE0\uCCD0\uC57C \uD558\uBA74 \uC0AC\uC6A9\uC790\uC5D0\uAC8C \uC54C\uB9B0\uB2E4.");
+  return lines.join(`
+`);
+}
+function formatTopicBlock(t, changed = false) {
+  const lines = [];
+  if (changed)
+    lines.push("[nunchi] \uC8FC\uC81C\uAC00 \uBCC0\uACBD\uB428 (\uB300\uC2DC\uBCF4\uB4DC\xB7\uBA85\uB839)");
+  lines.push(`[nunchi] \uD604\uC7AC \uC8FC\uC81C: ${t.name}${t.description ? ` \u2014 ${t.description}` : ""}`);
+  lines.push(t.folders.length ? `\uC791\uC5C5\uACF5\uAC04: ${t.folders.join(", ")} \u2014 \uC774 \uD3F4\uB354\uB4E4 \uC548\uC5D0\uC11C \uC791\uC5C5\uD55C\uB2E4` : "\uC791\uC5C5\uACF5\uAC04: (\uC9C0\uC815 \uC5C6\uC74C)");
+  if (t.areas.length) {
+    lines.push("\uC8FC\uC81C \uD575\uC2EC \uC601\uC5ED(\uC8FC\uC81C \uC2E0\uB8B0\uB3C4 3+, \uC804\uBB38\uC740 nunchi_list(ids)\uB85C \uC870\uD68C):");
+    for (const a of t.areas)
+      lines.push(`- #${a.id} ${a.area}`);
+  }
+  return lines.join(`
+`);
+}
+function formatCoreBlock(core, memberIds) {
+  if (!core.length)
+    return "";
+  if (memberIds === null)
+    return `${CORE_HEADING}
+${formatMemoryEntries(core)}`;
+  const ids = new Set(memberIds);
+  const inside = core.filter((r) => ids.has(r.id));
+  const outside = core.filter((r) => !ids.has(r.id));
+  const blocks = [];
+  if (inside.length)
+    blocks.push(`${CORE_HEADING}
+${formatMemoryEntries(inside)}`);
+  if (outside.length)
+    blocks.push(`${CORE_OUTSIDE_HEADING}
+${outside.map((r) => `- #${r.id} \xB7 ${r.area}`).join(`
+`)}`);
+  return blocks.join(`
+
+`);
+}
+function norm(projectDir, p) {
+  const slashed = p.replace(/\\/g, "/");
+  const abs = isAbsolute2(slashed) ? resolve2(slashed) : resolve2(projectDir, slashed);
+  const out = abs.replace(/\\/g, "/");
+  return process.platform === "win32" ? out.toLowerCase() : out;
+}
+function inWorkspace(projectDir, folders, filePath) {
+  if (!folders.length)
+    return true;
+  const file = norm(projectDir, filePath);
+  return folders.some((f) => {
+    const folder = norm(projectDir, f);
+    return file === folder || file.startsWith(folder.endsWith("/") ? folder : `${folder}/`);
+  });
+}
+
+// memory/session-state.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, readdirSync, renameSync, rmSync, writeFileSync as writeFileSync2 } from "fs";
+import { dirname as dirname2, join as join4 } from "path";
+function sessionsDir(docDir) {
+  return join4(docDir, "sessions");
+}
+var SAFE_ID = /^[A-Za-z0-9_-]+$/;
+function deliveredName(sid, agentId) {
+  if (!SAFE_ID.test(sid))
+    return null;
+  if (!agentId)
+    return `${sid}.delivered`;
+  return SAFE_ID.test(agentId) ? `${sid}.${agentId}.delivered` : null;
+}
+function writeAtomic(path, data) {
+  mkdirSync2(dirname2(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync2(tmp, data);
+  renameSync(tmp, path);
+}
+function writeSessionState(docDir, sid, s) {
+  if (!SAFE_ID.test(sid))
+    return;
+  writeAtomic(join4(sessionsDir(docDir), `${sid}.json`), JSON.stringify(s));
+}
+function readSessionState(docDir, sid) {
+  if (!SAFE_ID.test(sid))
+    return null;
+  try {
+    const s = JSON.parse(readFileSync4(join4(sessionsDir(docDir), `${sid}.json`), "utf8"));
+    return s && typeof s.rev === "number" ? s : null;
+  } catch {
+    return null;
+  }
+}
+function readDelivered(docDir, sid, agentId) {
+  const name = deliveredName(sid, agentId);
+  if (!name)
+    return 0;
+  try {
+    const n = parseInt(readFileSync4(join4(sessionsDir(docDir), name), "utf8"), 10);
+    return Number.isNaN(n) ? 0 : n;
+  } catch {
+    return 0;
+  }
+}
+function writeDelivered(docDir, sid, agentId, rev) {
+  const name = deliveredName(sid, agentId);
+  if (name)
+    writeAtomic(join4(sessionsDir(docDir), name), String(rev));
+}
+function removeSessionFiles(docDir, sid) {
+  if (!SAFE_ID.test(sid))
+    return;
+  const dir = sessionsDir(docDir);
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const n of names)
+    if (n.startsWith(`${sid}.`))
+      rmSync(join4(dir, n), { force: true });
+}
+
+// mcp/server.ts
 var projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 var memP = null;
 async function mem() {
@@ -23528,6 +23684,7 @@ async function mem() {
   return memP;
 }
 var ok = (v) => ({ content: [{ type: "text", text: JSON.stringify(v) }] });
+var plain = (text) => ({ content: [{ type: "text", text }] });
 var fail = (e) => ({
   content: [{ type: "text", text: String(e) }],
   isError: true
@@ -23537,6 +23694,7 @@ var area = stringType().max(100).describe('"[\uC601\uC5ED: \uC9E7\uC740 \uC0C1\u
 var rule = stringType().max(500).describe("\uBB34\uC5C7\uC744 \uD55C\uB2E4 / \uC774 \uC218\uC900\uC73C\uB85C \uD55C\uB2E4 \u2014 500\uC790 \uC774\uB0B4");
 var kind = enumType(["level", "method"]).describe("section: recommend\uC77C \uB54C \uD544\uC218\uB85C \uACE0\uB978\uB2E4 \u2014 level=\uAC15\uB3C4 \uAD8C\uACE0(\uACFC\uC789\uC774\uC5C8\uC74C: \uC774 \uC0C1\uD669\uC5D0\uC120 \uC774 \uC218\uC900\uC73C\uB85C \uD55C\uB2E4), method=\uBC29\uBC95 \uAE30\uB85D(\uC608\uCE21\uBCF4\uB2E4 \uACB0\uACFC\uAC00 \uC88B\uC558\uB358 \uC811\uADFC\xB7\uC0AC\uC6A9\uC790\uAC00 \uC88B\uB2E4\uACE0 \uD55C \uBC29\uC2DD: \uC774\uB807\uAC8C \uD55C\uB2E4)");
 var evidence = stringType().max(200).describe("YYYY-MM-DD \uC2E4\uC81C\uB85C \uC788\uC5C8\uB358 \uC77C 1\uC904 \u2014 200\uC790 \uC774\uB0B4");
+var session_id = stringType().optional().describe("SessionStart\uAC00 \uC8FC\uC785\uD55C \uC774 \uC138\uC158 id \u2014 \uC8FC\uC81C \uC790\uB3D9 \uC18C\uC18D\xB7\uC8FC\uC81C \uC2E0\uB8B0\uB3C4\xB7\uC8FC\uC81C \uC6B0\uC120 \uAC80\uC0C9\uC5D0 \uC4F0\uC778\uB2E4");
 var server = new McpServer({ name: "nunchi", version: VERSION });
 server.registerTool("nunchi_record", {
   description: "\uC608\uCE21 \uC5B4\uAE0B\uB0A8(\uC608\uCE21-\uC2E4\uC81C \uBD88\uC77C\uCE58)\uC744 \uBCF4\uC815 DB\uC5D0 \uC2E0\uADDC \uAE30\uB85D\uD55C\uB2E4. \uACFC\uC789\uC774\uC5C8\uC74C\u2192recommend(kind: level), \uC608\uCE21\uBCF4\uB2E4 \uACB0\uACFC\uAC00 \uC88B\uC558\uC74C\xB7\uC0AC\uC6A9\uC790\uAC00 \uC88B\uB2E4\uACE0 \uD568\u2192recommend(kind: method), \uACFC\uC18C\uC600\uC74C\u2192punish, \uD658\uACBD \uD2B9\uC774\uC0AC\uD56D\u2192env. \uADFC\uAC70\uB294 \uBC18\uB4DC\uC2DC \uC2E4\uC81C \uC0AC\uAC74 1\uC904(YYYY-MM-DD \uD3EC\uD568) \u2014 \uC77C\uBC18\uB860 \uAE08\uC9C0. \uAC19\uC740 \uADDC\uCE59\uC774 \uC774\uBBF8 \uC788\uC73C\uBA74 \uB300\uC2E0 nunchi_update(confirm)\uB97C \uC4F8 \uAC83. \uC644\uACB0\uB41C \uC791\uC5C5\uC758 \uD50C\uB808\uC774\uBD81\uC740 section: task\uB85C \uAE30\uB85D\uD55C\uB2E4 \u2014 area='[\uC791\uC5C5\uC720\uD615: \uC0C1\uD669]', rule='\uC811\uADFC: \uC808\uCC28 / \uC8FC\uC758: \uD568\uC815', evidence='YYYY-MM-DD \uACB0\uACFC 1\uC904'. \uC720\uC0AC task \uD56D\uBAA9\uC774 \uC774\uBBF8 \uC788\uC73C\uBA74 record \uB300\uC2E0 nunchi_update(edit \uAD50\uC815 / confirm \uC7AC\uD655\uC778). \uD655\uC2E0\uC774 \uC5C6\uB294 \uC5B4\uAE0B\uB0A8 \uC758\uC2EC\uC740 section: observe\uB85C \uAD00\uCC30\uB9CC \uB0A8\uAE34\uB2E4(\uBD80\uB2F4 \uC5C6\uC74C, \uC790\uB3D9 \uD68C\uC218 \uC81C\uC678) \u2014 \uAD00\uB828 \uAE30\uC874 \uD56D\uBAA9\uC774 \uC788\uC73C\uBA74 parent\uB85C \uACC4\uBCF4\uB97C \uC5F0\uACB0\uD55C\uB2E4.",
@@ -23546,11 +23704,12 @@ server.registerTool("nunchi_record", {
     rule,
     evidence,
     kind: kind.optional(),
-    parent: numberType().int().optional().describe("observe \uAE30\uB85D \uC2DC \uAD00\uB828 \uAE30\uC874 \uD56D\uBAA9 id \u2014 \uC2B9\uACA9 \uACC4\uBCF4\uC758 canonical \uBD80\uBAA8 (\uC120\uD0DD)")
+    parent: numberType().int().optional().describe("observe \uAE30\uB85D \uC2DC \uAD00\uB828 \uAE30\uC874 \uD56D\uBAA9 id \u2014 \uC2B9\uACA9 \uACC4\uBCF4\uC758 canonical \uBD80\uBAA8 (\uC120\uD0DD)"),
+    session_id
   }
-}, async (a) => {
+}, async ({ session_id: sessionId, ...a }) => {
   try {
-    return ok({ id: await (await mem()).add(a) });
+    return ok({ id: await (await mem()).add({ ...a, sessionId }) });
   } catch (e) {
     return fail(e);
   }
@@ -23567,13 +23726,14 @@ server.registerTool("nunchi_update", {
     kind: kind.optional(),
     confidence: numberType().int().min(1).optional(),
     sources: arrayType(numberType().int()).optional().describe("promote \uC2DC \uCD94\uAC00 \uADFC\uAC70 \uAD00\uCC30 id\uB4E4"),
-    refs: arrayType(numberType().int()).optional().describe("link \uC2DC \uCC38\uC870 \uD56D\uBAA9 id\uB4E4")
+    refs: arrayType(numberType().int()).optional().describe("link \uC2DC \uCC38\uC870 \uD56D\uBAA9 id\uB4E4"),
+    session_id
   }
-}, async ({ id, action, sources, refs, ...f }) => {
+}, async ({ id, action, sources, refs, session_id: sessionId, ...f }) => {
   try {
     const m = await mem();
     if (action === "confirm")
-      return ok({ updated: await m.update(id, { confirm: true }) });
+      return ok({ updated: await m.update(id, { confirm: true, sessionId }) });
     if (action === "remove")
       return ok({ removed: await m.remove(id) });
     if (action === "promote") {
@@ -23610,11 +23770,12 @@ server.registerTool("nunchi_search", {
   inputSchema: {
     queries: arrayType(stringType()).min(1).describe("\uD655\uC7A5 \uCFFC\uB9AC 2-5\uAC1C \uAD8C\uC7A5"),
     section: section.optional(),
-    limit: numberType().int().min(1).max(20).optional().describe("\uAE30\uBCF8 3")
+    limit: numberType().int().min(1).max(20).optional().describe("\uAE30\uBCF8 3"),
+    session_id
   }
-}, async ({ queries, section: sec, limit }) => {
+}, async ({ queries, section: sec, limit, session_id: sessionId }) => {
   try {
-    return ok({ rows: await (await mem()).search(queries, { sections: sec ? [sec] : undefined, limit }) });
+    return ok({ rows: await (await mem()).search(queries, { sections: sec ? [sec] : undefined, limit, sessionId }) });
   } catch (e) {
     return fail(e);
   }
@@ -23624,7 +23785,8 @@ server.registerTool("nunchi_list", {
   inputSchema: {
     section: section.optional(),
     minConfidence: numberType().int().min(1).optional(),
-    tree: numberType().int().optional().describe("\uC9C0\uC815 \uC2DC \uD574\uB2F9 \uD56D\uBAA9\uC758 \uAD00\uACC4 \uD2B8\uB9AC(entry/parent/sources/promotedTo/domain/siblings/refs)\uB9CC \uBC18\uD658")
+    tree: numberType().int().optional().describe("\uC9C0\uC815 \uC2DC \uD574\uB2F9 \uD56D\uBAA9\uC758 \uAD00\uACC4 \uD2B8\uB9AC(entry/parent/sources/promotedTo/domain/siblings/refs)\uB9CC \uBC18\uD658"),
+    ids: arrayType(numberType().int()).optional().describe("\uC9C0\uC815 \uC2DC \uC774 id\uB4E4\uC758 \uD56D\uBAA9 \uC804\uBB38\uB9CC \uBC18\uD658 (\uC8FC\uC785\uB41C `#id \xB7 area` \uC904\uC758 \uC804\uBB38 \uC870\uD68C\uC6A9)")
   }
 }, async ({ tree, ...opts }) => {
   try {
@@ -23632,6 +23794,67 @@ server.registerTool("nunchi_list", {
     if (tree !== undefined)
       return ok({ tree: await m.tree(tree) });
     return ok({ rows: await m.list(opts) });
+  } catch (e) {
+    return fail(e);
+  }
+});
+server.registerTool("nunchi_topic", {
+  description: "\uC8FC\uC81C(\uC791\uC5C5\uACF5\uAC04) \uC870\uD68C\xB7\uC124\uC815. list=\uC8FC\uC81C \uBAA9\uB85D, set=\uC774 \uC138\uC158\uC758 \uC8FC\uC81C \uC124\uC815(session_id \uD544\uC218, name \uB610\uB294 topic_id), clear=\uC138\uC158 \uC8FC\uC81C \uD574\uC81C(session_id \uD544\uC218), create=\uC8FC\uC81C \uC0DD\uC131(\uC0AC\uC6A9\uC790\uAC00 \uC694\uCCAD\uD588\uC744 \uB54C\uB9CC \uB9CC\uB4E0\uB2E4), link/unlink=\uAE30\uC5B5(memory_ids)\uC744 \uC8FC\uC81C\uC5D0 \uC18C\uC18D/\uD574\uC81C(\uC8FC\uC81C \uBBF8\uC9C0\uC815 \uC2DC session_id\uC758 \uD604\uC7AC \uC8FC\uC81C). \uC8FC\uC81C \uC0AD\uC81C\xB7\uC218\uC815\uC740 \uB300\uC2DC\uBCF4\uB4DC\uC5D0\uC11C\uB9CC \uAC00\uB2A5\uD558\uB2E4.",
+  inputSchema: {
+    action: enumType(["list", "set", "clear", "create", "link", "unlink"]),
+    session_id: stringType().optional().describe("set\xB7clear \uD544\uC218. link\xB7unlink\uC5D0\uC11C \uC8FC\uC81C \uBBF8\uC9C0\uC815 \uC2DC \uC774 \uC138\uC158\uC758 \uC8FC\uC81C\uB97C \uC4F4\uB2E4"),
+    name: stringType().max(60).optional().describe("set\xB7create\xB7link\xB7unlink\uC758 \uC8FC\uC81C \uC774\uB984"),
+    topic_id: numberType().int().optional(),
+    description: stringType().max(200).optional().describe("create \uC2DC \uC8FC\uC81C \uC124\uBA85"),
+    folders: arrayType(stringType()).optional().describe("create \uC2DC \uC791\uC5C5\uACF5\uAC04 \uD3F4\uB354\uB4E4"),
+    memory_ids: arrayType(numberType().int()).optional().describe("link\xB7unlink \uB300\uC0C1 \uAE30\uC5B5 id\uB4E4")
+  }
+}, async ({ action, session_id: sessionId, name, topic_id: topicId, description, folders, memory_ids: memoryIds }) => {
+  try {
+    const m = await mem();
+    if (action === "list")
+      return ok({
+        topics: (await m.topics()).map((t) => ({
+          id: t.id,
+          name: t.name,
+          description: t.description,
+          folders: t.folders,
+          memberCount: t.memberCount
+        }))
+      });
+    if (action === "create") {
+      if (!name)
+        return fail("create\uC5D0\uB294 name\uC774 \uD544\uC694\uD558\uB2E4");
+      return ok({ id: await m.createTopic({ name, description, folders }) });
+    }
+    const find = async () => {
+      if (topicId !== undefined)
+        return (await m.topics()).find((t) => t.id === topicId) ?? null;
+      if (name)
+        return m.topicByName(name);
+      if (sessionId && (action === "link" || action === "unlink"))
+        return (await m.sessionState(sessionId)).topic;
+      return null;
+    };
+    const label = String(topicId ?? name ?? sessionId ?? "(\uC9C0\uC815 \uC548 \uB428)");
+    if (action === "set" || action === "clear") {
+      if (!sessionId)
+        return fail(`${action}\uC5D0\uB294 session_id\uAC00 \uD544\uC694\uD558\uB2E4`);
+      const t = action === "set" ? await find() : null;
+      if (action === "set" && !t)
+        return fail(`\uC8FC\uC81C \uC5C6\uC74C: ${label}`);
+      const st = await m.setSessionTopic(sessionId, t ? t.id : null);
+      try {
+        writeDelivered(resolveDocDir(projectDir, loadConfig(projectDir)), sessionId, null, st.rev);
+      } catch {}
+      return plain(st.topic ? formatTopicBlock(st.topic) : TOPIC_CLEARED);
+    }
+    if (!memoryIds?.length)
+      return fail(`${action}\uC5D0\uB294 memory_ids\uAC00 \uD544\uC694\uD558\uB2E4`);
+    const t = await find();
+    if (!t)
+      return fail(`\uC8FC\uC81C \uC5C6\uC74C: ${label}`);
+    return ok({ count: await (action === "link" ? m.linkTopic(t.id, memoryIds) : m.unlinkTopic(t.id, memoryIds)) });
   } catch (e) {
     return fail(e);
   }

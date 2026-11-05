@@ -101,7 +101,7 @@ test(
         const version = JSON.parse(readFileSync(join(ROOT, ".claude-plugin/plugin.json"), "utf8")).version;
         expect(msgs.find((m) => m.id === 1).result.serverInfo.version).toBe(version);
         expect(msgs.find((m) => m.id === 2).result.tools.map((t: { name: string }) => t.name).sort()).toEqual(
-          ["nunchi_list", "nunchi_record", "nunchi_search", "nunchi_update"]
+          ["nunchi_list", "nunchi_record", "nunchi_search", "nunchi_topic", "nunchi_update"]
         );
       } finally {
         await mem.shutdown();
