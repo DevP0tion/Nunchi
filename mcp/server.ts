@@ -6,7 +6,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { connectMemory, type MemoryClient } from "../memory/client.ts";
-import { VERSION } from "../hooks/config.ts";
+import { VERSION, loadConfig, resolveDocDir } from "../hooks/config.ts";
+import { TOPIC_CLEARED, formatTopicBlock } from "../hooks/topic.ts";
+import { writeDelivered } from "../memory/session-state.ts";
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -33,6 +35,7 @@ async function mem(): Promise<MemoryClient> {
 }
 
 const ok = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
+const plain = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const fail = (e: unknown) => ({
   content: [{ type: "text" as const, text: String(e) }],
   isError: true as const,
@@ -50,6 +53,11 @@ const kind = z
   .describe("section: recommend일 때 필수로 고른다 — level=강도 권고(과잉이었음: 이 상황에선 이 수준으로 한다), method=방법 기록(예측보다 결과가 좋았던 접근·사용자가 좋다고 한 방식: 이렇게 한다)");
 const evidence = z.string().max(200).describe("YYYY-MM-DD 실제로 있었던 일 1줄 — 200자 이내");
 
+const session_id = z
+  .string()
+  .optional()
+  .describe("SessionStart가 주입한 이 세션 id — 주제 자동 소속·주제 신뢰도·주제 우선 검색에 쓰인다");
+
 const server = new McpServer({ name: "nunchi", version: VERSION });
 
 server.registerTool(
@@ -65,11 +73,12 @@ server.registerTool(
       kind: kind.optional(),
       parent: z.number().int().optional()
         .describe("observe 기록 시 관련 기존 항목 id — 승격 계보의 canonical 부모 (선택)"),
+      session_id,
     },
   },
-  async (a) => {
+  async ({ session_id: sessionId, ...a }) => {
     try {
-      return ok({ id: await (await mem()).add(a) });
+      return ok({ id: await (await mem()).add({ ...a, sessionId }) });
     } catch (e) {
       return fail(e);
     }
@@ -92,12 +101,13 @@ server.registerTool(
       confidence: z.number().int().min(1).optional(),
       sources: z.array(z.number().int()).optional().describe("promote 시 추가 근거 관찰 id들"),
       refs: z.array(z.number().int()).optional().describe("link 시 참조 항목 id들"),
+      session_id,
     },
   },
-  async ({ id, action, sources, refs, ...f }) => {
+  async ({ id, action, sources, refs, session_id: sessionId, ...f }) => {
     try {
       const m = await mem();
-      if (action === "confirm") return ok({ updated: await m.update(id, { confirm: true }) });
+      if (action === "confirm") return ok({ updated: await m.update(id, { confirm: true, sessionId }) });
       if (action === "remove") return ok({ removed: await m.remove(id) });
       if (action === "promote") {
         if (!f.section || !f.area || !f.rule || !f.evidence)
@@ -134,12 +144,13 @@ server.registerTool(
       queries: z.array(z.string()).min(1).describe("확장 쿼리 2-5개 권장"),
       section: section.optional(),
       limit: z.number().int().min(1).max(20).optional().describe("기본 3"),
+      session_id,
     },
   },
-  async ({ queries, section: sec, limit }) => {
+  async ({ queries, section: sec, limit, session_id: sessionId }) => {
     try {
       // 단수 section → sections 배열 매핑 (client.search는 sections만 받는다)
-      return ok({ rows: await (await mem()).search(queries, { sections: sec ? [sec] : undefined, limit }) });
+      return ok({ rows: await (await mem()).search(queries, { sections: sec ? [sec] : undefined, limit, sessionId }) });
     } catch (e) {
       return fail(e);
     }
@@ -156,6 +167,7 @@ server.registerTool(
       minConfidence: z.number().int().min(1).optional(),
       tree: z.number().int().optional()
         .describe("지정 시 해당 항목의 관계 트리(entry/parent/sources/promotedTo/domain/siblings/refs)만 반환"),
+      ids: z.array(z.number().int()).optional().describe("지정 시 이 id들의 항목 전문만 반환 (주입된 `#id · area` 줄의 전문 조회용)"),
     },
   },
   async ({ tree, ...opts }) => {
@@ -163,6 +175,61 @@ server.registerTool(
       const m = await mem();
       if (tree !== undefined) return ok({ tree: await m.tree(tree) });
       return ok({ rows: await m.list(opts) });
+    } catch (e) {
+      return fail(e);
+    }
+  }
+);
+
+server.registerTool(
+  "nunchi_topic",
+  {
+    description:
+      "주제(작업공간) 조회·설정. list=주제 목록, set=이 세션의 주제 설정(session_id 필수, name 또는 topic_id), clear=세션 주제 해제(session_id 필수), create=주제 생성(사용자가 요청했을 때만 만든다), link/unlink=기억(memory_ids)을 주제에 소속/해제(주제 미지정 시 session_id의 현재 주제). 주제 삭제·수정은 대시보드에서만 가능하다.",
+    inputSchema: {
+      action: z.enum(["list", "set", "clear", "create", "link", "unlink"]),
+      session_id: z.string().optional().describe("set·clear 필수. link·unlink에서 주제 미지정 시 이 세션의 주제를 쓴다"),
+      name: z.string().max(60).optional().describe("set·create·link·unlink의 주제 이름"),
+      topic_id: z.number().int().optional(),
+      description: z.string().max(200).optional().describe("create 시 주제 설명"),
+      folders: z.array(z.string()).optional().describe("create 시 작업공간 폴더들"),
+      memory_ids: z.array(z.number().int()).optional().describe("link·unlink 대상 기억 id들"),
+    },
+  },
+  async ({ action, session_id: sessionId, name, topic_id: topicId, description, folders, memory_ids: memoryIds }) => {
+    try {
+      const m = await mem();
+      if (action === "list")
+        return ok({
+          topics: (await m.topics()).map((t) => ({
+            id: t.id, name: t.name, description: t.description, folders: t.folders, memberCount: t.memberCount,
+          })),
+        });
+      if (action === "create") {
+        if (!name) return fail("create에는 name이 필요하다");
+        return ok({ id: await m.createTopic({ name, description, folders }) });
+      }
+      // 주제 지정: topic_id → name → (link·unlink만) 세션의 현재 주제
+      const find = async (): Promise<{ id: number } | null> => {
+        if (topicId !== undefined) return (await m.topics()).find((t) => t.id === topicId) ?? null;
+        if (name) return m.topicByName(name);
+        if (sessionId && (action === "link" || action === "unlink")) return (await m.sessionState(sessionId)).topic;
+        return null;
+      };
+      const label = String(topicId ?? name ?? sessionId ?? "(지정 안 됨)");
+      if (action === "set" || action === "clear") {
+        if (!sessionId) return fail(`${action}에는 session_id가 필요하다`);
+        const t = action === "set" ? await find() : null;
+        if (action === "set" && !t) return fail(`주제 없음: ${label}`);
+        const st = await m.setSessionTopic(sessionId, t ? t.id : null);
+        // 전달한 rev를 기록 — 실패해도 훅이 한 번 더 주입할 뿐이라 도구 호출은 성공시킨다
+        try { writeDelivered(resolveDocDir(projectDir, loadConfig(projectDir)), sessionId, null, st.rev); } catch { /* 중복 주입만 발생 */ }
+        return plain(st.topic ? formatTopicBlock(st.topic) : TOPIC_CLEARED);
+      }
+      if (!memoryIds?.length) return fail(`${action}에는 memory_ids가 필요하다`);
+      const t = await find();
+      if (!t) return fail(`주제 없음: ${label}`);
+      return ok({ count: await (action === "link" ? m.linkTopic(t.id, memoryIds) : m.unlinkTopic(t.id, memoryIds)) });
     } catch (e) {
       return fail(e);
     }

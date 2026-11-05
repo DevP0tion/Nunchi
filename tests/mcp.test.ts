@@ -5,7 +5,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadConfig, resolveDocDir } from "../hooks/config.ts";
 import { assignFreePort, connectMemory } from "../memory/client.ts";
+import { readDelivered } from "../memory/session-state.ts";
 import { rmProject } from "./helpers.ts";
 
 const SERVER = fileURLToPath(new URL("../mcp/server.ts", import.meta.url));
@@ -189,6 +191,97 @@ test(
 );
 
 test(
+  "MCP nunchi_topic: create → set 결과에 주제 블록, delivered 기록, list ids 조회",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-mcp5-"));
+    await assignFreePort(dir);
+    const proc = Bun.spawn(["bun", SERVER], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
+      stdin: "pipe", stdout: "pipe", stderr: "ignore",
+    });
+    const reader = proc.stdout.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    const responses = new Map<number, { result?: { isError?: boolean; content: { text: string }[] } }>();
+    const pump = (async () => {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value);
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          try { const msg = JSON.parse(line); if (msg.id != null) responses.set(msg.id, msg); } catch { /* 불완전 */ }
+        }
+      }
+    })().catch(() => {});
+    const send = (msg: object) => proc.stdin.write(JSON.stringify(msg) + "\n");
+    const waitFor = async (id: number) => {
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline) {
+        const r = responses.get(id);
+        if (r) return r;
+        await new Promise((res) => setTimeout(res, 20));
+      }
+      throw new Error(`timeout waiting for id ${id}`);
+    };
+    let n = 1;
+    const call = async (name: string, args: object) => {
+      const id = ++n;
+      send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+      await proc.stdin.flush();
+      return waitFor(id);
+    };
+    const text = (r: { result?: { content: { text: string }[] } }) => r.result!.content[0].text;
+    try {
+      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+        protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" },
+      }});
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      await proc.stdin.flush();
+      await waitFor(1);
+      const cr = await call("nunchi_topic", { action: "create", name: "UI", description: "화면 작업", folders: ["src/"] });
+      expect(cr.result?.isError).toBeFalsy();
+      const topicId = JSON.parse(text(cr)).id as number;
+      const rec = await call("nunchi_record", {
+        section: "env", area: "[UI: 렌더링]", rule: "컴포넌트는 순수하게", evidence: "2026-11-06 확인",
+      });
+      const memId = JSON.parse(text(rec)).id as number;
+      const lk = await call("nunchi_topic", { action: "link", name: "UI", memory_ids: [memId] });
+      expect(JSON.parse(text(lk)).count).toBe(1);
+      const ls = await call("nunchi_topic", { action: "list" });
+      expect(JSON.parse(text(ls)).topics[0]).toMatchObject({ id: topicId, name: "UI", memberCount: 1 });
+      const set = await call("nunchi_topic", { action: "set", session_id: "s1", name: "UI" });
+      expect(set.result?.isError).toBeFalsy();
+      expect(text(set)).toContain("현재 주제: UI");
+      expect(text(set)).toContain("src/");
+      expect(readDelivered(resolveDocDir(dir, loadConfig(dir)), "s1")).toBeGreaterThanOrEqual(1);
+      // 세션 주제로 link 대상 해석 (topic_id·name 생략)
+      const ulk = await call("nunchi_topic", { action: "unlink", session_id: "s1", memory_ids: [memId] });
+      expect(JSON.parse(text(ulk)).count).toBe(1);
+      const lst = await call("nunchi_list", { ids: [memId] });
+      expect(JSON.parse(text(lst)).rows.length).toBe(1);
+      // 없는 이름·세션 id 누락은 isError
+      const miss = await call("nunchi_topic", { action: "set", session_id: "s1", name: "없는주제" });
+      expect(miss.result?.isError).toBe(true);
+      expect(text(miss)).toContain("주제 없음");
+      expect((await call("nunchi_topic", { action: "set", name: "UI" })).result?.isError).toBe(true);
+      // clear → TOPIC_CLEARED
+      const clr = await call("nunchi_topic", { action: "clear", session_id: "s1" });
+      expect(text(clr)).toContain("현재 주제 없음");
+      send({ jsonrpc: "2.0", id: 99, method: "tools/list" });
+      await proc.stdin.flush();
+      expect(JSON.stringify(await waitFor(99))).toContain('"nunchi_topic"');
+    } finally {
+      proc.kill();
+      await pump;
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
   // 이슈 #1 회귀: memory server 재시작 후 죽은 캐시 소켓을 영구 재사용하던 문제.
   // 구코드는 재호출이 영구 timeout, 신규 코드는 connected 확인 → 재연결/재스폰으로 복구.
   "MCP: memory server 종료 후에도 도구 호출이 재연결로 복구된다",
@@ -260,7 +353,7 @@ test(
 );
 
 test(
-  "MCP: initialize → tools/list에 도구 4종",
+  "MCP: initialize → tools/list에 도구 5종",
   async () => {
     const dir = mkdtempSync(join(tmpdir(), "nunchi-mcp-"));
     const proc = Bun.spawn(["bun", SERVER], {
@@ -293,7 +386,7 @@ test(
       }
     }
     proc.kill();
-    expect(names.sort()).toEqual(["nunchi_list", "nunchi_record", "nunchi_search", "nunchi_update"]);
+    expect(names.sort()).toEqual(["nunchi_list", "nunchi_record", "nunchi_search", "nunchi_topic", "nunchi_update"]);
     rmSync(dir, { recursive: true, force: true });
   },
   20000
