@@ -184,3 +184,37 @@ test("ws:changed broadcast / 잘못된 sessionId 거부", async () => {
     expect((await raw.call("ws:board")).ok).toBe(true);
   });
 }, 30000);
+
+test("mem:update confirm: 잘못된 sessionId는 confirm 적용 전에 거부 (반쯤 적용 금지)", async () => {
+  await withServer(async ({ mem, raw }) => {
+    const m = await mem.add(env("규칙"));
+    const bad = await raw.call("mem:update", { id: m, confirm: true, sessionId: "../x" });
+    expect(bad.ok).toBe(false);
+    expect((await mem.list({ ids: [m] }))[0]!.confidence).toBe(1);
+  });
+}, 30000);
+
+test("ws:topic:create/update: null·undefined 필드는 문자열 \"null\"이 되지 않는다", async () => {
+  await withServer(async ({ raw }) => {
+    const { id } = await raw.call("ws:topic:create", { name: "A", description: null });
+    const t = (await raw.call("ws:board")).topics.find((x: any) => x.id === id);
+    expect(t.description).toBe("");
+    expect((await raw.call("ws:topic:update", { id, name: null, description: "설명" })).updated).toBe(true);
+    const u = (await raw.call("ws:board")).topics.find((x: any) => x.id === id);
+    expect(u).toMatchObject({ name: "A", description: "설명" });
+  });
+}, 30000);
+
+test("ws:topic:rate: 1·-1 외의 delta는 거부", async () => {
+  await withServer(async ({ mem, raw }) => {
+    const m = await mem.add(env("규칙"));
+    const t = await mem.createTopic({ name: "A" });
+    await mem.linkTopic(t, [m]);
+    for (const delta of [0, 2, "x", undefined]) {
+      const r = await raw.call("ws:topic:rate", { topicId: t, memoryId: m, delta });
+      expect(r.ok).toBe(false);
+    }
+    expect((await raw.call("ws:topic:rate", { topicId: t, memoryId: m, delta: 1 })).confidence).toBe(2);
+    expect((await raw.call("ws:topic:rate", { topicId: t, memoryId: m, delta: -1 })).confidence).toBe(1);
+  });
+}, 30000);

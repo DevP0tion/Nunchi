@@ -231,6 +231,7 @@ if (import.meta.main) {
     }
   };
   /** 세션별로 렌더링한 주제 상태가 파일과 다르면 rev를 올리고 파일을 다시 쓴다 — 훅은 rev만 비교한다 */
+  // shortcut: 변경마다 모든 세션 상태를 다시 계산, 세션이 수십 개를 넘으면 영향받은 세션만 동기화
   function syncSessionStates(): void {
     for (const row of topics.sessions()) {
       try {
@@ -324,8 +325,9 @@ if (import.meta.main) {
       handle(`mem:update #${p.id}${p.confirm ? " confirm" : p.reverse ? " reverse" : Array.isArray(p.link) ? " link" : ""}`, () => {
         const id = Number(p.id);
         if (p.confirm) {
+          const session = p.sessionId ? sid(p.sessionId) : null; // confirm 전에 검증 — 잘못된 id가 반쯤 적용된 상태를 남기지 않게
           const updated = store.confirm(id);
-          if (updated && p.sessionId) topics.confirmInTopic(sid(p.sessionId), id);
+          if (updated && session) topics.confirmInTopic(session, id);
           changed();
           return { updated };
         }
@@ -406,7 +408,7 @@ if (import.meta.main) {
         })(ack);
       });
     const strs = (v: unknown) => (Array.isArray(v) ? v.map(String) : undefined);
-    const opt = (v: unknown) => (v === undefined ? undefined : String(v));
+    const opt = (v: unknown) => (v == null ? undefined : String(v));
     const nums = (v: unknown) => (Array.isArray(v) ? v.map(Number) : []);
     const stateOf = (id: string): SessionStateFile & { memberIds: number[] } => {
       const row = topics.session(id);
@@ -438,9 +440,11 @@ if (import.meta.main) {
     }, true);
     ws("ws:topic:link", (p) => ({ count: topics.link(Number(p.topicId), nums(p.memoryIds)) }), true);
     ws("ws:topic:unlink", (p) => ({ count: topics.unlink(Number(p.topicId), nums(p.memoryIds)) }), true);
-    ws("ws:topic:rate", (p) => ({
-      confidence: topics.rate(Number(p.topicId), Number(p.memoryId), Number(p.delta) < 0 ? -1 : 1),
-    }), true);
+    ws("ws:topic:rate", (p) => {
+      const delta = Number(p.delta);
+      if (delta !== 1 && delta !== -1) throw new Error(`잘못된 delta: ${p.delta} (1 또는 -1)`);
+      return { confidence: topics.rate(Number(p.topicId), Number(p.memoryId), delta) };
+    }, true);
     ws("ws:session:register", (p) => {
       topics.registerSession({
         sessionId: sid(p.sessionId),
