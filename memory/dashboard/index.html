@@ -16,6 +16,13 @@
     </span>
   </header>
 
+  <!-- 탭 — 선택은 localStorage "nunchi.tab"에 기억. ←/→/Home/End로 전환 -->
+  <div class="tabs" role="tablist" aria-label="화면">
+    <button role="tab" id="tabbtn-memory" aria-controls="tab-memory" aria-selected="true">Memory</button>
+    <button role="tab" id="tabbtn-workspace" aria-controls="tab-workspace" aria-selected="false" tabindex="-1">WorkSpace</button>
+  </div>
+
+  <section id="tab-memory" role="tabpanel" aria-labelledby="tabbtn-memory">
   <!-- 통계 타일 — punish/recommend/env 타일은 클릭 = 섹션 필터 토글 -->
   <section class="stats" aria-label="섹션별 현황">
     <button class="tile" data-sec="punish" aria-pressed="false">
@@ -116,6 +123,36 @@
       <tbody id="rows"></tbody>
     </table>
   </div>
+  </section>
+
+  <!-- WorkSpace — 주제 카드 격자 + 미리보기 패널. 칩 드래그(또는 Enter/Space → 선택 목록)로 세션의 주제 변경 -->
+  <section id="tab-workspace" role="tabpanel" aria-labelledby="tabbtn-workspace" hidden>
+    <div class="ws-bar">
+      <p class="ws-hint">에이전트 칩을 다른 카드로 끌어 놓거나, 칩에서 Enter로 주제를 옮깁니다.</p>
+      <button id="btn-topic-new" class="primary">+ 새 주제</button>
+    </div>
+    <div class="ws-wrap">
+      <div id="board" class="board"></div>
+      <aside id="preview" class="panel" aria-live="polite" aria-label="주제 미리보기" hidden></aside>
+    </div>
+  </section>
+
+  <dialog id="topic-dialog" aria-labelledby="td-title">
+    <form id="topic-form">
+      <h2 id="td-title">새 주제</h2>
+      <input type="hidden" id="td-id">
+      <label>이름 <input id="td-name" required autocomplete="off"></label>
+      <label>설명 <input id="td-desc" autocomplete="off"></label>
+      <label><span>작업공간 폴더 · 한 줄에 하나</span>
+        <textarea id="td-folders" rows="4" spellcheck="false" placeholder="memory/dashboard/"></textarea>
+      </label>
+      <p id="td-error" class="form-error" role="alert" hidden></p>
+      <div class="editor-actions">
+        <button type="submit" class="primary">저장</button>
+        <button type="button" id="td-cancel">취소</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="/socket.io.min.js"></script>
   <script>
@@ -327,6 +364,232 @@
       conn.dataset.state = "off";
       $("info").textContent = "연결 끊김 — 재접속 중…";
     });
+
+    // ── 탭 ─────────────────────────────────────────────────
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    function setTab(btn, focus) {
+      for (const t of tabs) {
+        const on = t === btn;
+        t.setAttribute("aria-selected", String(on));
+        t.tabIndex = on ? 0 : -1;
+        $(t.getAttribute("aria-controls")).hidden = !on;
+      }
+      if (focus) btn.focus();
+      try { localStorage.setItem("nunchi.tab", btn.id.slice(7)); } catch {}
+    }
+    tabs.forEach((t) => (t.onclick = () => setTab(t)));
+    document.querySelector('[role="tablist"]').addEventListener("keydown", (e) => {
+      const i = tabs.indexOf(document.activeElement);
+      const next = { ArrowRight: i + 1, ArrowLeft: i - 1 + tabs.length, Home: 0, End: tabs.length - 1 }[e.key];
+      if (i < 0 || next === undefined) return;
+      e.preventDefault();
+      setTab(tabs[next % tabs.length], true);
+    });
+    try { const saved = $("tabbtn-" + localStorage.getItem("nunchi.tab")); if (saved) setTab(saved); } catch {}
+
+    // ── WorkSpace: 보드 · 미리보기 · 주제 폼 ─────────────────
+    let board = { topics: [], sessions: [] }; // 마지막 ws:board 응답
+    let openTid = null; // 미리보기 패널에 열린 주제 id
+    let preview = null; // 마지막 ws:topic 응답 — 편집·삭제가 사용
+    const shown = {}; // 요소 id → 마지막으로 넣은 HTML. 같으면 다시 그리지 않는다 (aria-live 중복 낭독·열린 이동 폼 보존)
+    /** 내용이 바뀐 경우에만 다시 그리고, 포커스는 data-key가 같은 새 요소로 되돌린다 */
+    function paint(el, html) {
+      if (shown[el.id] === html) return;
+      const key = document.activeElement?.dataset?.key;
+      el.innerHTML = shown[el.id] = html;
+      if (key) document.querySelector(`[data-key="${CSS.escape(key)}"]`)?.focus();
+    }
+
+    function chipHtml(s) {
+      return `<button class="agent" draggable="true" data-sid="${esc(s.session_id)}" data-key="s:${esc(s.session_id)}"
+        title="마지막 활동 ${esc(shortDate(s.last_seen))} — 끌어 옮기거나 Enter로 주제 이동"><span class="grip" aria-hidden="true">⠿</span>${esc(s.label)}</button>`;
+    }
+    function renderBoard() {
+      const ids = new Set(board.topics.map((t) => t.id));
+      const of = (tid) => board.sessions.filter((s) => (ids.has(s.topic_id) ? s.topic_id : null) === tid);
+      const cards = board.topics.map((t) => `
+        <div class="tcard${t.id === openTid ? " sel" : ""}" data-tid="${t.id}">
+          <h3><button class="tcard-open" data-key="t:${t.id}" aria-controls="preview" aria-expanded="${t.id === openTid}">${esc(t.name)}</button></h3>
+          <p class="tmeta">기억 ${t.memberCount} · 폴더 ${t.folders.length}</p>
+          ${of(t.id).map(chipHtml).join("")}
+        </div>`);
+      const loose = of(null);
+      cards.push(`
+        <div class="tcard none" data-tid="">
+          <h3>주제 없음</h3>
+          <p class="tmeta">${loose.length ? "주제를 정하지 않은 세션" : "주제 없는 세션이 없습니다"}</p>
+          ${loose.map(chipHtml).join("")}
+        </div>`);
+      paint($("board"), cards.join(""));
+    }
+
+    function renderPreview() {
+      const { topic: t, members } = preview;
+      const top = members.slice(0, 5); // 서버가 주제 신뢰도순으로 정렬해 보낸다
+      paint($("preview"), `
+        <div class="pv-head">
+          <h2>${esc(t.name)}</h2>
+          <button class="pv-close" data-act="close" data-key="pv:close" aria-label="미리보기 닫기">✕</button>
+        </div>
+        <p class="pv-desc">${t.description ? esc(t.description) : '<span class="muted">설명 없음</span>'}</p>
+        <h3 class="lbl">작업공간 폴더</h3>
+        ${t.folders.length ? `<ul class="pv-list">${t.folders.map((f) => `<li class="path">${esc(f)}</li>`).join("")}</ul>`
+          : '<p class="muted">폴더 없음</p>'}
+        <h3 class="lbl">${members.length ? `소속 기억 상위 ${top.length} / ${members.length} · 주제 신뢰도순` : "소속 기억"}</h3>
+        ${top.length ? `<ul class="pv-list pv-mem">${top.map((m) => `
+          <li><span class="mark sec-${esc(m.section)}" aria-hidden="true"></span><span class="num">#${m.id}</span>
+            <span class="pv-area">${esc(m.area)}</span><span class="num" title="주제 신뢰도">${m.topic_confidence}</span></li>`).join("")}</ul>`
+          : '<p class="muted">소속 기억 없음</p>'}
+        <div class="pv-actions">
+          <button class="primary" data-act="detail" data-key="pv:detail">자세히 보기 →</button>
+          <button data-act="edit" data-key="pv:edit">편집</button>
+          <button data-act="delete" data-key="pv:delete">삭제</button>
+        </div>`);
+      $("preview").hidden = false;
+    }
+
+    async function loadPreview() {
+      if (openTid == null) return;
+      const r = await req("ws:topic", { id: openTid });
+      if (!r.topic) return closePreview(); // 다른 곳에서 삭제됨
+      preview = r;
+      renderPreview();
+    }
+    async function loadBoard() {
+      board = await req("ws:board");
+      renderBoard();
+      await loadPreview();
+    }
+    async function openPreview(id) {
+      openTid = id;
+      renderBoard(); // 선택 표시
+      await loadPreview();
+      $("preview").scrollIntoView({ block: "nearest" }); // 좁은 화면에선 패널이 보드 아래에 붙는다
+    }
+    function closePreview() {
+      const tid = openTid;
+      const hadFocus = $("preview").contains(document.activeElement); // 원격 삭제로 닫힐 땐 포커스를 뺏지 않는다
+      openTid = preview = null;
+      $("preview").hidden = true;
+      renderBoard();
+      if (hadFocus) (document.querySelector(`[data-key="t:${tid}"]`) ?? $("btn-topic-new")).focus();
+    }
+    function openDetail(id) {} // 자세히 보기 — Task 8에서 상세 화면을 연결한다
+
+    /** 세션의 주제 변경 — 주제가 같으면 요청하지 않는다. 보드는 ws:changed로 갱신 */
+    async function moveSession(sid, tid) {
+      const s = board.sessions.find((x) => x.session_id === sid);
+      if (!s || (s.topic_id ?? null) === tid) return;
+      await req("ws:session:set", { sessionId: sid, topicId: tid });
+    }
+    const cardTid = (card) => (card.dataset.tid === "" ? null : Number(card.dataset.tid));
+
+    // 칩 클릭(Enter/Space 포함) → 카드 안에 주제 선택 폼. 드래그의 키보드 대안
+    function openMove(chip) {
+      document.querySelector("#board .move")?.remove();
+      const s = board.sessions.find((x) => x.session_id === chip.dataset.sid);
+      const cur = cardTid(chip.closest(".tcard"));
+      const form = document.createElement("form");
+      form.className = "move";
+      form.innerHTML = `
+        <select aria-label="${esc(s?.label ?? "")} — 옮길 주제">
+          ${board.topics.map((t) => `<option value="${t.id}"${t.id === cur ? " selected" : ""}>${esc(t.name)}</option>`).join("")}
+          <option value=""${cur == null ? " selected" : ""}>주제 없음</option>
+        </select>
+        <button type="submit" class="primary">이동</button>
+        <button type="button" data-act="cancel">취소</button>`;
+      const close = () => { form.remove(); chip.focus(); };
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const v = form.querySelector("select").value;
+        await moveSession(chip.dataset.sid, v === "" ? null : Number(v));
+        close();
+      };
+      form.querySelector('[data-act="cancel"]').onclick = close;
+      form.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); close(); } });
+      chip.after(form);
+      form.querySelector("select").focus();
+    }
+
+    $("board").addEventListener("click", (ev) => {
+      const chip = ev.target.closest(".agent");
+      if (chip) return openMove(chip);
+      if (ev.target.closest(".move")) return;
+      const card = ev.target.closest(".tcard");
+      if (card && !card.classList.contains("none")) openPreview(cardTid(card));
+    });
+    // 드래그 — 칩의 session_id를 실어 카드에 떨군다 ("주제 없음" 카드 = 해제)
+    $("board").addEventListener("dragstart", (ev) => {
+      const chip = ev.target.closest?.(".agent");
+      if (!chip) return;
+      ev.dataTransfer.setData("text/plain", chip.dataset.sid);
+      ev.dataTransfer.effectAllowed = "move";
+    });
+    $("board").addEventListener("dragover", (ev) => {
+      const card = ev.target.closest?.(".tcard");
+      if (!card) return;
+      ev.preventDefault();
+      card.classList.add("drop");
+    });
+    $("board").addEventListener("dragleave", (ev) => {
+      const card = ev.target.closest?.(".tcard");
+      if (card && !card.contains(ev.relatedTarget)) card.classList.remove("drop");
+    });
+    $("board").addEventListener("drop", async (ev) => {
+      const card = ev.target.closest?.(".tcard");
+      if (!card) return;
+      ev.preventDefault();
+      card.classList.remove("drop");
+      await moveSession(ev.dataTransfer.getData("text/plain"), cardTid(card));
+    });
+
+    $("preview").addEventListener("click", async (ev) => {
+      const act = ev.target.closest("button")?.dataset.act;
+      if (act === "close") closePreview();
+      else if (act === "detail") openDetail(openTid);
+      else if (act === "edit") openTopicForm(preview.topic);
+      else if (act === "delete") {
+        const t = preview.topic;
+        if (!confirm(`주제 '${t.name}'을 삭제할까요? 기억은 지워지지 않습니다.`)) return;
+        await req("ws:topic:remove", { id: t.id });
+        closePreview();
+        $("btn-topic-new").focus(); // 지운 카드로는 포커스를 돌릴 수 없다
+      }
+    });
+
+    // 새 주제·편집 공용 폼 — 서버 오류(ok:false)는 alert 대신 폼 안에 표시
+    function openTopicForm(t) {
+      $("td-title").textContent = t ? "주제 편집" : "새 주제";
+      $("td-id").value = t?.id ?? "";
+      $("td-name").value = t?.name ?? "";
+      $("td-desc").value = t?.description ?? "";
+      $("td-folders").value = t?.folders.join("\n") ?? "";
+      $("td-error").hidden = true;
+      $("topic-dialog").showModal();
+      $("td-name").focus();
+    }
+    $("btn-topic-new").onclick = () => openTopicForm(null);
+    $("td-cancel").onclick = () => $("topic-dialog").close();
+    $("topic-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const fields = {
+        name: $("td-name").value.trim(),
+        description: $("td-desc").value.trim(),
+        folders: $("td-folders").value.split("\n").map((s) => s.trim()).filter(Boolean),
+      };
+      const id = $("td-id").value;
+      try {
+        const r = id ? await req("ws:topic:update", { id: Number(id), ...fields }) : await req("ws:topic:create", fields);
+        $("topic-dialog").close();
+        if (!id) await openPreview(r.id);
+      } catch (e) {
+        $("td-error").textContent = e.message.replace(/^Error: /, ""); // 서버가 String(err)로 보낸다
+        $("td-error").hidden = false;
+      }
+    });
+
+    socket.on("connect", loadBoard);
+    socket.on("ws:changed", loadBoard); // 다른 탭·에이전트·mem:* 변경 포함
   </script>
 </body>
 </html>

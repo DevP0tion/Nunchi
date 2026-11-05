@@ -99,6 +99,28 @@ test(
   20000
 );
 
+test(
+  "대시보드: Memory·WorkSpace 탭 마크업과 ws:board 사용",
+  async () => {
+    const A = mkdtempSync(join(tmpdir(), "nunchi-webtab-"));
+    await assignFreePort(A);
+    const dir = join(A, ".claude", "nunchi");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "memory-config.json"), JSON.stringify({ version: 1, web: true }));
+    const mem = await connectMemory(A);
+    try {
+      const html = await (await fetch(`http://127.0.0.1:${resolveMemoryPort(A)}/`)).text();
+      for (const s of ['role="tablist"', ">Memory<", ">WorkSpace<", "ws:board", "ws:session:set"]) {
+        expect(html).toContain(s);
+      }
+    } finally {
+      await mem.shutdown();
+      await rmProject(A);
+    }
+  },
+  20000
+);
+
 test("대시보드 정적 파일: 권장(recommend) 섹션·kind 선택란·코어 판정 (v0.13.5)", () => {
   const dash = (f: string) => readFileSync(join(import.meta.dir, "..", "memory", "dashboard", f), "utf8");
   const html = dash("index.html");
