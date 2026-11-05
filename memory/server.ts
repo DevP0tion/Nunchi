@@ -213,6 +213,10 @@ if (import.meta.main) {
     }
   }
 
+  /** 구 클라이언트 하위 호환: 섹션 구 이름 forgive → recommend (v0.14) */
+  const sec = (s: unknown) => (s === "forgive" ? "recommend" : s);
+  const kindOf = (k: unknown) => (k === "level" || k === "method" ? k : undefined);
+
   io.on("connection", (socket) => {
     // 핸드셰이크: 클라이언트가 접속 직후 이 서버의 소유 프로젝트를 확인한다
     // — 여러 프로젝트가 같은 포트를 쓸 때 다른 프로젝트의 db에 조용히 붙는 사고 방지
@@ -226,9 +230,10 @@ if (import.meta.main) {
     socket.on("mem:add", (p, ack) =>
       handle(`mem:add [${p.area}]`, () => {
         const id = store.add({
-          section: p.section, area: String(p.area), rule: String(p.rule),
+          section: sec(p.section), area: String(p.area), rule: String(p.rule),
           evidence: String(p.evidence),
           confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined,
+          kind: kindOf(p.kind),
           parent: Number.isFinite(p.parent) ? Number(p.parent) : undefined,
         } as NewMemoryEntry & { parent?: number });
         // 관찰은 자동 회수 제외 대상 — 보강 비용을 쓰지 않는다 (승격 시 promote가 보강)
@@ -241,9 +246,10 @@ if (import.meta.main) {
         const id = store.promote(
           (Array.isArray(p.sources) ? p.sources : []).map(Number),
           {
-            section: p.section, area: String(p.area), rule: String(p.rule),
+            section: sec(p.section), area: String(p.area), rule: String(p.rule),
             evidence: String(p.evidence),
             confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined,
+            kind: kindOf(p.kind),
           } as NewMemoryEntry
         );
         if (model) void enrich(id);
@@ -266,7 +272,7 @@ if (import.meta.main) {
         if (Array.isArray(p.link))
           return { updated: store.link(id, p.link.map(Number)) };
         if (p.reverse) {
-          // reverse는 store가 forgive 전용을 검증한다 (env·punish·task 대상은 throw)
+          // reverse는 store가 권장(level) 전용을 검증한다 (method·env·punish·task 대상은 throw)
           if (p.evidence === undefined) throw new Error("reverse에는 evidence(새 사건 1줄)가 필요하다");
           const updated = store.reverse(id, String(p.evidence));
           // reverse는 evidence를 교체해 keywords가 비워지므로 edit 경로와 동일하게 재보강한다
@@ -274,7 +280,8 @@ if (import.meta.main) {
           return { updated };
         }
         const fields: Partial<NewMemoryEntry> = {};
-        if (p.section !== undefined) fields.section = p.section;
+        if (p.section !== undefined) fields.section = sec(p.section) as NewMemoryEntry["section"];
+        if (kindOf(p.kind)) fields.kind = kindOf(p.kind);
         if (p.area !== undefined) fields.area = String(p.area);
         if (p.rule !== undefined) fields.rule = String(p.rule);
         if (p.evidence !== undefined) fields.evidence = String(p.evidence);
@@ -293,7 +300,7 @@ if (import.meta.main) {
       handle(`mem:search [${queries.join(" | ")}]`, () => ({
         rows: store.search(queries, {
           // 구 클라이언트의 단수 section 페이로드를 배열로 매핑 (하위 호환)
-          sections: Array.isArray(p.sections) ? p.sections : p.section ? [p.section] : undefined,
+          sections: Array.isArray(p.sections) ? p.sections.map(sec) : p.section ? [sec(p.section)] : undefined,
           limit: Number(p.limit) || undefined,
           excludeCore: Boolean(p.excludeCore),
           strict: Boolean(p.strict),
@@ -303,7 +310,7 @@ if (import.meta.main) {
     socket.on("mem:list", (p, ack) =>
       handle("mem:list", () => ({
         rows: store.list({
-          section: p?.section,
+          section: sec(p?.section) as NewMemoryEntry["section"] | undefined,
           minConfidence: Number(p?.minConfidence) || undefined,
           withObserve: Boolean(p?.withObserve),
         }),
