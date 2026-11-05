@@ -429,7 +429,7 @@ tr.empty td {
   background: transparent;
 }
 .pv-desc { margin: 4px 0 0; color: var(--ink-2); }
-#preview .lbl {
+#preview .lbl, #detail .lbl {
   margin: 14px 0 4px;
   font: 500 11px var(--sans);
   letter-spacing: 0.05em;
@@ -450,12 +450,129 @@ tr.empty td {
 .pv-area { flex: 1; min-width: 0; }
 .pv-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
 
+
+/* ── 주제 상세: 왼쪽 폴더·에이전트, 오른쪽 소속 기억 표 ─────── */
+#detail { margin: 0; overflow-wrap: anywhere; }
+button.link {
+  padding: 2px 0;
+  color: var(--ink-2);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+button.link:hover { color: var(--ink); }
+.dt-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; }
+#dt-name { flex: 1; min-width: 0; margin: 0; font: 600 16px var(--sans); }
+.dt-actions { display: flex; gap: 6px; }
+.dt-actions button { padding: 3px 10px; font-size: 12px; }
+#dt-desc { margin: 6px 0 0; }
+.dt-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 24px;
+  margin-top: 4px;
+}
+.dt-list { margin: 0; padding: 0; list-style: none; }
+.dt-list > li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+.dt-list > li:last-child { border-bottom: none; }
+.dt-list .path { min-width: 0; font: 12px var(--mono); color: var(--ink-2); }
+.dt-list .x, td.dt-tc .react {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 12px;
+  border-color: transparent;
+  background: transparent;
+}
+.dt-list .x:hover, td.dt-tc .react:hover { border-color: var(--line-2); background: var(--surface); }
+.ago { flex: none; font: 11px var(--mono); color: var(--muted); }
+.dt-inline { display: flex; gap: 6px; margin-top: 8px; }
+.dt-inline input { flex: 1; min-width: 0; }
+.dt-inline button { flex: none; }
+#dt-folder { font: 12px var(--mono); }
+.dt-memhead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.dt-memhead .link { font-size: 12px; }
+.dt-search { margin-bottom: 8px; padding: 8px; background: var(--wash); border-radius: 3px; }
+.dt-search .dt-inline { margin-top: 0; }
+#dt-results:not(:empty) { margin-top: 6px; }
+.dt-pick {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border-color: transparent;
+}
+.dt-pick:hover:not(:disabled) { border-color: var(--line-2); background: var(--surface); }
+.dt-pick:disabled { cursor: default; color: var(--muted); }
+.dt-pick .num { font: 12px var(--mono); color: var(--ink-2); }
+.dt-pick-text { flex: 1; min-width: 0; }
+.dt-own { flex: none; font-size: 11px; color: var(--muted); }
+#dt-table { min-width: 0; } /* 전역 표의 860px 최소 폭을 쓰지 않는다 — 좁은 화면에서도 규칙이 줄바꿈된다 */
+#dt-table th.num {
+  font: 12px var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  letter-spacing: 0;
+}
+#dt-table th, #dt-table td { padding: 6px 8px; }
+#dt-table thead th { white-space: normal; word-break: keep-all; overflow-wrap: normal; } /* '주제 신뢰도' 머리글이 영역 칸 폭을 뺏지 않도록 */
+.dt-area { display: block; font-weight: 600; }
+.dt-rule { color: var(--ink-2); }
+td.dt-tc { white-space: nowrap; }
+td.dt-tc .num { margin-right: 4px; font: 12px var(--mono); }
+td.dt-tc .react { filter: grayscale(1); } /* Memory 표 👍👎와 같은 모노크롬 */
+td.dt-tc .react:hover { filter: none; }
+td.dt-gc { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+
 @media (max-width: 760px) {
   .ws-wrap { flex-direction: column; align-items: stretch; }
   #preview { flex: none; }
+  .dt-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
 }
 @media (max-width: 480px) {
   .ws-bar { flex-direction: column; align-items: stretch; }
+}
+@media (max-width: 600px) {
+  /* 소속 기억 표 → 행마다 카드: 1줄 #·섹션·빼기, 2줄 영역·규칙, 3줄 주제·전체 신뢰도 */
+  #dt-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  #dt-table, #dt-table tbody { display: block; }
+  #dt-rows tr {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: baseline;
+    column-gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  #dt-rows tr:last-child { border-bottom: none; }
+  #dt-rows th, #dt-rows td { padding: 2px 0; border: none; }
+  #dt-rows td:nth-child(3) { grid-column: 1 / -1; grid-row: 2; }
+  #dt-rows td.dt-tc { grid-column: 1 / 3; grid-row: 3; }
+  #dt-rows td.dt-gc { grid-column: 3; grid-row: 3; }
+  #dt-rows td.actions { grid-column: 3; grid-row: 1; }
+  #dt-rows td.dt-tc::before { content: "주제 신뢰도 "; }
+  #dt-rows td.dt-gc::before { content: "전체 신뢰도 "; }
+  #dt-rows td.dt-tc::before, #dt-rows td.dt-gc::before { font: 11px var(--sans); color: var(--muted); }
+  #dt-rows tr.empty { display: block; }
 }
 
 /* ── 주제 폼 (모달) ─────────────────────────────────────── */

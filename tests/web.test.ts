@@ -110,7 +110,7 @@ test(
     const mem = await connectMemory(A);
     try {
       const html = await (await fetch(`http://127.0.0.1:${resolveMemoryPort(A)}/`)).text();
-      for (const s of ['role="tablist"', ">Memory<", ">WorkSpace<", "ws:board", "ws:session:set"]) {
+      for (const s of ['role="tablist"', ">Memory<", ">WorkSpace<", "ws:board", "ws:session:set", "ws:topic:rate", "ws:topic:link", "자세히 보기"]) {
         expect(html).toContain(s);
       }
     } finally {
