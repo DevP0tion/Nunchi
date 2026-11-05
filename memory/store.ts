@@ -2,11 +2,26 @@
 // 보정 항목 + 작업 기록(task) 테이블(memory) + FTS5 인덱스 + 규약 연산(승격·반전·정제)을 소유한다.
 // 소켓 계층(server.ts)과 테스트가 공유하는 저장소 로직.
 // v0.9.0: 범용 KV memory 테이블을 제거하고 보정 항목을 memory 테이블 하나로 통합했다.
-// task: 완결 작업 플레이북을 같은 테이블 section='task'로 축적한다. reverse는 forgive 전용(store 소유).
+// task: 완결 작업 플레이북을 같은 테이블 section='task'로 축적한다. reverse는 권장(level) 전용(store 소유).
+// v0.14: forgive(용서하는 것) → recommend(권장). kind로 강도 권고(level)·방법 기록(method)을 나눈다.
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 
-export type MemorySection = "punish" | "forgive" | "env" | "task" | "observe";
+export type MemorySection = "punish" | "recommend" | "env" | "task" | "observe";
+/** 권장 항목의 종류 — level=강도 권고(과잉이었음), method=방법 기록(예측보다 좋았음·사용자가 좋다고 함) */
+export type MemoryKind = "level" | "method";
+
+/** kind 정합성 규칙: recommend만 kind를 가지며, 없으면 level */
+export function fixKind(section: MemorySection, kind: MemoryKind | null | undefined): MemoryKind | null {
+  if (section !== "recommend") return null;
+  return kind ?? "level";
+}
+
+/** 옛 이벤트 payload 정규화 — events는 append-only라 고쳐 쓰지 않고 읽을 때 변환한다 */
+export function normalizePayload(p: Record<string, unknown>): Record<string, unknown> {
+  if (p.section !== "forgive") return p;
+  return { ...p, section: "recommend", kind: p.kind ?? "level" };
+}
 
 export type EventType =
   | "add" | "observe" | "promote" | "confirm" | "reverse" | "edit" | "remove" | "link";
@@ -32,6 +47,8 @@ export interface MemoryEntry {
   rule: string;
   evidence: string;
   confidence: number;
+  /** recommend만 값을 가진다 (그 외 섹션은 null) */
+  kind: MemoryKind | null;
   updated_at: string;
 }
 
@@ -42,10 +59,18 @@ export interface NewMemoryEntry {
   evidence: string;
   /** 미지정 시 낮음(1) — 임포트가 기존 신뢰도를 보존할 때만 지정한다 */
   confidence?: number;
+  /** recommend 전용 — 미지정 시 level, 그 외 섹션에서는 무시(null) */
+  kind?: MemoryKind | null;
 }
 
-/** 상시 주입 코어 기준: punish AND confidence >= 3 (SKILL.md의 '높음') */
+/** 상시 주입 코어 기준: (punish OR recommend·method) AND confidence >= 3 (SKILL.md의 '높음') */
 export const CORE_CONFIDENCE = 3;
+
+/** 코어 판정 유일 함수 — store의 coreStmt SQL과 짝이다 (대시보드 isCore도 같은 기준) */
+export function isCore(e: Pick<MemoryEntry, "section" | "kind" | "confidence">): boolean {
+  return e.confidence >= CORE_CONFIDENCE &&
+    (e.section === "punish" || (e.section === "recommend" && e.kind === "method"));
+}
 
 /** 항목의 관계 트리 — 승격 계보(canonical) + 도메인 형제(파생) + 자유 참조(비권위) */
 export interface MemoryTree {
@@ -64,17 +89,21 @@ export interface MemoryTree {
   refs: MemoryEntry[];
 }
 
-const COLS = "id, section, area, rule, evidence, confidence, updated_at";
+const COLS = "id, section, area, rule, evidence, confidence, kind, updated_at";
+/** 재구축·이관 INSERT의 SELECT 변환 — 구 'forgive' 행이 신 CHECK에 걸리지 않게 recommend/level로 */
+const SECTION_SQL = `CASE section WHEN 'forgive' THEN 'recommend' ELSE section END`;
+const KIND_SQL = `CASE section WHEN 'forgive' THEN 'level' END`;
 
 /** memory 테이블 컬럼 정의 — 신규 생성과 재구축(§task 마이그레이션)이 동일 CHECK를
  *  쓰도록 한 곳에 둔다. CHECK 문자열이 두 곳에 흩어지면 안 된다. */
 const MEMORY_COLS_DDL = `
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  section TEXT NOT NULL CHECK (section IN ('punish','forgive','env','task','observe')),
+  section TEXT NOT NULL CHECK (section IN ('punish','recommend','env','task','observe')),
   area TEXT NOT NULL,
   rule TEXT NOT NULL,
   evidence TEXT NOT NULL,
   confidence INTEGER NOT NULL DEFAULT 1,
+  kind TEXT CHECK (kind IS NULL OR kind IN ('level','method')),
   keywords TEXT NOT NULL DEFAULT '',
   promoted_to INTEGER,
   refs TEXT NOT NULL DEFAULT '[]',
@@ -119,8 +148,8 @@ function applyMemorySchemaInner(db: Database): void {
   if (memDdl && !memDdl.sql.includes("'task'")) {
     db.run(`CREATE TABLE memory_new (${MEMORY_COLS_DDL})`);
     db.run(`
-      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, keywords, updated_at)
-      SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM memory
+      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, kind, keywords, updated_at)
+      SELECT id, ${SECTION_SQL}, area, rule, evidence, confidence, ${KIND_SQL}, keywords, updated_at FROM memory
     `);
     db.run(`DROP TABLE memory`); // 트리거 3종(memory_fts_ai/ad/au)도 함께 삭제된다
     db.run(`ALTER TABLE memory_new RENAME TO memory`);
@@ -133,8 +162,23 @@ function applyMemorySchemaInner(db: Database): void {
   if (ddl13 && !ddl13.sql.includes("'observe'")) {
     db.run(`CREATE TABLE memory_new (${MEMORY_COLS_DDL})`);
     db.run(`
-      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, keywords, updated_at)
-      SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM memory
+      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, kind, keywords, updated_at)
+      SELECT id, ${SECTION_SQL}, area, rule, evidence, confidence, ${KIND_SQL}, keywords, updated_at FROM memory
+    `);
+    db.run(`DROP TABLE memory`);
+    db.run(`ALTER TABLE memory_new RENAME TO memory`);
+  }
+  // v0.14 마이그레이션: forgive → recommend + kind 컬럼 — CHECK 변경 = 테이블 재구축.
+  // 앞 블록이 이미 신 DDL로 재구축했으면 'recommend'가 포함돼 건너뛴다
+  const ddl14 = db
+    .query(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory'`)
+    .get() as { sql: string } | null;
+  if (ddl14 && !ddl14.sql.includes("'recommend'")) {
+    db.run(`CREATE TABLE memory_new (${MEMORY_COLS_DDL})`);
+    db.run(`
+      INSERT INTO memory_new (id, section, area, rule, evidence, confidence, kind, keywords, promoted_to, refs, updated_at)
+      SELECT id, ${SECTION_SQL}, area, rule, evidence, confidence, ${KIND_SQL}, keywords, promoted_to, refs, updated_at
+      FROM memory
     `);
     db.run(`DROP TABLE memory`);
     db.run(`ALTER TABLE memory_new RENAME TO memory`);
@@ -172,8 +216,8 @@ function applyMemorySchemaInner(db: Database): void {
     .get();
   if (legacyTable) {
     db.run(`
-      INSERT INTO memory (id, section, area, rule, evidence, confidence, keywords, updated_at)
-      SELECT id, section, area, rule, evidence, confidence, keywords, updated_at FROM calibration
+      INSERT INTO memory (id, section, area, rule, evidence, confidence, kind, keywords, updated_at)
+      SELECT id, ${SECTION_SQL}, area, rule, evidence, confidence, ${KIND_SQL}, keywords, updated_at FROM calibration
     `);
     db.run(`DROP TABLE calibration`);
     db.run(`DROP TABLE IF EXISTS calibration_fts`);
@@ -190,7 +234,7 @@ function applyMemorySchemaInner(db: Database): void {
              CASE WHEN section = 'observe' THEN 'observe' ELSE 'add' END,
              id,
              json_object('section', section, 'area', area, 'rule', rule,
-                         'evidence', evidence, 'confidence', confidence)
+                         'evidence', evidence, 'confidence', confidence, 'kind', kind)
       FROM memory ORDER BY id
     `);
   }
@@ -218,18 +262,23 @@ export function rebuildDerived(db: Database): void {
       { id: number; keywords: string }[];
     db.run(`DELETE FROM memory`);
     const ins = db.prepare(
-      `INSERT INTO memory (id, section, area, rule, evidence, confidence, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO memory (id, section, area, rule, evidence, confidence, kind, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    // kind 정합성 강제(fixKind와 같은 규칙) — kind 없는 옛 edit 이벤트도 재구축 이관 결과와 같아진다
+    const fixKindStmt = db.prepare(
+      `UPDATE memory SET kind = CASE WHEN section = 'recommend' THEN COALESCE(kind, 'level') END WHERE id = ?`
     );
     const events = db.prepare(`SELECT * FROM events ORDER BY seq`).all() as MemoryEvent[];
     for (const ev of events) {
-      const p = JSON.parse(ev.payload) as Record<string, unknown>;
+      const p = normalizePayload(JSON.parse(ev.payload) as Record<string, unknown>);
       switch (ev.type) {
         case "add":
         case "observe":
         case "promote":
           ins.run(ev.entry_id, p.section as string, p.area as string, p.rule as string,
-            p.evidence as string, (p.confidence as number) ?? 1, ev.ts);
+            p.evidence as string, (p.confidence as number) ?? 1,
+            fixKind(p.section as MemorySection, p.kind as MemoryKind | undefined), ev.ts);
           if (ev.type === "promote")
             for (const sid of (p.sources as number[]) ?? [])
               db.run(`UPDATE memory SET promoted_to = ? WHERE id = ?`, [ev.entry_id, sid]);
@@ -237,10 +286,11 @@ export function rebuildDerived(db: Database): void {
         case "edit": {
           const sets: string[] = [];
           const args: (string | number)[] = [];
-          for (const k of ["section", "area", "rule", "evidence", "confidence"] as const)
+          for (const k of ["section", "area", "rule", "evidence", "confidence", "kind"] as const)
             if (p[k] !== undefined) { sets.push(`${k} = ?`); args.push(p[k] as string | number); }
           db.run(`UPDATE memory SET ${sets.concat("updated_at = ?").join(", ")} WHERE id = ?`,
             [...args, ev.ts, ev.entry_id]);
+          fixKindStmt.run(ev.entry_id);
           break;
         }
         case "confirm":
@@ -248,7 +298,7 @@ export function rebuildDerived(db: Database): void {
             [ev.ts, ev.entry_id]);
           break;
         case "reverse":
-          db.run(`UPDATE memory SET section = 'punish', confidence = 1, evidence = ?, updated_at = ? WHERE id = ?`,
+          db.run(`UPDATE memory SET section = 'punish', kind = NULL, confidence = 1, evidence = ?, updated_at = ? WHERE id = ?`,
             [p.evidence as string, ev.ts, ev.entry_id]);
           break;
         case "remove":
@@ -287,8 +337,8 @@ export function createMemoryStore(db: Database) {
   type Row = MemoryEntry & { keywords: string; promoted_to: number | null; refs: string };
   const strip = ({ keywords: _k, promoted_to: _p, refs: _r, ...e }: Row): MemoryEntry => e;
   const insStmt = db.prepare(
-    `INSERT INTO memory (section, area, rule, evidence, confidence)
-     VALUES (?, ?, ?, ?, ?) RETURNING id`
+    `INSERT INTO memory (section, area, rule, evidence, confidence, kind)
+     VALUES (?, ?, ?, ?, ?, ?) RETURNING id`
   );
   const getStmt = db.prepare(`SELECT ${COLS}, keywords, promoted_to, refs FROM memory WHERE id = ?`);
   const evStmt = db.prepare(
@@ -321,15 +371,16 @@ export function createMemoryStore(db: Database) {
       rule: fields.rule ?? cur.rule,
       evidence: fields.evidence ?? cur.evidence,
       confidence: fields.confidence ?? cur.confidence,
+      kind: fields.kind !== undefined ? fields.kind : cur.kind,
     };
     const contentChanged =
       next.area !== cur.area || next.rule !== cur.rule || next.evidence !== cur.evidence;
-    updStmt.run(next.section, next.area, next.rule, next.evidence, next.confidence,
+    updStmt.run(next.section, next.area, next.rule, next.evidence, next.confidence, next.kind,
       contentChanged ? "" : cur.keywords, cur.id);
   };
   const updStmt = db.prepare(
     `UPDATE memory SET section = ?, area = ?, rule = ?, evidence = ?,
-     confidence = ?, keywords = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
+     confidence = ?, kind = ?, keywords = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
   );
   const confirmStmt = db.prepare(
     `UPDATE memory SET confidence = confidence + 1, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`
@@ -337,7 +388,9 @@ export function createMemoryStore(db: Database) {
   const delStmt = db.prepare(`DELETE FROM memory WHERE id = ?`);
   const stampStmt = db.prepare(`SELECT max(updated_at) AS m FROM memory`);
   const coreStmt = db.prepare(
-    `SELECT ${COLS} FROM memory WHERE section = 'punish' AND confidence >= ?
+    // isCore()와 짝 — 조건을 바꾸면 둘 다 바꾼다
+    `SELECT ${COLS} FROM memory
+     WHERE (section = 'punish' OR (section = 'recommend' AND kind = 'method')) AND confidence >= ?
      ORDER BY confidence DESC, updated_at DESC`
   );
   const keywordsStmt = db.prepare(
@@ -345,7 +398,7 @@ export function createMemoryStore(db: Database) {
     `UPDATE memory SET keywords = ? WHERE id = ? AND updated_at = ?`
   );
   const ftsStmt = db.prepare(
-    `SELECT c.id, c.section, c.area, c.rule, c.evidence, c.confidence, c.updated_at,
+    `SELECT c.id, c.section, c.area, c.rule, c.evidence, c.confidence, c.kind, c.updated_at,
             f.rank AS rank
      FROM memory_fts f JOIN memory c ON c.id = f.rowid
      WHERE memory_fts MATCH ? ORDER BY f.rank LIMIT 50`
@@ -377,10 +430,11 @@ export function createMemoryStore(db: Database) {
       return db.transaction(() => {
         if (e.parent != null && !getStmt.get(e.parent))
           throw new Error(`parent #${e.parent} 없음`);
-        const id = (insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1) as { id: number }).id;
+        const kind = fixKind(e.section, e.kind);
+        const id = (insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1, kind) as { id: number }).id;
         logEvent(e.section === "observe" ? "observe" : "add", id, {
           section: e.section, area: e.area, rule: e.rule,
-          evidence: e.evidence, confidence: e.confidence ?? 1,
+          evidence: e.evidence, confidence: e.confidence ?? 1, ...(kind && { kind }),
         }, e.parent ?? null);
         return id;
       })();
@@ -395,9 +449,19 @@ export function createMemoryStore(db: Database) {
         const cur = getStmt.get(id) as Row | null;
         if (!cur) return false;
         // payload는 실제 지정된 필드만 — replay가 부분 갱신을 그대로 재현한다
+        const { kind: wanted, ...rest } = fields;
         const clean = Object.fromEntries(
-          Object.entries(fields).filter(([, v]) => v !== undefined)
+          Object.entries(rest).filter(([, v]) => v !== undefined)
         ) as Partial<NewMemoryEntry>;
+        // kind 미지정이면 현재 kind 유지 — section이 실제로 recommend 안팎으로 바뀔 때만 규칙 적용
+        // (대시보드는 저장마다 section을 재전송한다)
+        const section = clean.section ?? cur.section;
+        const kind = fixKind(section, wanted ?? (section === cur.section ? cur.kind : undefined));
+        if (kind !== cur.kind) {
+          clean.kind = kind;
+          // 신뢰도 5인 level을 method로 바꿔 곧바로 코어에 넣는 경로를 막는다 (지정 신뢰도보다 우선)
+          if (kind !== null) clean.confidence = 1;
+        }
         applyFields(cur, clean);
         logEvent("edit", id, clean);
         return true;
@@ -411,15 +475,17 @@ export function createMemoryStore(db: Database) {
         return true;
       })();
     },
-    /** 반전: '용서하는 것'(forgive) 전용 — punish 이동 + 신뢰도 1 리셋 + 근거 교체.
-     *  env·punish·task 대상은 규약 위반이므로 명확한 에러로 거부한다 */
+    /** 반전: 권장(level) 전용 — punish 이동 + 신뢰도 1 리셋 + 근거 교체.
+     *  방법 기록(method)은 edit·remove로 고치고, 그 외 섹션은 규약 위반이므로 명확한 에러로 거부한다 */
     reverse(id: number, evidence: string): boolean {
       return db.transaction(() => {
         const cur = getStmt.get(id) as Row | null;
         if (!cur) return false;
-        if (cur.section !== "forgive")
-          throw new Error(`reverse는 '용서하는 것'(forgive) 전용 — 대상 항목은 ${cur.section}`);
-        applyFields(cur, { section: "punish", confidence: 1, evidence });
+        if (cur.section === "recommend" && cur.kind === "method")
+          throw new Error("reverse는 권장(강도) 전용 — 방법 기록(method)은 edit·remove로 고친다");
+        if (cur.section !== "recommend")
+          throw new Error(`reverse는 권장(강도) 전용 — 대상 항목은 ${cur.section}`);
+        applyFields(cur, { section: "punish", confidence: 1, evidence, kind: null });
         logEvent("reverse", id, { evidence });
         return true;
       })();
@@ -509,7 +575,7 @@ export function createMemoryStore(db: Database) {
       if (opts.sections) out = out.filter((r) => opts.sections!.includes(r.section));
       else out = out.filter((r) => r.section !== "observe");
       if (opts.excludeCore)
-        out = out.filter((r) => !(r.section === "punish" && r.confidence >= CORE_CONFIDENCE));
+        out = out.filter((r) => !isCore(r));
       // 걸린 단어 수 내림차순, 같으면 BM25 rank(음수, 낮을수록 관련) 오름차순
       out.sort((a, b) => b.hits - a.hits || a.rank - b.rank);
       return out.slice(0, limit).map(({ rank: _r, hits: _h, long: _l, ...e }) => e);
@@ -525,11 +591,12 @@ export function createMemoryStore(db: Database) {
           if (cur.section !== "observe") throw new Error(`#${sid}는 관찰(observe)이 아니다 (${cur.section})`);
           if (cur.promoted_to != null) throw new Error(`#${sid}는 이미 #${cur.promoted_to}로 승격됨`);
         }
-        const id = (insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1) as { id: number }).id;
+        const kind = fixKind(e.section, e.kind);
+        const id = (insStmt.get(e.section, e.area, e.rule, e.evidence, e.confidence ?? 1, kind) as { id: number }).id;
         for (const sid of sources) promoteMark.run(id, sid);
         logEvent("promote", id, {
           section: e.section, area: e.area, rule: e.rule,
-          evidence: e.evidence, confidence: e.confidence ?? 1, sources,
+          evidence: e.evidence, confidence: e.confidence ?? 1, ...(kind && { kind }), sources,
         });
         return id;
       })();
@@ -577,7 +644,10 @@ export function createMemoryStore(db: Database) {
     },
     /** canonical 저널 전량 — JSONL 내보내기·감사용 */
     exportEvents(): MemoryEvent[] {
-      return exportStmt.all() as MemoryEvent[];
+      return (exportStmt.all() as MemoryEvent[]).map((ev) => ({
+        ...ev,
+        payload: JSON.stringify(normalizePayload(JSON.parse(ev.payload) as Record<string, unknown>)),
+      }));
     },
   };
 }
@@ -588,12 +658,12 @@ export type MemoryStore = ReturnType<typeof createMemoryStore>;
 
 const SECTION_OF: [RegExp, MemorySection][] = [
   [/벌주는/, "punish"],
-  [/용서/, "forgive"],
+  [/용서|권장/, "recommend"],
   [/특이사항/, "env"],
 ];
 const SECTION_TITLE: Record<MemorySection, string> = {
   punish: "벌주는 것 (반드시 한다)",
-  forgive: "용서하는 것 (생략 가능)",
+  recommend: "권장 (이렇게 한다)",
   env: "환경 특이사항",
   task: "작업 기록",
   observe: "관찰 (미승격 신호)",
@@ -646,7 +716,7 @@ export function renderMemoryDoc(store: MemoryStore, projectName: string): string
   if (!all.length) return null;
   const label = (c: number) => (c >= CORE_CONFIDENCE ? `높음(${c})` : c === 2 ? "중간(2)" : `낮음(${c})`);
   const parts = [`# 보정 — ${projectName}`];
-  for (const sec of ["punish", "forgive", "env", "task", "observe"] as MemorySection[]) {
+  for (const sec of ["punish", "recommend", "env", "task", "observe"] as MemorySection[]) {
     const rows = all.filter((e) => e.section === sec);
     if (!rows.length) continue;
     parts.push("", `## ${SECTION_TITLE[sec]}`);

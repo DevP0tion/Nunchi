@@ -2,7 +2,7 @@
 // 보정 저장소 로직 검증 (소켓 계층 제외) — search.test.ts와 같은 패턴.
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { createMemoryStore, parseLegacyDoc, renderMemoryDoc, importLegacyDoc } from "../memory/store.ts";
+import { createMemoryStore, isCore, parseLegacyDoc, rebuildDerived, renderMemoryDoc, importLegacyDoc } from "../memory/store.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +20,7 @@ test("add/get: 항목 추가와 조회, 기본 신뢰도 1", () => {
 
 test("confirm: 신뢰도 +1, 없는 id는 false", () => {
   const s = makeStore();
-  const id = s.add({ section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략 가능", evidence: "2026-06-20 테스트가 본체보다 오래 걸림" });
+  const id = s.add({ section: "recommend", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략 가능", evidence: "2026-06-20 테스트가 본체보다 오래 걸림" });
   expect(s.confirm(id)).toBe(true);
   expect(s.get(id)?.confidence).toBe(2);
   expect(s.confirm(9999)).toBe(false);
@@ -28,7 +28,7 @@ test("confirm: 신뢰도 +1, 없는 id는 false", () => {
 
 test("update: 부분 갱신 — 반전(섹션 이동+신뢰도 리셋+근거 교체)", () => {
   const s = makeStore();
-  const id = s.add({ section: "forgive", area: "[테스트: 생략]", rule: "테스트 생략 가능", evidence: "2026-06-20 무사고", confidence: 3 });
+  const id = s.add({ section: "recommend", area: "[테스트: 생략]", rule: "테스트 생략 가능", evidence: "2026-06-20 무사고", confidence: 3 });
   expect(s.update(id, { section: "punish", confidence: 1, evidence: "2026-07-06 생략했다가 회귀 발생" })).toBe(true);
   const e = s.get(id)!;
   expect(e.section).toBe("punish");
@@ -37,9 +37,9 @@ test("update: 부분 갱신 — 반전(섹션 이동+신뢰도 리셋+근거 교
   expect(s.update(9999, { rule: "x" })).toBe(false);
 });
 
-test("reverse: forgive 전용 — punish 이동·신뢰도1·근거 교체, 그 외 섹션은 throw", () => {
+test("reverse: 권장(level) 전용 — punish 이동·신뢰도1·근거 교체, 그 외 섹션은 throw", () => {
   const s = makeStore();
-  const f = s.add({ section: "forgive", area: "[테스트: 생략]", rule: "테스트 생략 가능", evidence: "2026-06-20 무사고", confidence: 3 });
+  const f = s.add({ section: "recommend", area: "[테스트: 생략]", rule: "테스트 생략 가능", evidence: "2026-06-20 무사고", confidence: 3 });
   expect(s.reverse(f, "2026-07-09 생략했다가 회귀")).toBe(true);
   const e = s.get(f)!;
   expect(e.section).toBe("punish");
@@ -47,7 +47,7 @@ test("reverse: forgive 전용 — punish 이동·신뢰도1·근거 교체, 그 
   expect(e.evidence).toBe("2026-07-09 생략했다가 회귀");
   expect(e.rule).toBe("테스트 생략 가능"); // 미지정 필드 보존
   expect(s.reverse(9999, "x")).toBe(false); // 없는 id
-  // forgive 아닌 대상은 규약 위반 → throw (env/punish도 이번에 함께 막는다)
+  // 권장(level) 아닌 대상은 규약 위반 → throw (env/punish도 함께 막는다)
   const p = s.add({ section: "punish", area: "[a]", rule: "r", evidence: "e" });
   const v = s.add({ section: "env", area: "[b]", rule: "r", evidence: "e" });
   const t = s.add({ section: "task", area: "[c]", rule: "접근: x", evidence: "2026-07-09" });
@@ -76,7 +76,7 @@ test("remove/list/core/stamp", () => {
 test("search: 다중 쿼리 OR-병합, 중복 제거, limit", () => {
   const s = makeStore();
   const a = s.add({ section: "punish", area: "[배포: CI]", rule: "배포 전 캐시 키 확인", evidence: "2026-06-12 배포 실패" });
-  const b = s.add({ section: "forgive", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략", evidence: "2026-06-20 과잉" });
+  const b = s.add({ section: "recommend", area: "[테스트: 스크립트]", rule: "일회성 스크립트 테스트 생략", evidence: "2026-06-20 과잉" });
   s.add({ section: "env", area: "[윈도우: 인코딩]", rule: "BOM 주의", evidence: "2026-06-25 파싱 실패" });
   // "배포"(2글자→LIKE), "테스트 생략"(FTS) 두 쿼리가 서로 다른 항목을 회수
   const rows = s.search(["배포", "테스트 생략"], { limit: 5 });
@@ -97,7 +97,7 @@ test("search: sections 배열 필터와 excludeCore", () => {
   // 단일 섹션 배열
   expect(s.search(["배포"], { limit: 9, sections: ["task"] }).map((r) => r.id)).toEqual([task]);
   // 다중 섹션 배열 — task 제외 (보정 회수 쿼터 경로)
-  expect(s.search(["배포"], { limit: 9, sections: ["punish", "forgive", "env"] }).map((r) => r.id).sort()).toEqual([core, low].sort());
+  expect(s.search(["배포"], { limit: 9, sections: ["punish", "recommend", "env"] }).map((r) => r.id).sort()).toEqual([core, low].sort());
   expect(s.search(["배포"], { limit: 9, sections: ["env"] }).length).toBe(0);
 });
 
@@ -111,7 +111,7 @@ test("search: 빈 쿼리·특수문자는 안전하게 처리", () => {
 
 test("search: keywords 컬럼도 검색 대상", () => {
   const s = makeStore();
-  const id = s.add({ section: "forgive", area: "[테스트: 헬퍼]", rule: "내부 헬퍼 방어 생략", evidence: "e" });
+  const id = s.add({ section: "recommend", area: "[테스트: 헬퍼]", rule: "내부 헬퍼 방어 생략", evidence: "e" });
   const e = s.get(id)!;
   s.setKeywords(id, e.updated_at, "defensive, guard, 방어코드");
   expect(s.search(["defensive"], { limit: 5 }).map((r) => r.id)).toEqual([id]);
@@ -182,7 +182,7 @@ test("parseLegacyDoc: 3섹션·신뢰도 숫자 추출·불량 항목 skip", () 
     rule: "lockfile 변경 시 CI 캐시 키를 반드시 확인한다",
     evidence: "2026-06-12 캐시 미스매치로 배포 2회 실패", confidence: 3,
   });
-  expect(entries[1].section).toBe("forgive");
+  expect(entries[1].section).toBe("recommend");
   expect(entries[1].confidence).toBe(2);
   expect(entries[2].section).toBe("env");
   expect(entries[2].confidence).toBe(1);
@@ -304,4 +304,91 @@ test("importLegacyDoc: 1회 임포트 + .imported 리네임, 재실행은 no-op"
   writeFileSync(docPath, SAMPLE_DOC);
   expect(importLegacyDoc(s, docPath)).toBe(null);
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ---- v0.14 권장(recommend) kind 규칙 ----
+const base = { area: "[a: b]", rule: "r", evidence: "e" };
+
+test("add: recommend kind 기본 level, 비recommend의 kind는 NULL", () => {
+  const s = makeStore();
+  expect(s.get(s.add({ section: "recommend", ...base }))?.kind).toBe("level");
+  expect(s.get(s.add({ section: "recommend", kind: "method", ...base }))?.kind).toBe("method");
+  expect(s.get(s.add({ section: "punish", kind: "method", ...base }))?.kind).toBe(null);
+});
+
+test("update: kind 미지정 시 현재 kind 유지 (대시보드 재저장)", () => {
+  const s = makeStore();
+  const id = s.add({ section: "recommend", kind: "method", ...base, confidence: 3 });
+  expect(s.update(id, { section: "recommend", area: "[a: c]", confidence: 3 })).toBe(true);
+  expect(s.get(id)).toMatchObject({ kind: "method", confidence: 3, area: "[a: c]" });
+});
+
+test("update: kind 변경 시 신뢰도 1, recommend 밖으로 나가면 kind NULL, 들어오면 level", () => {
+  const s = makeStore();
+  const id = s.add({ section: "recommend", kind: "level", ...base, confidence: 5 });
+  s.update(id, { kind: "method" });
+  expect(s.get(id)).toMatchObject({ kind: "method", confidence: 1 });
+  s.update(id, { section: "punish" });
+  expect(s.get(id)!.kind).toBe(null);
+  s.update(id, { section: "recommend" });
+  expect(s.get(id)!.kind).toBe("level");
+  const p = s.add({ section: "punish", ...base });
+  s.update(p, { kind: "method" }); // recommend 아님 → 무시
+  expect(s.get(p)!.kind).toBe(null);
+});
+
+test("update: kind 변경은 replay로 재현된다", () => {
+  const db = new Database(":memory:");
+  const s = createMemoryStore(db);
+  const id = s.add({ section: "recommend", ...base, confidence: 4 });
+  s.update(id, { kind: "method" });
+  const before = JSON.stringify(s.get(id));
+  rebuildDerived(db);
+  expect(JSON.stringify(s.get(id))).toBe(before);
+});
+
+test("reverse: level만 허용, method·punish 거부", () => {
+  const s = makeStore();
+  const lv = s.add({ section: "recommend", kind: "level", ...base, confidence: 3 });
+  expect(s.reverse(lv, "2026-11-05 사고")).toBe(true);
+  expect(s.get(lv)).toMatchObject({ section: "punish", kind: null, confidence: 1 });
+  const m = s.add({ section: "recommend", kind: "method", ...base });
+  expect(() => s.reverse(m, "x")).toThrow("방법 기록(method)은 edit·remove");
+  const p = s.add({ section: "punish", ...base });
+  expect(() => s.reverse(p, "x")).toThrow("reverse는 권장(강도) 전용");
+});
+
+test("core: punish 3+와 method 3+ 포함, level 3+ 미포함", () => {
+  const s = makeStore();
+  const p = s.add({ section: "punish", ...base, confidence: 3 });
+  const m = s.add({ section: "recommend", kind: "method", ...base, confidence: 3 });
+  s.add({ section: "recommend", kind: "level", ...base, confidence: 5 });
+  s.add({ section: "recommend", kind: "method", ...base, confidence: 2 });
+  expect(s.core().map((e) => e.id).sort()).toEqual([p, m].sort());
+  expect(isCore({ section: "recommend", kind: "method", confidence: 3 })).toBe(true);
+  expect(isCore({ section: "recommend", kind: "level", confidence: 9 })).toBe(false);
+});
+
+test("search excludeCore: method 3+ 제외 (FTS·LIKE)", () => {
+  const s = makeStore();
+  const m = s.add({ section: "recommend", kind: "method", area: "[배포: 리뷰]", rule: "배포 전 리뷰 요청", evidence: "e", confidence: 3 });
+  const lv = s.add({ section: "recommend", kind: "level", area: "[배포: 문서]", rule: "배포 전 리뷰 생략", evidence: "e", confidence: 3 });
+  for (const q of ["리뷰", "배포 전 리뷰"]) { // 2글자(LIKE)·3글자 이상(FTS)
+    const rows = s.search([q], { limit: 9, excludeCore: true });
+    expect(rows.map((r) => r.id)).toEqual([lv]);
+    expect(rows[0].kind).toBe("level");
+  }
+  expect(s.search(["배포 전 리뷰"], { limit: 9 }).find((r) => r.id === m)?.kind).toBe("method");
+});
+
+test("parseLegacyDoc: '용서'·'권장' 제목 모두 recommend", () => {
+  const doc = (h: string) => `## ${h}\n\n### [a: b]\n- 규칙: r\n- 근거: e\n- 신뢰도: 낮음(1)\n`;
+  expect(parseLegacyDoc(doc("용서하는 것 (생략 가능)")).entries[0].section).toBe("recommend");
+  expect(parseLegacyDoc(doc("권장 (이렇게 한다)")).entries[0].section).toBe("recommend");
+});
+
+test("renderMemoryDoc: recommend 섹션 제목 '권장 (이렇게 한다)'", () => {
+  const s = makeStore();
+  s.add({ section: "recommend", ...base });
+  expect(renderMemoryDoc(s, "p")).toContain("## 권장 (이렇게 한다)");
 });

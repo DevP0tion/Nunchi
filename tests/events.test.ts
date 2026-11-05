@@ -38,7 +38,7 @@ test("부트스트랩 멱등: events가 있으면 재기동 시 중복 생성하
 
 test("이벤트 기록: add/edit/confirm/reverse/remove가 events에 남는다", () => {
   const { db, s } = make();
-  const f = s.add({ section: "forgive", area: "[a]", rule: "r", evidence: "e" });
+  const f = s.add({ section: "recommend", area: "[a]", rule: "r", evidence: "e" });
   s.update(f, { rule: "r2" });
   s.confirm(f);
   s.reverse(f, "2026-07-24 사고");
@@ -62,7 +62,7 @@ test("observe 기록: 이벤트 타입 observe + parent_id 계보", () => {
 
 test("replay 재구축: 파생 상태 드리프트를 events에서 완전 복원", () => {
   const { db, s } = make();
-  const f = s.add({ section: "forgive", area: "[a]", rule: "r", evidence: "e" });
+  const f = s.add({ section: "recommend", area: "[a]", rule: "r", evidence: "e" });
   s.confirm(f);
   s.update(f, { rule: "r2" });
   const x = s.add({ section: "task", area: "[t]", rule: "r", evidence: "e" });
@@ -118,7 +118,7 @@ test("promote: 관찰 → 항목 승격, 계보 보존, 잘못된 대상 거부"
   const { s } = make();
   const o1 = s.add({ section: "observe", area: "[ship: 과잉 의심]", rule: "PR 과잉?", evidence: "2026-07-20" });
   const o2 = s.add({ section: "observe", area: "[ship: 과잉 의심]", rule: "PR 과잉 재발", evidence: "2026-07-24" });
-  const id = s.promote([o1, o2], { section: "forgive", area: "[ship: 배포 절차]", rule: "PR 단계 생략 가능", evidence: "2026-07-24 반복 관찰" });
+  const id = s.promote([o1, o2], { section: "recommend", area: "[ship: 배포 절차]", rule: "PR 단계 생략 가능", evidence: "2026-07-24 반복 관찰" });
   expect(s.tree(id)!.sources.map((e) => e.id).sort()).toEqual([o1, o2]);
   expect(s.tree(o1)!.promotedTo?.id).toBe(id);
   expect(() => s.promote([o1], { section: "punish", area: "[x]", rule: "r", evidence: "e" })).toThrow(); // 이미 승격됨
@@ -131,7 +131,7 @@ test("promote: 관찰 → 항목 승격, 계보 보존, 잘못된 대상 거부"
 
 test("tree: 도메인 형제·자유 참조·canonical 부모", () => {
   const { s } = make();
-  const a = s.add({ section: "forgive", area: "[ship: 배포 절차]", rule: "r", evidence: "e" });
+  const a = s.add({ section: "recommend", area: "[ship: 배포 절차]", rule: "r", evidence: "e" });
   const b = s.add({ section: "punish", area: "[ship: 테스트 게이트]", rule: "r", evidence: "e" });
   const c = s.add({ section: "env", area: "[윈도우: 인코딩]", rule: "r", evidence: "e" });
   const o = s.add({ section: "observe", area: "[ship: 의심]", rule: "r", evidence: "e", parent: a });
@@ -152,7 +152,7 @@ test("replay: promote/link 이벤트 재현 + exportEvents 전량 반환", () =>
   const { db, s } = make();
   const o = s.add({ section: "observe", area: "[a: 의심]", rule: "r", evidence: "e" });
   const pr = s.promote([o], { section: "punish", area: "[a: 확정]", rule: "r", evidence: "2026-07-24", confidence: 3 });
-  const f = s.add({ section: "forgive", area: "[b]", rule: "r", evidence: "e" });
+  const f = s.add({ section: "recommend", area: "[b]", rule: "r", evidence: "e" });
   s.link(f, [pr]);
   const before = JSON.stringify(s.list({ withObserve: true }));
   rebuildDerived(db);
@@ -161,4 +161,72 @@ test("replay: promote/link 이벤트 재현 + exportEvents 전량 반환", () =>
   expect(s.tree(f)!.refs.map((e) => e.id)).toEqual([pr]);
   expect(s.core().map((e) => e.id)).toEqual([pr]);
   expect(s.exportEvents().map((e) => e.type)).toEqual(["observe", "promote", "add", "link"]);
+});
+
+// ---- v0.14 forgive → recommend(권장) 이관 ----
+const kw = (db: Database, id: number) =>
+  (db.query(`SELECT keywords FROM memory WHERE id = ?`).get(id) as { keywords: string }).keywords;
+
+test("0.12 DB + forgive 행 이관: recommend/level, id·keywords 보존", () => {
+  const db = new Database(":memory:");
+  db.run(`CREATE TABLE memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    section TEXT NOT NULL CHECK (section IN ('punish','forgive','env','task')),
+    area TEXT NOT NULL, rule TEXT NOT NULL, evidence TEXT NOT NULL,
+    confidence INTEGER NOT NULL DEFAULT 1, keywords TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')))`);
+  db.run(`INSERT INTO memory (id, section, area, rule, evidence, keywords) VALUES (7,'forgive','[a]','r','e','k')`);
+  db.run(`INSERT INTO memory (id, section, area, rule, evidence) VALUES (8,'punish','[b]','r','e')`);
+  const s = createMemoryStore(db);
+  expect(s.get(7)).toMatchObject({ section: "recommend", kind: "level" });
+  expect(s.get(8)!.kind).toBe(null);
+  expect(kw(db, 7)).toBe("k");
+  expect(JSON.parse(evs(db)[0].payload)).toMatchObject({ section: "recommend", kind: "level" });
+});
+
+test("현행 DB(observe 있음) + forgive 행 이관: promoted_to·refs 보존", () => {
+  const db = new Database(":memory:");
+  db.run(`CREATE TABLE memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    section TEXT NOT NULL CHECK (section IN ('punish','forgive','env','task','observe')),
+    area TEXT NOT NULL, rule TEXT NOT NULL, evidence TEXT NOT NULL,
+    confidence INTEGER NOT NULL DEFAULT 1, keywords TEXT NOT NULL DEFAULT '',
+    promoted_to INTEGER, refs TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')))`);
+  db.run(`INSERT INTO memory (id, section, area, rule, evidence, keywords, refs) VALUES (3,'forgive','[a]','r','e','k','[4]')`);
+  db.run(`INSERT INTO memory (id, section, area, rule, evidence, promoted_to) VALUES (4,'observe','[a]','r','e',3)`);
+  const s = createMemoryStore(db);
+  expect(s.get(3)).toMatchObject({ section: "recommend", kind: "level" });
+  expect(kw(db, 3)).toBe("k");
+  expect(s.tree(3)!.refs.map((e) => e.id)).toEqual([4]);
+  expect(s.tree(4)!.promotedTo?.id).toBe(3);
+});
+
+test("replay: 옛 forgive 이벤트 정규화 — add는 recommend/level, forgive→punish edit는 kind NULL", () => {
+  const { db, s } = make();
+  db.run(`INSERT INTO events (type, entry_id, payload) VALUES
+    ('add', 1, '{"section":"forgive","area":"[a]","rule":"r","evidence":"e","confidence":1}'),
+    ('add', 2, '{"section":"forgive","area":"[b]","rule":"r","evidence":"e","confidence":1}'),
+    ('edit', 2, '{"section":"punish"}')`);
+  rebuildDerived(db);
+  expect(s.get(1)).toMatchObject({ section: "recommend", kind: "level" });
+  expect(s.get(2)).toMatchObject({ section: "punish", kind: null });
+});
+
+test("reverse replay는 kind를 NULL로", () => {
+  const { db, s } = make();
+  db.run(`INSERT INTO events (type, entry_id, payload) VALUES
+    ('add', 1, '{"section":"forgive","area":"[a]","rule":"r","evidence":"e","confidence":2}'),
+    ('reverse', 1, '{"evidence":"2026-11-05 사고"}')`);
+  rebuildDerived(db);
+  expect(s.get(1)).toMatchObject({ section: "punish", kind: null, confidence: 1 });
+});
+
+test("exportEvents: 옛 forgive payload를 recommend/level로 내보낸다, 원본 events 행은 그대로", () => {
+  const { db, s } = make();
+  db.run(`INSERT INTO events (type, entry_id, payload) VALUES
+    ('add', 1, '{"section":"forgive","area":"[a]","rule":"r","evidence":"e","confidence":1}')`);
+  expect(JSON.parse(s.exportEvents()[0].payload)).toMatchObject({ section: "recommend", kind: "level" });
+  expect((db.query(`SELECT payload FROM events WHERE seq = 1`).get() as { payload: string }).payload)
+    .toContain("forgive");
 });
