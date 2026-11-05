@@ -11,15 +11,20 @@ import {
   resolveDocDir,
   hookProjectDir,
   isPonytailEnabled,
-  formatMemoryEntries,
+  readStdinJson,
 } from "./config.ts";
+import { TOPIC_CLEARED, formatCoreBlock, formatTopicBlock, formatTopicList, sessionIdLine } from "./topic.ts";
+import { writeDelivered } from "../memory/session-state.ts";
 
 const projectDir = hookProjectDir();
+const input = await readStdinJson();
+const sid = input.session_id;
 const cfg = loadConfig(projectDir);
+const docDir = resolveDocDir(projectDir, cfg);
 
 // 초기화: path 폴더(db 위치)가 없으면 생성
 try {
-  mkdirSync(resolveDocDir(projectDir, cfg), { recursive: true });
+  mkdirSync(docDir, { recursive: true });
 } catch {
   /* 생성 실패해도 주입은 계속 */
 }
@@ -27,11 +32,27 @@ try {
 // 코어 조회 — auto-start면 connectMemory가 서버를 스폰한다 (기존 스폰 블록 대체)
 let core: import("./config.ts").MemoryEntryLite[] = [];
 let note: string | null = null;
+// 워크스페이스 탭: ws:* 호출은 각자 try — 구버전 서버·타임아웃이어도 코어 주입은 나간다
+let topic: import("../memory/session-state.ts").TopicState | null = null;
+let memberIds: number[] = [];
+let rev = 0;
+let topicList: Awaited<ReturnType<import("../memory/client.ts").MemoryClient["topics"]>> | null = null;
 try {
   const { connectMemory } = await import("../memory/client.ts");
   const mem = await connectMemory(projectDir);
   try {
     core = await mem.core();
+    if (sid) {
+      try {
+        await mem.registerSession({ sessionId: sid, title: input.session_title, cwd: input.cwd });
+      } catch { /* 등록 실패 — 주입은 계속 */ }
+      try {
+        ({ topic, memberIds, rev } = await mem.sessionState(sid));
+      } catch { /* 주제 조회 실패 — 주제 없음으로 취급 */ }
+      try {
+        topicList = await mem.topics();
+      } catch { /* 목록 실패 — 생략 */ }
+    }
   } finally {
     mem.close();
   }
@@ -47,10 +68,20 @@ const lines = [
   "작업 기록 규약: 완결된 작업(산출물이 남는 요청 단위)을 마무리하면 nunchi_search로 유사 task 항목을 찾아 — 절차가 어긋났으면 nunchi_update(edit)로 교정, 그대로 유효했으면 nunchi_update(confirm), 없으면 nunchi_record(section: task)로 신규 기록한다.",
   "관찰 레인: 확신이 없는 예측 어긋남 의심은 nunchi_record(section: observe)로 가볍게 남긴다 (자동 회수 제외). 같은 신호가 반복 확인되면 nunchi_update(action: promote, id: 대표 관찰, sources: 추가 관찰)로 보정 항목으로 승격한다 — 출처가 계보로 보존된다.",
 ];
+if (sid) {
+  lines.push(sessionIdLine(sid));
+  if (topicList) lines.push(formatTopicList(topicList));
+  if (input.source === "fork") lines.push(TOPIC_CLEARED); // fork는 부모 주제를 이어받지 않는다
+  else if (topic && (input.source === "resume" || input.source === "compact")) {
+    try {
+      lines.push(formatTopicBlock(topic));
+      writeDelivered(docDir, sid, null, rev); // 첫 메시지에서 같은 주제를 다시 알리지 않는다
+    } catch { /* 렌더링·기록 실패 — 첫 메시지 훅이 다시 알린다 */ }
+  }
+}
 if (core.length) {
-  const coreBlock = formatMemoryEntries(core).slice(0, 8000);
   // ponytail: 하드 슬라이스 — 코어가 8천자를 넘는 비정상 상황에서만 잘리며, 규약·ponytail 줄이 항상 살아남는 것이 우선
-  lines.push("", "[확정 규칙 — '벌주는 것'·'권장(방법)' 신뢰도 높음(3+). 항상 지킨다]", coreBlock);
+  lines.push("", formatCoreBlock(core, topic ? memberIds : null).slice(0, 8000));
 }
 if (note) lines.push("", note);
 lines.push(

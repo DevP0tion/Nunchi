@@ -65,6 +65,14 @@ export interface HookInput {
   /** UserPromptSubmit: 사용자 프롬프트 (일부 버전은 user_input) */
   prompt?: string;
   user_input?: string;
+  /** SessionStart/UserPromptSubmit: 사용자가 붙인 세션 제목 (대시보드 라벨) */
+  session_title?: string;
+  /** SubagentStart/Pre·PostToolUse: 서브에이전트 식별 */
+  agent_id?: string;
+  agent_type?: string;
+  /** Pre/PostToolUse */
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
 }
 
 export async function readStdinJson(): Promise<HookInput> {
