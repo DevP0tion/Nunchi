@@ -104,23 +104,36 @@ Claude Code든 Codex든, CLAUDE.md·AGENTS.md·메모리 문서에 경험을 적
 
 ## 동작
 
-1. **SessionStart** (startup/resume/clear/compact): 규약 요약 + 코어('벌주는 것'·'권장(방법)' 신뢰도 3+)를 additionalContext로 조용히 주입. `auto-start: true`면 memory server 자동 기동. 기존 calibration.md는 서버 첫 기동 시 DB로 자동 임포트(`.imported`로 보존).
-2. **UserPromptSubmit** (매 메시지): 사용자가 직접 친 글의 어절로 검색해 보정 항목 3건 + 작업 기록(task) 2건을 각 쿼터로 주입 (task가 보정 회수를 밀어내지 않도록 분리). Claude Code가 붙인 태그 블록(`<task-notification>`, `<ide_opened_file>` 등)은 검색어에서 빼고, 백그라운드 작업 알림·다른 세션 메시지처럼 사용자 글이 없는 메시지에는 주입하지 않는다. 정밀도 우선 — 흔한 2글자 단어 하나만 걸린 항목은 주입하지 않는다. 결과 0건이면 주입 없음, 주입은 최대 8천자. 서버 미기동이면 조용히 통과.
-3. **SubagentStart**: 서브에이전트에 규약 + 코어 주입 (SessionStart 주입을 못 받으므로).
+1. **SessionStart** (startup/resume/clear/compact): 규약 요약 + 코어('벌주는 것'·'권장(방법)' 신뢰도 3+)를 additionalContext로 조용히 주입. 세션 id 줄과 주제 목록(최대 20개)도 함께 싣고, 세션을 등록한다. 주제가 설정된 세션이 resume·compact되면 주제 블록을, 주제가 없으면 '현재 주제 없음'을 다시 알린다. `auto-start: true`면 memory server 자동 기동. 기존 calibration.md는 서버 첫 기동 시 DB로 자동 임포트(`.imported`로 보존).
+2. **UserPromptSubmit** (매 메시지): 사용자가 직접 친 글의 어절로 검색해 보정 항목 3건 + 작업 기록(task) 2건을 각 쿼터로 주입 (task가 보정 회수를 밀어내지 않도록 분리). Claude Code가 붙인 태그 블록(`<task-notification>`, `<ide_opened_file>` 등)은 검색어에서 빼고, 백그라운드 작업 알림·다른 세션 메시지처럼 사용자 글이 없는 메시지에는 주입하지 않는다. 정밀도 우선 — 흔한 2글자 단어 하나만 걸린 항목은 주입하지 않는다. 주제가 설정돼 있으면 보정 3 + 작업 2 쿼터를 주제 소속 기억으로 먼저 채우고 `- [주제]`로 표시한다. 주제가 바뀌었거나 해제됐으면(만료 후 되살아난 세션 포함) 주제 블록을 먼저 알린다. 결과 0건이면 주입 없음, 주입은 최대 8천자. 서버 미기동이면 조용히 통과.
+3. **SubagentStart**: 서브에이전트에 규약 + 코어 주입 (SessionStart 주입을 못 받으므로). 주제가 있으면 주제 블록도 주입.
 4. **모델 재량 (MCP 도구)**: `nunchi_search`(유의어 확장 쿼리 검색) · `nunchi_list`(전량 선별, `tree: id`로 관계 트리 조회) · `nunchi_record`(예측 어긋남·완결 작업 플레이북·관찰 기록) · `nunchi_update`(재확인·반전·정제·플레이북 교정·관찰 승격 promote·자유 참조 link).
 5. **Stop hook** (백업): 10턴마다 1회 "(A) 예측 어긋남이 있었나? (B) 완결된 작업이 있었나? (C) 확신 없는 어긋남 의심이 있었나?" 점검을 강제. 구간 내에 이 세션이 이미 기록했으면 자동 생략 — 세션 transcript의 `nunchi_record`/`nunchi_update` 호출로 판정하므로 같은 DB를 쓰는 동시 세션의 기록은 세지 않는다. 7일 지난 세션 상태 파일은 점검 때 정리된다.
-6. **`/nunchi`**: 수동 호출 시 항목 정제(pruning) 모드.
+6. **`/nunchi`**: 수동 호출 시 항목 정제(pruning) 모드. **`/nunchi:topic [이름]`**: 세션 주제 보기·바꾸기.
+7. **PreToolUse** (Edit·Write·MultiEdit·NotebookEdit) · **PostToolUse** (전체) · **SessionEnd**: 주제·작업공간용 신규 훅. 아래 [주제와 WorkSpace 탭](#주제topic와-workspace-탭) 참조.
 
 **작업 기록(task) — 완결 작업 플레이북.** 보정 항목이 예측 어긋남만 남긴다면, task는 완결된 작업(구현·수정·리팩토링·문서·설계·릴리스) 자체를 플레이북(`area`=[작업유형: 상황], `rule`=접근 절차/주의점, `evidence`=결과 1줄, `confidence`=무사고 재수행 횟수)으로 남긴다. 유사 작업 재수행 시 UserPromptSubmit이 자동 회수하고, 절차가 어긋났으면 그 자리에서 `nunchi_update(edit)`로 교정, 그대로 유효했으면 `confirm`한다. `reverse`는 권장(강도) 전용이라 task에는 쓰지 않는다. 같은 테이블 `section='task'`에 축적되며 대시보드에 별도 타일로 표시된다.
 
 **관찰(observe) — 승격 사다리의 최하층.** 확신이 없는 예측 어긋남 의심은 `nunchi_record(section: observe)`로 관찰만 남긴다 — 자동 회수(코어 주입·매 메시지 검색)에서 제외되므로 부담 없이 기록해도 회수 품질이 떨어지지 않는다. 같은 신호가 반복 확인되면 `nunchi_update(action: promote)`로 보정 항목으로 승격하며, 출처 관찰들이 계보(승격 이벤트의 sources·관찰의 promoted_to)로 보존된다 — 승격 여부는 `nunchi_list(tree: id)`로 확인한다. 승격 사다리는 관찰 → 보정 항목(신뢰도 1~2) → 코어(3+) 3단이며, 대시보드에 별도 타일(observe)로 표시된다. (참고 모델: [memory-forest](https://github.com/hyungchulc/memory-forest)의 provenance 보존 승격 원칙)
+
+## 주제(topic)와 WorkSpace 탭
+
+기억이 늘면 지금 작업에 중요한 기억이 검색 쿼터 안에서 밀린다. **주제**는 기억을 묶는 단위이고(기억 하나가 여러 주제에 속할 수 있다), 주제마다 **작업공간**(폴더 여러 개)이 붙는다. 주제 정보는 `memory.db`의 별도 테이블(topics·topic_folders·topic_members·sessions)에 두며 `events` 저널에는 쓰지 않는다 — replay로 재구축해도 소속·주제 신뢰도는 그대로다.
+
+- **설정**: 에이전트가 `nunchi_topic`(list/set/clear/create/link/unlink)으로 세션 주제를 정한다. 사용자는 `/nunchi:topic [이름]`·자연어("주제를 X로")·대시보드 칩 드래그로 바꾼다. 주제 삭제·수정은 대시보드 전용이고, 에이전트의 `create`는 사용자가 요청했을 때만 쓴다. 세션 단위로 유지되며 서브에이전트는 부모 주제를 따른다. 새 세션·fork·정상 종료 후 resume은 주제 없이 시작하고, 24시간 활동이 없는 세션은 만료된다.
+- **세션 식별**: SessionStart가 세션 id를 주입하고 에이전트가 `session_id`로 넘긴다 (stdio MCP 서버는 세션 id를 받을 경로가 없다).
+- **주입**: 주제가 설정되면 규칙 전문 대신 주제 신뢰도 3+ 기억(코어·observe 제외, 최대 30개)의 `#id · area` 목록만 주입하고 전문은 `nunchi_list(ids)`로 조회한다. 매 메시지 검색은 보정 3 + 작업 2 쿼터를 주제 소속 기억으로 먼저 채우고 `- [주제]`로 표시한다. 코어 재주입(compact·resume·서브에이전트 시작) 때 주제 밖 코어는 `#id · area`만 나간다.
+- **주제 신뢰도**: 기억×주제 쌍마다 별도 신뢰도(소속 시 전체 신뢰도 복사). 대시보드 WorkSpace 상세의 👍👎는 주제 신뢰도만, `nunchi_update(confirm, session_id)`는 전체와 주제 신뢰도를 함께 올린다.
+- **작업공간 경고**: PreToolUse가 Edit·Write·MultiEdit·NotebookEdit 대상이 주제 폴더 밖이면 경고를 주입한다 (차단하지 않음, Bash 경유 수정은 검사하지 않음). 이 훅은 소켓 없이 마지막 세션 상태 파일만 읽으므로, 상태 파일이 없으면(원격 서버·구버전 서버 등) 경고하지 않는다.
+- **진행 중인 턴에 전달**: 대시보드에서 주제를 바꾸면 PostToolUse가 다음 도구 호출 뒤 주제 블록을 주입한다. 이 경로는 소켓 없이 상태 파일(`<path>/sessions/<session_id>.json`과 전달한 rev를 적은 `.delivered`)만 읽는다. 원격 서버(`external-address`)는 파일이 없으므로 다음 메시지(UserPromptSubmit)에 전달된다.
+- **WorkSpace 탭**: 대시보드(`web: true`) 헤더 아래 **Memory** | **WorkSpace** 탭. 주제 카드 격자 안에 작업 중인 에이전트 칩이 있고("주제 없음" 점선 카드에 미설정 세션), 칩을 다른 카드로 드래그하거나 칩에서 Enter로 주제를 바꾼다. 카드 클릭 → 미리보기(설명·폴더·소속 기억 상위 5개), "자세히 보기" → 이름·설명 칸에서 바로 수정(Enter·포커스 이탈로 저장, Esc로 취소), 작업공간 폴더 편집, 에이전트 목록, 소속 기억 표(주제 신뢰도 👍👎·빼기·기억 추가). Memory 탭에서는 기억 행을 누르면(Enter·Space 포함) 아래에 소속 주제 칩(✕로 빼기)과 첨부할 주제 선택이 열린다. 표의 칸 너비는 머리글 오른쪽 끝을 끌거나(←/→ 키도 가능) 조절하고, 두 번 누르면 원래대로 돌아간다(브라우저에 기억). 주제 변경은 `ws:changed`로 즉시 갱신된다. 이 대시보드는 그 프로젝트의 memory server에 붙으므로 그 프로젝트의 세션만 보인다.
 
 ## 구조
 
 ```
 nunchi/
 ├── SKILL.md                  # 방법론 (기록·신뢰도·반전·정제 규약)
-├── build.ts                  # dist 빌드 (bun run build): 진입점 6개를 의존성 포함 단일 파일로 번들
+├── build.ts                  # dist 빌드 (bun run build): 진입점 9개를 의존성 포함 단일 파일로 번들
 ├── dist/                     # 빌드 결과 (커밋 대상) — hooks.json·plugin.json이 실행하는 파일
 │   ├── hooks/*.js · mcp/server.js · memory/server.js
 │   └── build-info.json       # 입력 해시 (dist 최신 여부 검사용)
@@ -134,7 +147,8 @@ nunchi/
 ├── mcp/
 │   └── server.ts             # MCP stdio 서버: nunchi_record/update/search/list
 ├── skills/
-│   └── migrate/              # 구버전 보정 DB 마이그레이션 스킬 (nunchi:migrate)
+│   ├── migrate/              # 구버전 보정 DB 마이그레이션 스킬 (nunchi:migrate)
+│   └── topic/                # 세션 주제 보기·바꾸기 스킬 (/nunchi:topic)
 ├── tests/
 ├── .claude-plugin/
 │   └── plugin.json           # plugin 매니페스트 + userConfig + mcpServers
@@ -143,7 +157,11 @@ nunchi/
     ├── config.ts             # 계층형 config 로더 + 공용 타입·렌더링
     ├── session-start.ts      # 세션 시작: 규약 + 코어 주입
     ├── user-prompt-submit.ts # 매 메시지: 관련 항목 자동 회수
-    ├── subagent-start.ts     # 서브에이전트: 규약 + 코어 주입
+    ├── subagent-start.ts     # 서브에이전트: 규약 + 코어 + 주제 블록 주입
+    ├── pre-tool-use.ts       # 파일 수정 전: 작업공간 밖이면 경고 (차단 없음)
+    ├── post-tool-use.ts      # 도구 호출 후: 대시보드의 주제 변경을 진행 중인 턴에 전달
+    ├── session-end.ts        # 세션 종료: 세션 등록·상태 파일 삭제
+    ├── topic.ts              # 주제 블록·경로 판정 공용 렌더링
     └── stop-check.ts         # N턴마다: 예측 어긋남 점검 강제 (백업 루프)
 ```
 

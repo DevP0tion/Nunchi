@@ -16777,7 +16777,7 @@ function formatMemoryEntries(rows) {
   return rows.map((r) => `- (#${r.id}) [${label(r)}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
 `);
 }
-var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.5", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL, label = (r) => r.section === "recommend" ? `\uAD8C\uC7A5\xB7${r.kind === "method" ? "\uBC29\uBC95" : "\uAC15\uB3C4"}` : SECTION_LABEL[r.section] ?? r.section;
+var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.14.0", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL, label = (r) => r.section === "recommend" ? `\uAD8C\uC7A5\xB7${r.kind === "method" ? "\uBC29\uBC95" : "\uAC15\uB3C4"}` : SECTION_LABEL[r.section] ?? r.section;
 var init_config = __esm(() => {
   PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
   DEFAULTS = {
@@ -16841,11 +16841,11 @@ var init_provider = __esm(() => {
 });
 
 // memory/memory-config.ts
-import { readFileSync as readFileSync3 } from "fs";
-import { join as join2 } from "path";
+import { readFileSync as readFileSync4 } from "fs";
+import { join as join3 } from "path";
 function loadMemoryConfig(configPath) {
   try {
-    const raw = JSON.parse(readFileSync3(configPath, "utf8").trim());
+    const raw = JSON.parse(readFileSync4(configPath, "utf8").trim());
     const merged = { ...MEMORY_CONFIG_DEFAULTS, ...raw };
     if (typeof merged.host === "string")
       merged.host = !LOOPBACKS.includes(merged.host);
@@ -16858,7 +16858,7 @@ function loadMemoryConfig(configPath) {
 }
 function resolveMemoryConn(projectDir) {
   const cfg = loadConfig(projectDir);
-  const mc = loadMemoryConfig(join2(resolveDocDir(projectDir, cfg), MEMORY_CONFIG_FILENAME));
+  const mc = loadMemoryConfig(join3(resolveDocDir(projectDir, cfg), MEMORY_CONFIG_FILENAME));
   return { port: cfg.port ?? mc.port, token: mc.token };
 }
 function resolveMemoryPort(projectDir) {
@@ -16891,12 +16891,195 @@ var { Server, Namespace, Socket } = import_dist.default;
 
 // memory/server.ts
 init_config();
-import { existsSync as existsSync3, mkdirSync, readFileSync as readFileSync4, rmSync, writeFileSync } from "fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync5, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
 import { tmpdir } from "os";
-import { basename, extname, join as join3, resolve, sep } from "path";
+import { basename, extname, join as join4, resolve, sep } from "path";
 
 // memory/store.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2, renameSync } from "fs";
+
+// memory/topics.ts
+var SESSION_TTL_HOURS = 24;
+var TOPIC_AREA_MIN = 3;
+var TOPIC_AREA_MAX = 30;
+var NOW = `strftime('%Y-%m-%d %H:%M:%f','now')`;
+function applyTopicSchema(db) {
+  db.run(`CREATE TABLE IF NOT EXISTS topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (${NOW}),
+    updated_at TEXT NOT NULL DEFAULT (${NOW}))`);
+  db.run(`CREATE TABLE IF NOT EXISTS topic_folders (
+    topic_id INTEGER NOT NULL, path TEXT NOT NULL, PRIMARY KEY (topic_id, path))`);
+  db.run(`CREATE TABLE IF NOT EXISTS topic_members (
+    topic_id INTEGER NOT NULL, memory_id INTEGER NOT NULL,
+    confidence INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (topic_id, memory_id))`);
+  db.run(`CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY, title TEXT, first_prompt TEXT NOT NULL DEFAULT '', cwd TEXT,
+    topic_id INTEGER, topic_rev INTEGER NOT NULL DEFAULT 0, last_seen TEXT NOT NULL)`);
+}
+function sessionLabel(s) {
+  return s.title ?? `${s.first_prompt.slice(0, 30)} \xB7 ${s.session_id.slice(0, 4)}`;
+}
+function createTopicStore(db) {
+  applyTopicSchema(db);
+  const q = (sql, ...args) => db.prepare(sql).all(...args);
+  const one = (sql, ...args) => db.prepare(sql).get(...args);
+  const run = (sql, ...args) => db.prepare(sql).run(...args);
+  const folders = (id) => q(`SELECT path FROM topic_folders WHERE topic_id = ? ORDER BY rowid`, id).map((r) => r.path);
+  const withFolders = (r) => ({ ...r, folders: folders(r.id) });
+  const setFolders = (id, paths) => {
+    run(`DELETE FROM topic_folders WHERE topic_id = ?`, id);
+    for (const p of paths)
+      if (p.trim())
+        run(`INSERT OR IGNORE INTO topic_folders (topic_id, path) VALUES (?, ?)`, id, p.trim());
+  };
+  const dupName = (name, fn) => {
+    try {
+      return fn();
+    } catch (e) {
+      if (String(e).includes("UNIQUE"))
+        throw new Error(`\uC774\uBBF8 \uC788\uB294 \uC8FC\uC81C \uC774\uB984: ${name.trim()}`);
+      throw e;
+    }
+  };
+  const checkLen = (f) => {
+    if (f.name !== undefined && f.name.trim().length > 60)
+      throw new Error("\uC8FC\uC81C \uC774\uB984\uC740 60\uC790 \uC774\uB0B4");
+    if (f.description !== undefined && f.description.length > 200)
+      throw new Error("\uC8FC\uC81C \uC124\uBA85\uC740 200\uC790 \uC774\uB0B4");
+    if (f.folders?.some((p) => p.trim().length > 200))
+      throw new Error("\uD3F4\uB354 \uACBD\uB85C\uB294 200\uC790 \uC774\uB0B4");
+  };
+  const cleanName = (n) => {
+    const name = n.trim();
+    if (!name)
+      throw new Error("\uC8FC\uC81C \uC774\uB984\uC774 \uBE44\uC5B4 \uC788\uB2E4");
+    return name;
+  };
+  const topicCols = `id, name, description, created_at, updated_at`;
+  const get = (id) => {
+    const r = one(`SELECT ${topicCols} FROM topics WHERE id = ?`, id);
+    return r ? withFolders(r) : null;
+  };
+  const rate = (topicId, memoryId, delta) => one(`UPDATE topic_members SET confidence = max(1, confidence + ?)
+       WHERE topic_id = ? AND memory_id = ? RETURNING confidence`, delta, topicId, memoryId)?.confidence ?? null;
+  const session = (id) => one(`SELECT * FROM sessions WHERE session_id = ?`, id);
+  const memberSql = `SELECT m.id, m.section, m.area, m.rule, m.evidence, m.confidence, m.kind, m.updated_at,
+      tm.confidence AS topic_confidence
+    FROM topic_members tm JOIN memory m ON m.id = tm.memory_id WHERE tm.topic_id = ?
+    ORDER BY tm.confidence DESC, m.updated_at DESC`;
+  return {
+    create(t) {
+      checkLen(t);
+      return dupName(t.name, () => db.transaction(() => {
+        const id = one(`INSERT INTO topics (name, description) VALUES (?, ?) RETURNING id`, cleanName(t.name), t.description ?? "").id;
+        setFolders(id, t.folders ?? []);
+        return id;
+      })());
+    },
+    update(id, f) {
+      checkLen(f);
+      return dupName(f.name ?? "", () => db.transaction(() => {
+        const cur = get(id);
+        if (!cur)
+          return false;
+        run(`UPDATE topics SET name = ?, description = ?, updated_at = ${NOW} WHERE id = ?`, f.name !== undefined ? cleanName(f.name) : cur.name, f.description ?? cur.description, id);
+        if (f.folders)
+          setFolders(id, f.folders);
+        return true;
+      })());
+    },
+    remove(id) {
+      return db.transaction(() => {
+        const ids = q(`SELECT session_id FROM sessions WHERE topic_id = ?`, id).map((r) => r.session_id);
+        run(`UPDATE sessions SET topic_id = NULL, topic_rev = topic_rev + 1 WHERE topic_id = ?`, id);
+        run(`DELETE FROM topic_members WHERE topic_id = ?`, id);
+        run(`DELETE FROM topic_folders WHERE topic_id = ?`, id);
+        run(`DELETE FROM topics WHERE id = ?`, id);
+        return ids;
+      })();
+    },
+    get,
+    byName(name) {
+      const r = one(`SELECT ${topicCols} FROM topics WHERE name = ?`, name.trim());
+      return r ? withFolders(r) : null;
+    },
+    list() {
+      return q(`SELECT ${topicCols}, (SELECT count(*) FROM topic_members WHERE topic_id = topics.id) AS memberCount
+         FROM topics ORDER BY name`).map(withFolders);
+    },
+    link(topicId, memoryIds) {
+      return db.transaction(() => {
+        if (!get(topicId))
+          throw new Error(`\uC8FC\uC81C #${topicId} \uC5C6\uC74C`);
+        let added = 0;
+        for (const m of memoryIds) {
+          const mem = one(`SELECT confidence FROM memory WHERE id = ?`, m);
+          if (!mem)
+            throw new Error(`\uAE30\uC5B5 #${m} \uC5C6\uC74C`);
+          added += run(`INSERT OR IGNORE INTO topic_members (topic_id, memory_id, confidence) VALUES (?, ?, ?)`, topicId, m, mem.confidence).changes;
+        }
+        return added;
+      })();
+    },
+    unlink(topicId, memoryIds) {
+      return db.transaction(() => memoryIds.reduce((n, m) => n + run(`DELETE FROM topic_members WHERE topic_id = ? AND memory_id = ?`, topicId, m).changes, 0))();
+    },
+    rate,
+    members(topicId) {
+      return q(memberSql, topicId);
+    },
+    memberIds(topicId) {
+      return q(`SELECT memory_id FROM topic_members WHERE topic_id = ?`, topicId).map((r) => r.memory_id);
+    },
+    areas(topicId) {
+      return q(memberSql, topicId).filter((m) => m.topic_confidence >= TOPIC_AREA_MIN && m.section !== "observe" && !isCore(m)).slice(0, TOPIC_AREA_MAX).map((m) => ({ id: m.id, area: m.area }));
+    },
+    topicsOf(memoryId) {
+      return q(`SELECT topic_id FROM topic_members WHERE memory_id = ?`, memoryId).map((r) => r.topic_id);
+    },
+    registerSession(p) {
+      const created = !session(p.sessionId);
+      run(`INSERT INTO sessions (session_id, title, first_prompt, cwd, last_seen) VALUES (?, ?, ?, ?, ${NOW})
+           ON CONFLICT(session_id) DO UPDATE SET
+             title = COALESCE(excluded.title, title),
+             first_prompt = CASE WHEN first_prompt = '' THEN excluded.first_prompt ELSE first_prompt END,
+             cwd = COALESCE(excluded.cwd, cwd),
+             last_seen = excluded.last_seen`, p.sessionId, p.title || null, p.prompt ?? "", p.cwd || null);
+      return created;
+    },
+    endSession(sessionId) {
+      run(`DELETE FROM sessions WHERE session_id = ?`, sessionId);
+    },
+    setSessionTopic(sessionId, topicId) {
+      if (topicId !== null && !get(topicId))
+        throw new Error(`\uC8FC\uC81C #${topicId} \uC5C6\uC74C`);
+      run(`INSERT INTO sessions (session_id, topic_id, last_seen) VALUES (?, ?, ${NOW})
+           ON CONFLICT(session_id) DO UPDATE SET topic_id = excluded.topic_id`, sessionId, topicId);
+    },
+    bumpRev(sessionId) {
+      return one(`UPDATE sessions SET topic_rev = topic_rev + 1 WHERE session_id = ? RETURNING topic_rev`, sessionId)?.topic_rev ?? 0;
+    },
+    session,
+    sessions() {
+      return q(`SELECT * FROM sessions ORDER BY last_seen DESC`);
+    },
+    expireSessions(now = new Date) {
+      const cutoff = new Date(now.getTime() - SESSION_TTL_HOURS * 3600000).toISOString().replace("T", " ").replace("Z", "");
+      const ids = q(`SELECT session_id FROM sessions WHERE last_seen < ?`, cutoff).map((r) => r.session_id);
+      run(`DELETE FROM sessions WHERE last_seen < ?`, cutoff);
+      return ids;
+    },
+    confirmInTopic(sessionId, memoryId) {
+      const topicId = session(sessionId)?.topic_id;
+      return topicId != null && rate(topicId, memoryId, 1) !== null;
+    }
+  };
+}
+
+// memory/store.ts
 function fixKind(section, kind) {
   if (section !== "recommend")
     return null;
@@ -17092,6 +17275,8 @@ function rebuildDerived(db) {
     for (const k of kw)
       restore.run(k.keywords, k.id);
     db.run(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`);
+    if (db.query(`SELECT 1 FROM sqlite_master WHERE name = 'topic_members'`).get())
+      db.run(`DELETE FROM topic_members WHERE memory_id NOT IN (SELECT id FROM memory)`);
     const max = db.query(`SELECT COALESCE(max(seq), 0) AS m FROM events`).get().m;
     db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('applied_seq', ?)`, [String(max)]);
   })();
@@ -17103,6 +17288,7 @@ var stem = (w) => {
 };
 function createMemoryStore(db) {
   applyMemorySchema(db);
+  applyTopicSchema(db);
   const strip = ({ keywords: _k, promoted_to: _p, refs: _r, ...e }) => e;
   const insStmt = db.prepare(`INSERT INTO memory (section, area, rule, evidence, confidence, kind)
      VALUES (?, ?, ?, ?, ?, ?) RETURNING id`);
@@ -17132,6 +17318,7 @@ function createMemoryStore(db) {
      confidence = ?, kind = ?, keywords = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`);
   const confirmStmt = db.prepare(`UPDATE memory SET confidence = confidence + 1, updated_at = strftime('%Y-%m-%d %H:%M:%f','now') WHERE id = ?`);
   const delStmt = db.prepare(`DELETE FROM memory WHERE id = ?`);
+  const delMemberStmt = db.prepare(`DELETE FROM topic_members WHERE memory_id = ?`);
   const stampStmt = db.prepare(`SELECT max(updated_at) AS m FROM memory`);
   const coreStmt = db.prepare(`SELECT ${COLS} FROM memory
      WHERE (section = 'punish' OR (section = 'recommend' AND kind = 'method')) AND confidence >= ?
@@ -17219,6 +17406,7 @@ function createMemoryStore(db) {
       return db.transaction(() => {
         if (delStmt.run(id).changes === 0)
           return false;
+        delMemberStmt.run(id);
         logEvent("remove", id, {});
         return true;
       })();
@@ -17229,8 +17417,12 @@ function createMemoryStore(db) {
       if (opts.section) {
         where.push("section = ?");
         args.push(opts.section);
-      } else if (!opts.withObserve)
+      } else if (!opts.withObserve && !opts.ids)
         where.push("section != 'observe'");
+      if (opts.ids) {
+        where.push(`id IN (${opts.ids.map(() => "?").join(",") || "NULL"})`);
+        args.push(...opts.ids);
+      }
       if (opts.minConfidence) {
         where.push("confidence >= ?");
         args.push(opts.minConfidence);
@@ -17291,6 +17483,10 @@ function createMemoryStore(db) {
         out = out.filter((r) => r.section !== "observe");
       if (opts.excludeCore)
         out = out.filter((r) => !isCore(r));
+      if (opts.onlyIds)
+        out = out.filter((r) => opts.onlyIds.includes(r.id));
+      if (opts.excludeIds)
+        out = out.filter((r) => !opts.excludeIds.includes(r.id));
       out.sort((a, b) => b.hits - a.hits || a.rank - b.rank);
       return out.slice(0, limit).map(({ rank: _r, hits: _h, long: _l, ...e }) => e);
     },
@@ -17459,6 +17655,72 @@ function importLegacyDoc(store, docPath) {
   return entries.length;
 }
 
+// memory/session-state.ts
+import { mkdirSync, readFileSync as readFileSync3, readdirSync, renameSync as renameSync2, rmSync, writeFileSync } from "fs";
+import { dirname, join as join2 } from "path";
+function sessionsDir(docDir) {
+  return join2(docDir, "sessions");
+}
+var SAFE_ID = /^[A-Za-z0-9_-]+$/;
+function deliveredName(sid, agentId) {
+  if (!SAFE_ID.test(sid))
+    return null;
+  if (!agentId)
+    return `${sid}.delivered`;
+  return SAFE_ID.test(agentId) ? `${sid}.${agentId}.delivered` : null;
+}
+function writeAtomic(path, data) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, data);
+  renameSync2(tmp, path);
+}
+function writeSessionState(docDir, sid, s) {
+  if (!SAFE_ID.test(sid))
+    return;
+  writeAtomic(join2(sessionsDir(docDir), `${sid}.json`), JSON.stringify(s));
+}
+function readSessionState(docDir, sid) {
+  if (!SAFE_ID.test(sid))
+    return null;
+  try {
+    const s = JSON.parse(readFileSync3(join2(sessionsDir(docDir), `${sid}.json`), "utf8"));
+    return s && typeof s.rev === "number" ? s : null;
+  } catch {
+    return null;
+  }
+}
+function readDelivered(docDir, sid, agentId) {
+  const name = deliveredName(sid, agentId);
+  if (!name)
+    return 0;
+  try {
+    const n = parseInt(readFileSync3(join2(sessionsDir(docDir), name), "utf8"), 10);
+    return Number.isNaN(n) ? 0 : n;
+  } catch {
+    return 0;
+  }
+}
+function writeDelivered(docDir, sid, agentId, rev) {
+  const name = deliveredName(sid, agentId);
+  if (name)
+    writeAtomic(join2(sessionsDir(docDir), name), String(rev));
+}
+function removeSessionFiles(docDir, sid) {
+  if (!SAFE_ID.test(sid))
+    return;
+  const dir = sessionsDir(docDir);
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const n of names)
+    if (n.startsWith(`${sid}.`))
+      rmSync(join2(dir, n), { force: true });
+}
+
 // memory/server.ts
 init_provider();
 init_memory_config();
@@ -17466,14 +17728,14 @@ init_memory_config();
 function initMemory(projectDir) {
   const cfg = loadConfig(projectDir);
   const dir = resolveDocDir(projectDir, cfg);
-  mkdirSync(dir, { recursive: true });
-  const configPath = join3(dir, MEMORY_CONFIG_FILENAME);
+  mkdirSync2(dir, { recursive: true });
+  const configPath = join4(dir, MEMORY_CONFIG_FILENAME);
   if (!existsSync3(configPath)) {
-    writeFileSync(configPath, JSON.stringify(MEMORY_CONFIG_DEFAULTS, null, 2) + `
+    writeFileSync2(configPath, JSON.stringify(MEMORY_CONFIG_DEFAULTS, null, 2) + `
 `);
   }
   const memoryConfig = loadMemoryConfig(configPath);
-  const dbPath = join3(dir, memoryConfig.db);
+  const dbPath = join4(dir, memoryConfig.db);
   return { dbPath, configPath, memoryConfig, port: cfg.port ?? memoryConfig.port };
 }
 function pickKeywordsLine(raw) {
@@ -17510,13 +17772,13 @@ if (import.meta.main) {
       `value: ${body}`
     ].join(`
 `);
-    const outFile = join3(tmpdir(), `nunchi-kw-${process.pid}-${++kwSeq}.txt`);
+    const outFile = join4(tmpdir(), `nunchi-kw-${process.pid}-${++kwSeq}.txt`);
     const proc = spawnProvider(provider.argv(model, outFile), prompt);
     const timer = setTimeout(() => proc.kill(), ENRICH_TIMEOUT_MS);
     try {
       let text = await new Response(proc.stdout).text();
       if (provider.output === "file")
-        text = readFileSync4(outFile, "utf8");
+        text = readFileSync5(outFile, "utf8");
       return pickKeywordsLine(text);
     } catch (e) {
       console.error(`[nunchi] keyword \uBCF4\uAC15 \uC2E4\uD328 (${label}): ${e}`);
@@ -17524,7 +17786,7 @@ if (import.meta.main) {
     } finally {
       clearTimeout(timer);
       if (provider.output === "file")
-        rmSync(outFile, { force: true });
+        rmSync2(outFile, { force: true });
     }
   }
   const httpServer = createServer();
@@ -17536,7 +17798,7 @@ if (import.meta.main) {
     throw e;
   });
   if (memoryConfig.web) {
-    const dashDir = join3(PLUGIN_ROOT, "memory", "dashboard");
+    const dashDir = join4(PLUGIN_ROOT, "memory", "dashboard");
     const MIME = {
       ".html": "text/html; charset=utf-8",
       ".css": "text/css; charset=utf-8",
@@ -17555,7 +17817,7 @@ if (import.meta.main) {
         return;
       }
       res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
-      res.end(readFileSync4(file));
+      res.end(readFileSync5(file));
     });
   }
   const io = new Server(httpServer, { serveClient: false });
@@ -17600,6 +17862,48 @@ if (import.meta.main) {
     const imported = importLegacyDoc(store, resolveDocPath(projectDir, pluginCfg));
     if (imported !== null)
       console.log(`[nunchi] calibration.md \uC784\uD3EC\uD2B8: ${imported}\uAC74 \u2192 DB (\uC6D0\uBCF8\uC740 .imported\uB85C \uBCF4\uC874)`);
+    const topics = createTopicStore(db);
+    const docDir = resolveDocDir(projectDir, pluginCfg);
+    const sid = (v) => {
+      const id = String(v ?? "");
+      if (!SAFE_ID.test(id))
+        throw new Error(`\uC798\uBABB\uB41C sessionId: ${id}`);
+      return id;
+    };
+    const topicState = (topicId) => {
+      const t = topicId === null ? null : topics.get(topicId);
+      return t ? { id: t.id, name: t.name, description: t.description, folders: t.folders, areas: topics.areas(t.id) } : null;
+    };
+    const withLabel = (s) => ({ ...s, label: sessionLabel(s) });
+    const dropFiles = (id) => {
+      try {
+        removeSessionFiles(docDir, id);
+      } catch (e) {
+        console.error(`[nunchi] \uC138\uC158 \uD30C\uC77C \uC0AD\uC81C \uC2E4\uD328 (${id}): ${e}`);
+      }
+    };
+    const expire = () => topics.expireSessions().forEach(dropFiles);
+    function syncSessionStates() {
+      for (const row of topics.sessions()) {
+        try {
+          const want = topicState(row.topic_id);
+          const cur = readSessionState(docDir, row.session_id);
+          if (!cur && want === null)
+            continue;
+          if (cur && JSON.stringify(cur.topic) === JSON.stringify(want))
+            continue;
+          writeSessionState(docDir, row.session_id, { rev: topics.bumpRev(row.session_id), topic: want });
+        } catch (e) {
+          console.error(`[nunchi] \uC138\uC158 \uC0C1\uD0DC \uD30C\uC77C \uC4F0\uAE30 \uC2E4\uD328 (${row.session_id}): ${e}`);
+        }
+      }
+    }
+    const changed = () => {
+      syncSessionStates();
+      io.emit("ws:changed");
+    };
+    expire();
+    syncSessionStates();
     async function enrich(id) {
       const e = store.get(id);
       if (!e)
@@ -17616,6 +17920,7 @@ if (import.meta.main) {
       socket.on("mem:info", (ack) => handle("mem:info", () => ({ projectDir, dbPath, port }))(ack));
       socket.on("mem:doc", (ack) => handle("mem:doc", () => ({ doc: renderMemoryDoc(store, basename(projectDir)) }))(ack));
       socket.on("mem:add", (p, ack) => handle(`mem:add [${p.area}]`, () => {
+        const tid = p.sessionId ? topics.session(sid(p.sessionId))?.topic_id : null;
         const id = store.add({
           section: sec(p.section),
           area: String(p.area),
@@ -17625,6 +17930,9 @@ if (import.meta.main) {
           kind: kindOf(p.kind),
           parent: Number.isFinite(p.parent) ? Number(p.parent) : undefined
         });
+        if (tid != null)
+          topics.link(tid, [id]);
+        changed();
         if (model && p.section !== "observe")
           enrich(id);
         return { id };
@@ -17638,6 +17946,7 @@ if (import.meta.main) {
           confidence: Number.isFinite(p.confidence) ? Number(p.confidence) : undefined,
           kind: kindOf(p.kind)
         });
+        changed();
         if (model)
           enrich(id);
         return { id };
@@ -17650,8 +17959,14 @@ if (import.meta.main) {
       })(ack));
       socket.on("mem:update", (p, ack) => handle(`mem:update #${p.id}${p.confirm ? " confirm" : p.reverse ? " reverse" : Array.isArray(p.link) ? " link" : ""}`, () => {
         const id = Number(p.id);
-        if (p.confirm)
-          return { updated: store.confirm(id) };
+        if (p.confirm) {
+          const session = p.sessionId ? sid(p.sessionId) : null;
+          const updated = store.confirm(id);
+          if (updated && session)
+            topics.confirmInTopic(session, id);
+          changed();
+          return { updated };
+        }
         if (Array.isArray(p.link))
           return { updated: store.link(id, p.link.map(Number)) };
         if (p.reverse) {
@@ -17660,6 +17975,7 @@ if (import.meta.main) {
           const updated = store.reverse(id, String(p.evidence));
           if (updated && model)
             enrich(id);
+          changed();
           return { updated };
         }
         const fields = {};
@@ -17678,29 +17994,117 @@ if (import.meta.main) {
         const updated = store.update(id, fields);
         if (updated && model && (fields.area ?? fields.rule ?? fields.evidence) !== undefined)
           enrich(id);
+        changed();
         return { updated };
       })(ack));
-      socket.on("mem:remove", (p, ack) => handle(`mem:remove #${p.id}`, () => ({ removed: store.remove(Number(p.id)) }))(ack));
+      socket.on("mem:remove", (p, ack) => handle(`mem:remove #${p.id}`, () => {
+        const removed = store.remove(Number(p.id));
+        changed();
+        return { removed };
+      })(ack));
       socket.on("mem:search", (p, ack) => {
         const queries = Array.isArray(p.queries) ? p.queries.map(String) : [];
-        handle(`mem:search [${queries.join(" | ")}]`, () => ({
-          rows: store.search(queries, {
+        handle(`mem:search [${queries.join(" | ")}]`, () => {
+          const base = {
             sections: Array.isArray(p.sections) ? p.sections.map(sec) : p.section ? [sec(p.section)] : undefined,
-            limit: Number(p.limit) || undefined,
             excludeCore: Boolean(p.excludeCore),
             strict: Boolean(p.strict)
-          })
-        }))(ack);
+          };
+          const limit = Number(p.limit) || 3;
+          const tid = p.topicId != null ? Number(p.topicId) : p.sessionId ? topics.session(sid(p.sessionId))?.topic_id ?? null : null;
+          const ids = tid != null ? topics.memberIds(tid) : [];
+          if (!ids.length)
+            return { rows: store.search(queries, { ...base, limit }) };
+          const own = store.search(queries, { ...base, limit, onlyIds: ids }).map((r) => ({ ...r, topic: true }));
+          const rest = own.length < limit ? store.search(queries, { ...base, limit: limit - own.length, excludeIds: ids }) : [];
+          return { rows: [...own, ...rest] };
+        })(ack);
       });
       socket.on("mem:list", (p, ack) => handle("mem:list", () => ({
         rows: store.list({
           section: sec(p?.section),
           minConfidence: Number(p?.minConfidence) || undefined,
-          withObserve: Boolean(p?.withObserve)
+          withObserve: Boolean(p?.withObserve),
+          ids: Array.isArray(p?.ids) ? p.ids.map(Number) : undefined
         })
       }))(ack));
       socket.on("mem:core", (ack) => handle("mem:core", () => ({ rows: store.core() }))(ack));
       socket.on("mem:stamp", (ack) => handle("mem:stamp", () => ({ stamp: store.stamp() }))(ack));
+      const ws = (ev, fn, mutate = false) => socket.on(ev, (p, ack) => {
+        if (typeof p === "function")
+          [p, ack] = [{}, p];
+        handle(ev, () => {
+          const res = fn(p ?? {});
+          if (mutate)
+            changed();
+          return res;
+        })(ack);
+      });
+      const strs = (v) => Array.isArray(v) ? v.map(String) : undefined;
+      const opt = (v) => v == null ? undefined : String(v);
+      const nums = (v) => Array.isArray(v) ? v.map(Number) : [];
+      const stateOf = (id) => {
+        const row = topics.session(id);
+        return {
+          rev: row?.topic_rev ?? 0,
+          topic: topicState(row?.topic_id ?? null),
+          memberIds: row?.topic_id != null ? topics.memberIds(row.topic_id) : []
+        };
+      };
+      ws("ws:board", () => {
+        expire();
+        return { topics: topics.list(), sessions: topics.sessions().map(withLabel) };
+      });
+      ws("ws:topic", (p) => ({
+        topic: topics.get(Number(p.id)),
+        members: topics.members(Number(p.id)),
+        sessions: topics.sessions().filter((s) => s.topic_id === Number(p.id)).map(withLabel)
+      }));
+      ws("ws:topic:create", (p) => ({
+        id: topics.create({ name: String(p.name ?? ""), description: opt(p.description), folders: strs(p.folders) })
+      }), true);
+      ws("ws:topic:update", (p) => ({
+        updated: topics.update(Number(p.id), { name: opt(p.name), description: opt(p.description), folders: strs(p.folders) })
+      }), true);
+      ws("ws:topic:remove", (p) => {
+        const removed = topics.get(Number(p.id)) !== null;
+        topics.remove(Number(p.id));
+        return { removed };
+      }, true);
+      ws("ws:memory:topics", (p) => ({ topicIds: topics.topicsOf(Number(p.id)) }));
+      ws("ws:topic:link", (p) => ({ count: topics.link(Number(p.topicId), nums(p.memoryIds)) }), true);
+      ws("ws:topic:unlink", (p) => ({ count: topics.unlink(Number(p.topicId), nums(p.memoryIds)) }), true);
+      ws("ws:topic:rate", (p) => {
+        const delta = Number(p.delta);
+        if (delta !== 1 && delta !== -1)
+          throw new Error(`\uC798\uBABB\uB41C delta: ${p.delta} (1 \uB610\uB294 -1)`);
+        return { confidence: topics.rate(Number(p.topicId), Number(p.memoryId), delta) };
+      }, true);
+      ws("ws:session:register", (p) => {
+        const created = topics.registerSession({
+          sessionId: sid(p.sessionId),
+          title: p.title == null ? null : String(p.title),
+          cwd: p.cwd == null ? null : String(p.cwd),
+          prompt: p.prompt == null ? undefined : String(p.prompt)
+        });
+        return { created };
+      }, true);
+      ws("ws:session:end", (p) => {
+        const id = sid(p.sessionId);
+        topics.endSession(id);
+        dropFiles(id);
+        return {};
+      }, true);
+      ws("ws:session:set", (p) => {
+        const id = sid(p.sessionId);
+        if (!topics.session(id))
+          throw new Error(`\uC138\uC158 \uC5C6\uC74C: ${id} (\uC885\uB8CC\xB7\uB9CC\uB8CC\uB410\uAC70\uB098 \uB4F1\uB85D \uC804)`);
+        topics.setSessionTopic(id, p.topicId == null ? null : Number(p.topicId));
+        syncSessionStates();
+        const { rev, topic } = stateOf(id);
+        return { rev, topic };
+      }, true);
+      ws("ws:session", (p) => stateOf(sid(p.sessionId)));
       socket.on("mem:shutdown", (ack) => {
         console.log(`[${ts()}] mem:shutdown \u2014 \uC885\uB8CC`);
         if (typeof ack === "function")

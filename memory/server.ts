@@ -26,6 +26,15 @@ import {
   renderMemoryDoc,
   type NewMemoryEntry,
 } from "./store.ts";
+import { createTopicStore, sessionLabel, type SessionRow } from "./topics.ts";
+import {
+  SAFE_ID,
+  readSessionState,
+  removeSessionFiles,
+  writeSessionState,
+  type SessionStateFile,
+  type TopicState,
+} from "./session-state.ts";
 import { DEFAULT_PROVIDER, PROVIDERS } from "./provider/index.ts";
 import {
   MEMORY_CONFIG_DEFAULTS,
@@ -202,6 +211,48 @@ if (import.meta.main) {
   const imported = importLegacyDoc(store, resolveDocPath(projectDir, pluginCfg));
   if (imported !== null)
     console.log(`[nunchi] calibration.md 임포트: ${imported}건 → DB (원본은 .imported로 보존)`);
+  const topics = createTopicStore(db);
+  // 상태 파일 위치 — initMemory와 같은 폴더 (훅이 소켓 없이 읽는다)
+  const docDir = resolveDocDir(projectDir, pluginCfg);
+  const sid = (v: unknown): string => {
+    const id = String(v ?? "");
+    if (!SAFE_ID.test(id)) throw new Error(`잘못된 sessionId: ${id}`);
+    return id;
+  };
+  const topicState = (topicId: number | null): TopicState | null => {
+    const t = topicId === null ? null : topics.get(topicId);
+    return t ? { id: t.id, name: t.name, description: t.description, folders: t.folders, areas: topics.areas(t.id) } : null;
+  };
+  const withLabel = (s: SessionRow) => ({ ...s, label: sessionLabel(s) });
+  /** 상태 파일 삭제 실패는 로그만 — 세션 행 정리(만료·종료)는 계속한다 */
+  const dropFiles = (id: string) => {
+    try { removeSessionFiles(docDir, id); } catch (e) { console.error(`[nunchi] 세션 파일 삭제 실패 (${id}): ${e}`); }
+  };
+  /** 만료 세션 정리 — 행과 상태 파일 모두 */
+  const expire = () => topics.expireSessions().forEach(dropFiles);
+  /** 세션별로 렌더링한 주제 상태가 파일과 다르면 rev를 올리고 파일을 다시 쓴다 — 훅은 rev만 비교한다 */
+  // shortcut: 변경마다 모든 세션 상태를 다시 계산, 세션이 수십 개를 넘으면 영향받은 세션만 동기화
+  function syncSessionStates(): void {
+    for (const row of topics.sessions()) {
+      try {
+        const want = topicState(row.topic_id);
+        const cur = readSessionState(docDir, row.session_id);
+        if (!cur && want === null) continue;
+        if (cur && JSON.stringify(cur.topic) === JSON.stringify(want)) continue;
+        writeSessionState(docDir, row.session_id, { rev: topics.bumpRev(row.session_id), topic: want });
+      } catch (e) {
+        console.error(`[nunchi] 세션 상태 파일 쓰기 실패 (${row.session_id}): ${e}`);
+      }
+    }
+  }
+  /** 변경성 이벤트 뒤처리 — 상태 파일 동기화 + 대시보드에 갱신 알림 */
+  const changed = () => {
+    syncSessionStates();
+    io.emit("ws:changed");
+  };
+  expire();
+  syncSessionStates();
+
   /** mem:add/update 후 백그라운드 보강 — updated_at 가드로 낡은 키워드 폐기 */
   async function enrich(id: number): Promise<void> {
     const e = store.get(id);
@@ -229,6 +280,8 @@ if (import.meta.main) {
     );
     socket.on("mem:add", (p, ack) =>
       handle(`mem:add [${p.area}]`, () => {
+        // 세션에 주제가 있으면 새 기억을 그 주제에 소속시킨다
+        const tid = p.sessionId ? topics.session(sid(p.sessionId))?.topic_id : null;
         const id = store.add({
           section: sec(p.section), area: String(p.area), rule: String(p.rule),
           evidence: String(p.evidence),
@@ -236,6 +289,8 @@ if (import.meta.main) {
           kind: kindOf(p.kind),
           parent: Number.isFinite(p.parent) ? Number(p.parent) : undefined,
         } as NewMemoryEntry & { parent?: number });
+        if (tid != null) topics.link(tid, [id]);
+        changed();
         // 관찰은 자동 회수 제외 대상 — 보강 비용을 쓰지 않는다 (승격 시 promote가 보강)
         if (model && p.section !== "observe") void enrich(id);
         return { id };
@@ -252,6 +307,7 @@ if (import.meta.main) {
             kind: kindOf(p.kind),
           } as NewMemoryEntry
         );
+        changed();
         if (model) void enrich(id);
         return { id };
       })(ack)
@@ -268,7 +324,13 @@ if (import.meta.main) {
     socket.on("mem:update", (p, ack) =>
       handle(`mem:update #${p.id}${p.confirm ? " confirm" : p.reverse ? " reverse" : Array.isArray(p.link) ? " link" : ""}`, () => {
         const id = Number(p.id);
-        if (p.confirm) return { updated: store.confirm(id) };
+        if (p.confirm) {
+          const session = p.sessionId ? sid(p.sessionId) : null; // confirm 전에 검증 — 잘못된 id가 반쯤 적용된 상태를 남기지 않게
+          const updated = store.confirm(id);
+          if (updated && session) topics.confirmInTopic(session, id);
+          changed();
+          return { updated };
+        }
         if (Array.isArray(p.link))
           return { updated: store.link(id, p.link.map(Number)) };
         if (p.reverse) {
@@ -277,6 +339,7 @@ if (import.meta.main) {
           const updated = store.reverse(id, String(p.evidence));
           // reverse는 evidence를 교체해 keywords가 비워지므로 edit 경로와 동일하게 재보강한다
           if (updated && model) void enrich(id);
+          changed();
           return { updated };
         }
         const fields: Partial<NewMemoryEntry> = {};
@@ -289,23 +352,37 @@ if (import.meta.main) {
         const updated = store.update(id, fields);
         if (updated && model && (fields.area ?? fields.rule ?? fields.evidence) !== undefined)
           void enrich(id);
+        changed();
         return { updated };
       })(ack)
     );
     socket.on("mem:remove", (p, ack) =>
-      handle(`mem:remove #${p.id}`, () => ({ removed: store.remove(Number(p.id)) }))(ack)
+      handle(`mem:remove #${p.id}`, () => {
+        const removed = store.remove(Number(p.id));
+        changed();
+        return { removed };
+      })(ack)
     );
     socket.on("mem:search", (p, ack) => {
       const queries = Array.isArray(p.queries) ? p.queries.map(String) : [];
-      handle(`mem:search [${queries.join(" | ")}]`, () => ({
-        rows: store.search(queries, {
+      handle(`mem:search [${queries.join(" | ")}]`, () => {
+        const base = {
           // 구 클라이언트의 단수 section 페이로드를 배열로 매핑 (하위 호환)
           sections: Array.isArray(p.sections) ? p.sections.map(sec) : p.section ? [sec(p.section)] : undefined,
-          limit: Number(p.limit) || undefined,
           excludeCore: Boolean(p.excludeCore),
           strict: Boolean(p.strict),
-        }),
-      }))(ack);
+        };
+        const limit = Number(p.limit) || 3; // store.search 기본값과 같다
+        // 주제: 소속으로 먼저 limit까지 채우고, 남는 자리를 일반 검색으로 보충한다 (훅·MCP 공통 경로)
+        const tid = p.topicId != null ? Number(p.topicId)
+          : p.sessionId ? topics.session(sid(p.sessionId))?.topic_id ?? null : null;
+        const ids = tid != null ? topics.memberIds(tid) : [];
+        if (!ids.length) return { rows: store.search(queries, { ...base, limit }) };
+        const own = store.search(queries, { ...base, limit, onlyIds: ids }).map((r) => ({ ...r, topic: true }));
+        const rest = own.length < limit
+          ? store.search(queries, { ...base, limit: limit - own.length, excludeIds: ids }) : [];
+        return { rows: [...own, ...rest] };
+      })(ack);
     });
     socket.on("mem:list", (p, ack) =>
       handle("mem:list", () => ({
@@ -313,11 +390,87 @@ if (import.meta.main) {
           section: sec(p?.section) as NewMemoryEntry["section"] | undefined,
           minConfidence: Number(p?.minConfidence) || undefined,
           withObserve: Boolean(p?.withObserve),
+          ids: Array.isArray(p?.ids) ? p.ids.map(Number) : undefined,
         }),
       }))(ack)
     );
     socket.on("mem:core", (ack) => handle("mem:core", () => ({ rows: store.core() }))(ack));
     socket.on("mem:stamp", (ack) => handle("mem:stamp", () => ({ stamp: store.stamp() }))(ack));
+    // ── 주제·작업공간·세션 (ws:*) ──
+    // 페이로드 없는 이벤트는 (ack)만 받는다 — 어느 쪽이든 p는 객체로 정규화
+    const ws = (ev: string, fn: (p: any) => Record<string, unknown>, mutate = false) =>
+      socket.on(ev, (p, ack) => {
+        if (typeof p === "function") [p, ack] = [{}, p];
+        handle(ev, () => {
+          const res = fn(p ?? {});
+          if (mutate) changed();
+          return res;
+        })(ack);
+      });
+    const strs = (v: unknown) => (Array.isArray(v) ? v.map(String) : undefined);
+    const opt = (v: unknown) => (v == null ? undefined : String(v));
+    const nums = (v: unknown) => (Array.isArray(v) ? v.map(Number) : []);
+    const stateOf = (id: string): SessionStateFile & { memberIds: number[] } => {
+      const row = topics.session(id);
+      return {
+        rev: row?.topic_rev ?? 0,
+        topic: topicState(row?.topic_id ?? null),
+        memberIds: row?.topic_id != null ? topics.memberIds(row.topic_id) : [],
+      };
+    };
+    ws("ws:board", () => {
+      expire(); // 조회 전에 만료 처리
+      return { topics: topics.list(), sessions: topics.sessions().map(withLabel) };
+    });
+    ws("ws:topic", (p) => ({
+      topic: topics.get(Number(p.id)),
+      members: topics.members(Number(p.id)),
+      sessions: topics.sessions().filter((s) => s.topic_id === Number(p.id)).map(withLabel),
+    }));
+    ws("ws:topic:create", (p) => ({
+      id: topics.create({ name: String(p.name ?? ""), description: opt(p.description), folders: strs(p.folders) }),
+    }), true);
+    ws("ws:topic:update", (p) => ({
+      updated: topics.update(Number(p.id), { name: opt(p.name), description: opt(p.description), folders: strs(p.folders) }),
+    }), true);
+    ws("ws:topic:remove", (p) => {
+      const removed = topics.get(Number(p.id)) !== null;
+      topics.remove(Number(p.id)); // 해제된 세션의 상태 파일은 changed()의 동기화가 갱신한다
+      return { removed };
+    }, true);
+    ws("ws:memory:topics", (p) => ({ topicIds: topics.topicsOf(Number(p.id)) })); // Memory 탭의 주제 첨부 줄
+    ws("ws:topic:link", (p) => ({ count: topics.link(Number(p.topicId), nums(p.memoryIds)) }), true);
+    ws("ws:topic:unlink", (p) => ({ count: topics.unlink(Number(p.topicId), nums(p.memoryIds)) }), true);
+    ws("ws:topic:rate", (p) => {
+      const delta = Number(p.delta);
+      if (delta !== 1 && delta !== -1) throw new Error(`잘못된 delta: ${p.delta} (1 또는 -1)`);
+      return { confidence: topics.rate(Number(p.topicId), Number(p.memoryId), delta) };
+    }, true);
+    ws("ws:session:register", (p) => {
+      const created = topics.registerSession({
+        sessionId: sid(p.sessionId),
+        title: p.title == null ? null : String(p.title),
+        cwd: p.cwd == null ? null : String(p.cwd),
+        prompt: p.prompt == null ? undefined : String(p.prompt),
+      });
+      return { created };
+    }, true);
+    ws("ws:session:end", (p) => {
+      const id = sid(p.sessionId);
+      topics.endSession(id);
+      dropFiles(id);
+      return {};
+    }, true);
+    ws("ws:session:set", (p) => {
+      const id = sid(p.sessionId);
+      // 종료·만료된 세션을 대시보드가 옮기면 행이 되살아나 유령 세션이 된다 — 등록된 세션만 받는다
+      if (!topics.session(id)) throw new Error(`세션 없음: ${id} (종료·만료됐거나 등록 전)`);
+      topics.setSessionTopic(id, p.topicId == null ? null : Number(p.topicId));
+      syncSessionStates(); // 응답의 rev가 동기화 결과를 담도록 먼저 실행 (뒤의 changed()는 변화 없으면 no-op)
+      const { rev, topic } = stateOf(id);
+      return { rev, topic };
+    }, true);
+    ws("ws:session", (p) => stateOf(sid(p.sessionId)));
     socket.on("mem:shutdown", (ack) => {
       console.log(`[${ts()}] mem:shutdown — 종료`);
       if (typeof ack === "function") ack({ ok: true });

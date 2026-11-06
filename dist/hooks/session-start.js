@@ -147,7 +147,7 @@ function formatMemoryEntries(rows) {
   return rows.map((r) => `- (#${r.id}) [${label(r)}\xB7\uC2E0\uB8B0\uB3C4${r.confidence}] ${r.area}: ${r.rule} (\uADFC\uAC70: ${r.evidence})`).join(`
 `);
 }
-var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.13.5", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL, label = (r) => r.section === "recommend" ? `\uAD8C\uC7A5\xB7${r.kind === "method" ? "\uBC29\uBC95" : "\uAC15\uB3C4"}` : SECTION_LABEL[r.section] ?? r.section;
+var BUNDLED = true, PLUGIN_ROOT, VERSION = "0.14.0", DEFAULTS, DOC_FILENAME = "calibration.md", SECTION_LABEL, label = (r) => r.section === "recommend" ? `\uAD8C\uC7A5\xB7${r.kind === "method" ? "\uBC29\uBC95" : "\uAC15\uB3C4"}` : SECTION_LABEL[r.section] ?? r.section;
 var init_config = __esm(() => {
   PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
   DEFAULTS = {
@@ -4130,11 +4130,11 @@ var init_provider = __esm(() => {
 });
 
 // memory/memory-config.ts
-import { readFileSync as readFileSync2 } from "fs";
-import { join as join2 } from "path";
+import { readFileSync as readFileSync3 } from "fs";
+import { join as join3 } from "path";
 function loadMemoryConfig(configPath) {
   try {
-    const raw = JSON.parse(readFileSync2(configPath, "utf8").trim());
+    const raw = JSON.parse(readFileSync3(configPath, "utf8").trim());
     const merged = { ...MEMORY_CONFIG_DEFAULTS, ...raw };
     if (typeof merged.host === "string")
       merged.host = !LOOPBACKS.includes(merged.host);
@@ -4147,7 +4147,7 @@ function loadMemoryConfig(configPath) {
 }
 function resolveMemoryConn(projectDir) {
   const cfg = loadConfig(projectDir);
-  const mc = loadMemoryConfig(join2(resolveDocDir(projectDir, cfg), MEMORY_CONFIG_FILENAME));
+  const mc = loadMemoryConfig(join3(resolveDocDir(projectDir, cfg), MEMORY_CONFIG_FILENAME));
   return { port: cfg.port ?? mc.port, token: mc.token };
 }
 function resolveMemoryPort(projectDir) {
@@ -4172,11 +4172,11 @@ var init_memory_config = __esm(() => {
 
 // memory/client.ts
 import { spawn } from "child_process";
-import { existsSync as existsSync2, mkdirSync, readFileSync as readFileSync3, writeFileSync } from "fs";
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync2 } from "fs";
 import { createServer } from "http";
-import { basename, dirname, join as join3, resolve } from "path";
+import { basename, dirname as dirname2, join as join4, resolve as resolve2 } from "path";
 function sameProject(a, b) {
-  const [x, y] = [resolve(a), resolve(b)];
+  const [x, y] = [resolve2(a), resolve2(b)];
   return process.platform === "win32" ? x.toLowerCase() === y.toLowerCase() : x === y;
 }
 async function serverProjectDir(s) {
@@ -4196,15 +4196,15 @@ async function assignFreePort(projectDir = process.env.CLAUDE_PROJECT_DIR || pro
       srv.close(() => res(p));
     });
   });
-  const cfgPath = join3(projectDir, ".claude", "nunchi.json");
+  const cfgPath = join4(projectDir, ".claude", "nunchi.json");
   let cfg = {};
   try {
     if (existsSync2(cfgPath))
-      cfg = JSON.parse(readFileSync3(cfgPath, "utf8").trim());
+      cfg = JSON.parse(readFileSync4(cfgPath, "utf8").trim());
   } catch {}
   cfg.port = port;
-  mkdirSync(dirname(cfgPath), { recursive: true });
-  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + `
+  mkdirSync2(dirname2(cfgPath), { recursive: true });
+  writeFileSync2(cfgPath, JSON.stringify(cfg, null, 2) + `
 `);
   return port;
 }
@@ -4277,12 +4277,13 @@ async function connectMemory(projectDir = process.env.CLAUDE_PROJECT_DIR || proc
     }
   }
   const s = socket;
-  const req = async (ev, payload) => {
-    const res = payload === undefined ? await s.timeout(5000).emitWithAck(ev) : await s.timeout(5000).emitWithAck(ev, payload);
+  const req = async (ev, payload, ms = 5000) => {
+    const res = payload === undefined ? await s.timeout(ms).emitWithAck(ev) : await s.timeout(ms).emitWithAck(ev, payload);
     if (!res.ok)
       throw new Error(res.error);
     return res;
   };
+  const ws = (ev, payload) => req(ev, payload, 1500);
   return {
     doc: async () => (await req("mem:doc")).doc ?? null,
     add: async (e) => (await req("mem:add", e)).id,
@@ -4299,6 +4300,21 @@ async function connectMemory(projectDir = process.env.CLAUDE_PROJECT_DIR || proc
     list: async (opts = {}) => (await req("mem:list", opts)).rows,
     core: async () => (await req("mem:core")).rows,
     stamp: async () => (await req("mem:stamp")).stamp ?? null,
+    topics: async () => (await ws("ws:board")).topics,
+    createTopic: async (t) => (await ws("ws:topic:create", t)).id,
+    linkTopic: async (topicId, memoryIds) => (await ws("ws:topic:link", { topicId, memoryIds })).count,
+    unlinkTopic: async (topicId, memoryIds) => (await ws("ws:topic:unlink", { topicId, memoryIds })).count,
+    topicByName: async (name) => (await ws("ws:board")).topics.find((t) => t.name === name.trim()) ?? null,
+    registerSession: async (p) => ({ created: Boolean((await ws("ws:session:register", p)).created) }),
+    endSession: async (sessionId) => void await ws("ws:session:end", { sessionId }),
+    setSessionTopic: async (sessionId, topicId) => {
+      const { rev, topic } = await ws("ws:session:set", { sessionId, topicId });
+      return { rev, topic };
+    },
+    sessionState: async (sessionId) => {
+      const { rev, topic, memberIds } = await ws("ws:session", { sessionId });
+      return { rev, topic, memberIds };
+    },
     shutdown: async () => {
       const gone = new Promise((resolve) => {
         const t = setTimeout(resolve, 2000);
@@ -4324,7 +4340,7 @@ var init_client = __esm(() => {
   init_esm_debug3();
   init_memory_config();
   init_config();
-  SERVER_PATH = join3(PLUGIN_ROOT, BUNDLED ? "dist/memory/server.js" : "memory/server.ts");
+  SERVER_PATH = join4(PLUGIN_ROOT, BUNDLED ? "dist/memory/server.js" : "memory/server.ts");
   ProjectMismatchError = class ProjectMismatchError extends Error {
     port;
     expectedDir;
@@ -4346,20 +4362,194 @@ var init_client = __esm(() => {
 
 // hooks/session-start.ts
 init_config();
-import { mkdirSync as mkdirSync2 } from "fs";
-import { join as join4 } from "path";
+import { mkdirSync as mkdirSync3 } from "fs";
+import { join as join5 } from "path";
+
+// hooks/topic.ts
+init_config();
+import { isAbsolute as isAbsolute2, resolve } from "path";
+var CORE_HEADING = "[\uD655\uC815 \uADDC\uCE59 \u2014 '\uBC8C\uC8FC\uB294 \uAC83'\xB7'\uAD8C\uC7A5(\uBC29\uBC95)' \uC2E0\uB8B0\uB3C4 \uB192\uC74C(3+). \uD56D\uC0C1 \uC9C0\uD0A8\uB2E4]";
+var CORE_OUTSIDE_HEADING = "[\uD655\uC815 \uADDC\uCE59 \u2014 \uC8FC\uC81C \uBC16, \uC804\uBB38\uC740 nunchi_list(ids)\uB85C \uC870\uD68C. \uD56D\uC0C1 \uC9C0\uD0A8\uB2E4]";
+var TOPIC_LIST_MAX = 20;
+var TOPIC_CLEARED = "[nunchi] \uD604\uC7AC \uC8FC\uC81C \uC5C6\uC74C \u2014 \uC774\uC804\uC5D0 \uC8FC\uC785\uB41C \uC8FC\uC81C \uBE14\uB85D\uC740 \uBB34\uD6A8";
+function sessionIdLine(sid) {
+  return `[nunchi] \uC774 \uC138\uC158 id: ${sid} \u2014 nunchi_topic\xB7nunchi_record\xB7nunchi_update\xB7nunchi_search \uD638\uCD9C \uC2DC session_id\uB85C \uB118\uAE34\uB2E4`;
+}
+function formatTopicList(topics, max = TOPIC_LIST_MAX) {
+  const lines = [];
+  if (topics.length) {
+    lines.push("[nunchi] \uC8FC\uC81C \uBAA9\uB85D:");
+    const shown = topics.slice(0, max);
+    for (const t of shown)
+      lines.push(t.description ? `- ${t.name} \u2014 ${t.description}` : `- ${t.name}`);
+    if (topics.length > shown.length)
+      lines.push(`- \uC678 ${topics.length - shown.length}\uAC1C \u2014 \uC804\uCCB4\uB294 nunchi_topic(list)`);
+  }
+  lines.push("[nunchi] \uC791\uC5C5\uC744 \uC2DC\uC791\uD560 \uB54C \uB9DE\uB294 \uC8FC\uC81C\uAC00 \uC788\uC73C\uBA74 nunchi_topic(set)\uC73C\uB85C \uC124\uC815\uD55C\uB2E4. \uC0AC\uC6A9\uC790\uAC00 \uC8FC\uC81C \uBCC0\uACBD\uC744 \uC694\uCCAD\uD558\uBA74(`/nunchi:topic`, \uC790\uC5F0\uC5B4) \uB530\uB978\uB2E4. \uC791\uC5C5\uACF5\uAC04 \uBC16 \uD30C\uC77C\uC744 \uACE0\uCCD0\uC57C \uD558\uBA74 \uC0AC\uC6A9\uC790\uC5D0\uAC8C \uC54C\uB9B0\uB2E4.");
+  return lines.join(`
+`);
+}
+function formatTopicBlock(t, changed = false, maxAreas = Infinity) {
+  const lines = [];
+  if (changed)
+    lines.push("[nunchi] \uC8FC\uC81C \uC815\uBCF4\uAC00 \uAC31\uC2E0\uB428");
+  lines.push(`[nunchi] \uD604\uC7AC \uC8FC\uC81C: ${t.name}${t.description ? ` \u2014 ${t.description}` : ""}`);
+  lines.push(t.folders.length ? `\uC791\uC5C5\uACF5\uAC04: ${t.folders.join(", ")} \u2014 \uC774 \uD3F4\uB354\uB4E4 \uC548\uC5D0\uC11C \uC791\uC5C5\uD55C\uB2E4` : "\uC791\uC5C5\uACF5\uAC04: (\uC9C0\uC815 \uC5C6\uC74C)");
+  if (t.areas.length) {
+    lines.push("\uC8FC\uC81C \uD575\uC2EC \uC601\uC5ED(\uC8FC\uC81C \uC2E0\uB8B0\uB3C4 3+, \uC804\uBB38\uC740 nunchi_list(ids)\uB85C \uC870\uD68C):");
+    const shown = t.areas.slice(0, maxAreas);
+    for (const a of shown)
+      lines.push(`- #${a.id} ${a.area}`);
+    if (t.areas.length > shown.length)
+      lines.push(`- \uC678 ${t.areas.length - shown.length}\uAC1C`);
+  }
+  return lines.join(`
+`);
+}
+function fitTopicBlock(t, budget) {
+  let n = t.areas.length;
+  let block = formatTopicBlock(t, false, n);
+  while (n > 0 && block.length > budget)
+    block = formatTopicBlock(t, false, --n);
+  return block;
+}
+function formatCoreBlock(core, memberIds) {
+  if (!core.length)
+    return "";
+  if (memberIds === null)
+    return `${CORE_HEADING}
+${formatMemoryEntries(core)}`;
+  const ids = new Set(memberIds);
+  const inside = core.filter((r) => ids.has(r.id));
+  const outside = core.filter((r) => !ids.has(r.id));
+  const blocks = [];
+  if (inside.length)
+    blocks.push(`${CORE_HEADING}
+${formatMemoryEntries(inside)}`);
+  if (outside.length)
+    blocks.push(`${CORE_OUTSIDE_HEADING}
+${outside.map((r) => `- #${r.id} \xB7 ${r.area}`).join(`
+`)}`);
+  return blocks.join(`
+
+`);
+}
+function norm(projectDir, p) {
+  const slashed = p.replace(/\\/g, "/");
+  const abs = isAbsolute2(slashed) ? resolve(slashed) : resolve(projectDir, slashed);
+  const out = abs.replace(/\\/g, "/");
+  return process.platform === "win32" ? out.toLowerCase() : out;
+}
+function inWorkspace(projectDir, folders, filePath) {
+  if (!folders.length)
+    return true;
+  const file = norm(projectDir, filePath);
+  return folders.some((f) => {
+    const folder = norm(projectDir, f);
+    return file === folder || file.startsWith(folder.endsWith("/") ? folder : `${folder}/`);
+  });
+}
+
+// memory/session-state.ts
+import { mkdirSync, readFileSync as readFileSync2, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
+import { dirname, join as join2 } from "path";
+function sessionsDir(docDir) {
+  return join2(docDir, "sessions");
+}
+var SAFE_ID = /^[A-Za-z0-9_-]+$/;
+function deliveredName(sid, agentId) {
+  if (!SAFE_ID.test(sid))
+    return null;
+  if (!agentId)
+    return `${sid}.delivered`;
+  return SAFE_ID.test(agentId) ? `${sid}.${agentId}.delivered` : null;
+}
+function writeAtomic(path, data) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, data);
+  renameSync(tmp, path);
+}
+function writeSessionState(docDir, sid, s) {
+  if (!SAFE_ID.test(sid))
+    return;
+  writeAtomic(join2(sessionsDir(docDir), `${sid}.json`), JSON.stringify(s));
+}
+function readSessionState(docDir, sid) {
+  if (!SAFE_ID.test(sid))
+    return null;
+  try {
+    const s = JSON.parse(readFileSync2(join2(sessionsDir(docDir), `${sid}.json`), "utf8"));
+    return s && typeof s.rev === "number" ? s : null;
+  } catch {
+    return null;
+  }
+}
+function readDelivered(docDir, sid, agentId) {
+  const name = deliveredName(sid, agentId);
+  if (!name)
+    return 0;
+  try {
+    const n = parseInt(readFileSync2(join2(sessionsDir(docDir), name), "utf8"), 10);
+    return Number.isNaN(n) ? 0 : n;
+  } catch {
+    return 0;
+  }
+}
+function writeDelivered(docDir, sid, agentId, rev) {
+  const name = deliveredName(sid, agentId);
+  if (name)
+    writeAtomic(join2(sessionsDir(docDir), name), String(rev));
+}
+function removeSessionFiles(docDir, sid) {
+  if (!SAFE_ID.test(sid))
+    return;
+  const dir = sessionsDir(docDir);
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const n of names)
+    if (n.startsWith(`${sid}.`))
+      rmSync(join2(dir, n), { force: true });
+}
+
+// hooks/session-start.ts
 var projectDir = hookProjectDir();
+var input = await readStdinJson();
+var sid = input.session_id;
 var cfg = loadConfig(projectDir);
+var docDir = resolveDocDir(projectDir, cfg);
 try {
-  mkdirSync2(resolveDocDir(projectDir, cfg), { recursive: true });
+  mkdirSync3(docDir, { recursive: true });
 } catch {}
 var core = [];
 var note = null;
+var topic = null;
+var memberIds = [];
+var rev = 0;
+var stateOk = false;
+var topicList = null;
 try {
   await Promise.resolve().then(() => init_client());
   const mem = await connectMemory(projectDir);
   try {
     core = await mem.core();
+    if (sid) {
+      const [, st, tl] = await Promise.allSettled([
+        mem.registerSession({ sessionId: sid, title: input.session_title, cwd: input.cwd }),
+        mem.sessionState(sid),
+        mem.topics()
+      ]);
+      if (st.status === "fulfilled") {
+        ({ topic, memberIds, rev } = st.value);
+        stateOk = true;
+      }
+      if (tl.status === "fulfilled")
+        topicList = tl.value;
+    }
   } finally {
     mem.close();
   }
@@ -4374,13 +4564,39 @@ var lines = [
   "\uC791\uC5C5 \uAE30\uB85D \uADDC\uC57D: \uC644\uACB0\uB41C \uC791\uC5C5(\uC0B0\uCD9C\uBB3C\uC774 \uB0A8\uB294 \uC694\uCCAD \uB2E8\uC704)\uC744 \uB9C8\uBB34\uB9AC\uD558\uBA74 nunchi_search\uB85C \uC720\uC0AC task \uD56D\uBAA9\uC744 \uCC3E\uC544 \u2014 \uC808\uCC28\uAC00 \uC5B4\uAE0B\uB0AC\uC73C\uBA74 nunchi_update(edit)\uB85C \uAD50\uC815, \uADF8\uB300\uB85C \uC720\uD6A8\uD588\uC73C\uBA74 nunchi_update(confirm), \uC5C6\uC73C\uBA74 nunchi_record(section: task)\uB85C \uC2E0\uADDC \uAE30\uB85D\uD55C\uB2E4.",
   "\uAD00\uCC30 \uB808\uC778: \uD655\uC2E0\uC774 \uC5C6\uB294 \uC608\uCE21 \uC5B4\uAE0B\uB0A8 \uC758\uC2EC\uC740 nunchi_record(section: observe)\uB85C \uAC00\uBCCD\uAC8C \uB0A8\uAE34\uB2E4 (\uC790\uB3D9 \uD68C\uC218 \uC81C\uC678). \uAC19\uC740 \uC2E0\uD638\uAC00 \uBC18\uBCF5 \uD655\uC778\uB418\uBA74 nunchi_update(action: promote, id: \uB300\uD45C \uAD00\uCC30, sources: \uCD94\uAC00 \uAD00\uCC30)\uB85C \uBCF4\uC815 \uD56D\uBAA9\uC73C\uB85C \uC2B9\uACA9\uD55C\uB2E4 \u2014 \uCD9C\uCC98\uAC00 \uACC4\uBCF4\uB85C \uBCF4\uC874\uB41C\uB2E4."
 ];
+var TOPIC_BUDGET = 2500;
+var extra = "";
+if (sid) {
+  const head = [sessionIdLine(sid)];
+  if (input.source === "fork")
+    head.push(TOPIC_CLEARED);
+  else if (input.source === "resume" || input.source === "compact") {
+    try {
+      if (topic) {
+        const tail = topicList ? formatTopicList(topicList, 0).length + 1 : 0;
+        head.push(fitTopicBlock(topic, TOPIC_BUDGET - head.join(`
+`).length - 1 - tail));
+      } else if (stateOk)
+        head.push(TOPIC_CLEARED);
+      if (topic || stateOk)
+        writeDelivered(docDir, sid, null, rev);
+    } catch {}
+  }
+  const fit = (n) => [...head, formatTopicList(topicList, n)].join(`
+`);
+  let n = topicList ? Math.min(topicList.length, TOPIC_LIST_MAX) : 0;
+  while (topicList && n > 0 && fit(n).length > TOPIC_BUDGET)
+    n--;
+  extra = (topicList ? fit(n) : head.join(`
+`)).slice(0, TOPIC_BUDGET);
+  lines.push(extra);
+}
 if (core.length) {
-  const coreBlock = formatMemoryEntries(core).slice(0, 8000);
-  lines.push("", "[\uD655\uC815 \uADDC\uCE59 \u2014 '\uBC8C\uC8FC\uB294 \uAC83'\xB7'\uAD8C\uC7A5(\uBC29\uBC95)' \uC2E0\uB8B0\uB3C4 \uB192\uC74C(3+). \uD56D\uC0C1 \uC9C0\uD0A8\uB2E4]", coreBlock);
+  lines.push("", formatCoreBlock(core, topic ? memberIds : null).slice(0, Math.max(0, 8000 - extra.length)));
 }
 if (note)
   lines.push("", note);
-lines.push("", `[nunchi] \uAE30\uB85D \uADDC\uC57D \uC804\uBB38(SKILL.md): ${join4(PLUGIN_ROOT, "SKILL.md")}`);
+lines.push("", `[nunchi] \uAE30\uB85D \uADDC\uC57D \uC804\uBB38(SKILL.md): ${join5(PLUGIN_ROOT, "SKILL.md")}`);
 if (isPonytailEnabled(projectDir)) {
   const priority = cfg["policy-priority"];
   if (priority === "nunchi") {
