@@ -18071,6 +18071,7 @@ if (import.meta.main) {
         topics.remove(Number(p.id));
         return { removed };
       }, true);
+      ws("ws:memory:topics", (p) => ({ topicIds: topics.topicsOf(Number(p.id)) }));
       ws("ws:topic:link", (p) => ({ count: topics.link(Number(p.topicId), nums(p.memoryIds)) }), true);
       ws("ws:topic:unlink", (p) => ({ count: topics.unlink(Number(p.topicId), nums(p.memoryIds)) }), true);
       ws("ws:topic:rate", (p) => {

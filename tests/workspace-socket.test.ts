@@ -134,6 +134,19 @@ test("mem:add sessionId → 자동 소속 / confirm sessionId → 전체·주제
   });
 }, 30000);
 
+test("ws:memory:topics: 기억이 속한 주제 id", async () => {
+  await withServer(async ({ mem, raw }) => {
+    const m = await mem.add(env("규칙"));
+    const [a, b] = [await mem.createTopic({ name: "A" }), await mem.createTopic({ name: "B" })];
+    expect((await raw.call("ws:memory:topics", { id: m })).topicIds).toEqual([]);
+    await raw.call("ws:topic:link", { topicId: a, memoryIds: [m] });
+    await raw.call("ws:topic:link", { topicId: b, memoryIds: [m] });
+    expect((await raw.call("ws:memory:topics", { id: m })).topicIds.sort()).toEqual([a, b].sort());
+    await raw.call("ws:topic:unlink", { topicId: a, memoryIds: [m] });
+    expect((await raw.call("ws:memory:topics", { id: m })).topicIds).toEqual([b]);
+  });
+}, 30000);
+
 test("ws:topic:rate / unlink → 상태 파일 areas 갱신", async () => {
   await withServer(async ({ mem, raw, docDir }) => {
     const m = await mem.add(env("규칙"));

@@ -438,6 +438,7 @@ if (import.meta.main) {
       topics.remove(Number(p.id)); // 해제된 세션의 상태 파일은 changed()의 동기화가 갱신한다
       return { removed };
     }, true);
+    ws("ws:memory:topics", (p) => ({ topicIds: topics.topicsOf(Number(p.id)) })); // Memory 탭의 주제 첨부 줄
     ws("ws:topic:link", (p) => ({ count: topics.link(Number(p.topicId), nums(p.memoryIds)) }), true);
     ws("ws:topic:unlink", (p) => ({ count: topics.unlink(Number(p.topicId), nums(p.memoryIds)) }), true);
     ws("ws:topic:rate", (p) => {
