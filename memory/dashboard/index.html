@@ -112,7 +112,7 @@
   <pre id="doc" class="panel" hidden></pre>
 
   <div class="tablewrap panel">
-    <table>
+    <table id="mem-table">
       <thead>
         <tr>
           <th scope="col">#</th><th scope="col">구분</th><th scope="col">영역</th><th scope="col">규칙</th>
@@ -494,6 +494,60 @@
       setTab(tabs[next % tabs.length], true);
     });
     try { const saved = $("tabbtn-" + localStorage.getItem("nunchi.tab")); if (saved) setTab(saved); } catch {}
+
+    // ── Memory 표 칸 너비 — 머리글 오른쪽 끝을 끌거나 ←/→로 조절, 두 번 누르면 원래대로. localStorage "nunchi.memcols"에 기억 ──
+    {
+      const KEY = "nunchi.memcols", MIN = 32;
+      const table = $("mem-table");
+      const ths = [...table.tHead.rows[0].cells];
+      const cg = table.insertBefore(document.createElement("colgroup"), table.tHead);
+      const cols = ths.map(() => cg.appendChild(document.createElement("col")));
+      let widths = null;
+      const apply = () => {
+        table.classList.toggle("sized", !!widths);
+        cols.forEach((c, i) => (c.style.width = widths ? widths[i] + "px" : ""));
+        table.style.width = widths ? widths.reduce((a, b) => a + b, 0) + "px" : "";
+      };
+      const save = () => {
+        try { widths ? localStorage.setItem(KEY, JSON.stringify(widths)) : localStorage.removeItem(KEY); } catch {}
+      };
+      const resize = (i, w) => {
+        widths ??= ths.map((th) => Math.max(MIN, Math.round(th.getBoundingClientRect().width))); // 처음 끌 때 지금 폭을 고정값으로 옮긴다
+        widths[i] = Math.max(MIN, Math.round(w));
+        apply();
+      };
+      try {
+        const s = JSON.parse(localStorage.getItem(KEY));
+        if (Array.isArray(s) && s.length === ths.length && s.every((w) => Number.isFinite(w) && w >= MIN)) widths = s;
+      } catch {}
+      apply();
+      ths.forEach((th, i) => {
+        const g = th.appendChild(document.createElement("span"));
+        g.className = "col-grip";
+        g.tabIndex = 0;
+        g.setAttribute("role", "separator");
+        g.setAttribute("aria-orientation", "vertical");
+        g.setAttribute("aria-label", `${th.textContent || th.getAttribute("aria-label")} 칸 너비 — ←/→로 조절, 두 번 눌러 원래대로`);
+        g.title = "끌어서 너비 조절 · 두 번 눌러 원래대로";
+        g.addEventListener("pointerdown", (e) => {
+          if (e.button) return;
+          e.preventDefault();
+          g.setPointerCapture(e.pointerId);
+          const x0 = e.clientX, w0 = th.getBoundingClientRect().width;
+          const move = (ev) => resize(i, w0 + ev.clientX - x0);
+          g.addEventListener("pointermove", move);
+          g.addEventListener("lostpointercapture", () => { g.removeEventListener("pointermove", move); save(); }, { once: true });
+        });
+        g.addEventListener("dblclick", () => { widths = null; apply(); save(); });
+        g.addEventListener("keydown", (e) => {
+          const d = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
+          if (!d) return;
+          e.preventDefault();
+          resize(i, th.getBoundingClientRect().width + d);
+          save();
+        });
+      });
+    }
 
     // ── WorkSpace: 보드 · 미리보기 · 주제 폼 ─────────────────
     let board = { topics: [], sessions: [] }; // 마지막 ws:board 응답

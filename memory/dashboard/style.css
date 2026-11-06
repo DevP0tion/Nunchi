@@ -257,6 +257,12 @@ th {
   color: var(--muted);
   white-space: nowrap;
 }
+/* 칸 너비 조절 — 한 번 끈 뒤에는 고정 레이아웃(저장된 px 그대로), 칸보다 긴 내용은 자른다 */
+#mem-table thead th { position: relative; }
+.col-grip { position: absolute; top: 0; right: 0; bottom: 0; width: 7px; cursor: col-resize; touch-action: none; }
+.col-grip:hover, .col-grip:focus-visible { box-shadow: inset -2px 0 var(--line-2); }
+#mem-table.sized { table-layout: fixed; min-width: 0; }
+#mem-table.sized th, #mem-table.sized td { overflow: hidden; }
 td.num, td.updated, td.conf .num {
   font-family: var(--mono);
   font-size: 12px;
