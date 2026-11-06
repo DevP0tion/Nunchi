@@ -11,8 +11,9 @@ import { loadConfig, resolveDocDir } from "../hooks/config.ts";
 import { assignFreePort, connectMemory, type MemoryClient } from "../memory/client.ts";
 import { resolveMemoryPort } from "../memory/memory-config.ts";
 import { Database } from "bun:sqlite";
-import { readDelivered, writeDelivered } from "../memory/session-state.ts";
-import { rmProject } from "./helpers.ts";
+import { readDelivered, readSessionState, writeDelivered } from "../memory/session-state.ts";
+import { formatTopicList } from "../hooks/topic.ts";
+import { rmProject, setTopic } from "./helpers.ts";
 
 const hookPath = (name: string) => fileURLToPath(new URL(`../hooks/${name}`, import.meta.url));
 
@@ -375,13 +376,22 @@ test(
 // ── 워크스페이스 탭: 세션 등록·주제 블록·코어 축소·주제 우선 쿼터 ──
 const ctxOf = (raw: string): string => (raw ? (JSON.parse(raw).hookSpecificOutput.additionalContext as string) : "");
 const docDirOf = (dir: string) => resolveDocDir(dir, loadConfig(dir));
-/** 대시보드용 원시 소켓으로 ws:board의 세션 목록 조회 */
+/** 대시보드용 원시 소켓으로 ws:* 1회 호출 — 접속·응답 각각 5초 타임아웃 (테스트가 매달리지 않게) */
+async function wsCall(dir: string, ev: string, p: object = {}): Promise<any> {
+  const s = ioc(`http://127.0.0.1:${resolveMemoryPort(dir)}`, { reconnection: false, timeout: 5000 });
+  try {
+    await new Promise<void>((res, rej) => {
+      s.once("connect", () => res());
+      s.once("connect_error", rej);
+    });
+    return await s.timeout(5000).emitWithAck(ev, p);
+  } finally {
+    s.close();
+  }
+}
+/** ws:board의 세션 목록 */
 async function boardSessions(dir: string): Promise<{ session_id: string; label: string }[]> {
-  const s = ioc(`http://127.0.0.1:${resolveMemoryPort(dir)}`, { reconnection: false });
-  await new Promise<void>((res) => s.once("connect", () => res()));
-  const board = await new Promise<{ sessions: { session_id: string; label: string }[] }>((res) => s.emit("ws:board", res));
-  s.close();
-  return board.sessions;
+  return (await wsCall(dir, "ws:board")).sessions;
 }
 
 test(
@@ -414,7 +424,7 @@ test(
       });
       const t = await mem.createTopic({ name: "배포 주제" });
       await mem.linkTopic(t, [1]);
-      await mem.setSessionTopic("s1", t);
+      await setTopic(mem, "s1", t);
       const st = await mem.sessionState("s1");
       const ctx = ctxOf(await runHook("session-start.ts", dir, { source: "compact", session_id: "s1" }));
       expect(ctx).toContain("배포 게이트를 생략하지 않는다"); // 소속 — 전문
@@ -451,7 +461,7 @@ test(
     const { dir, mem } = await seeded();
     try {
       const t = await mem.createTopic({ name: "배포 주제" });
-      await mem.setSessionTopic("s1", t); // 대시보드·명령으로 바꾼 것과 같다 (delivered 미기록)
+      await setTopic(mem, "s1", t); // 대시보드·명령으로 바꾼 것과 같다 (delivered 미기록)
       const run = () =>
         runHook("user-prompt-submit.ts", dir, { session_id: "s1", prompt: "일회성 스크립트에도 테스트가 필요할까?" });
       const first = ctxOf(await run());
@@ -459,7 +469,7 @@ test(
       expect(first).toContain("일회성 스크립트 테스트 생략 가능"); // 검색 주입도 그대로
       expect(ctxOf(await run())).not.toContain("주제 정보가 갱신됨");
       // 주제 해제도 한 번만 알린다
-      await mem.setSessionTopic("s1", null);
+      await setTopic(mem, "s1", null);
       expect(ctxOf(await run())).toContain("현재 주제 없음");
       expect(ctxOf(await run())).not.toContain("현재 주제 없음");
     } finally {
@@ -476,7 +486,7 @@ test(
     const { dir, mem } = await seeded();
     try {
       const t = await mem.createTopic({ name: "배포 주제" });
-      await mem.setSessionTopic("s1", t);
+      await setTopic(mem, "s1", t);
       const ctx = ctxOf(await runHook("user-prompt-submit.ts", dir, { session_id: "s1", prompt: "a" }));
       expect(ctx).toContain("주제 정보가 갱신됨");
       expect((await boardSessions(dir)).some((x) => x.session_id === "s1")).toBe(true);
@@ -499,7 +509,7 @@ test(
       await mem.add(env("zebra gamma"));
       const t = await mem.createTopic({ name: "지브라" });
       await mem.linkTopic(t, [b]);
-      await mem.setSessionTopic("s1", t);
+      await setTopic(mem, "s1", t);
       const ctx = ctxOf(await runHook("user-prompt-submit.ts", dir, { session_id: "s1", prompt: "zebra 관련 질문" }));
       const first = ctx.split(/\r?\n/).find((l) => l.includes("(#"));
       expect(first).toContain("- [주제] (#");
@@ -519,7 +529,7 @@ test(
     try {
       const t = await mem.createTopic({ name: "배포 주제" });
       await mem.linkTopic(t, [1]);
-      const st = await mem.setSessionTopic("s1", t);
+      const st = await setTopic(mem, "s1", t);
       const ctx = ctxOf(await runHook("subagent-start.ts", dir, { session_id: "s1", agent_id: "a1", agent_type: "general-purpose" }));
       expect(ctx).toContain("이 세션 id: s1");
       expect(ctx).toContain("현재 주제: 배포 주제");
@@ -568,18 +578,30 @@ test(
       let t = 0;
       for (let i = 0; i < 20; i++) t = await mem.createTopic({ name: `주제-${i}`, description: "설".repeat(200), folders: ["src"] });
       await mem.linkTopic(t, ids); // 소속 코어는 전문이라 코어 블록이 8k를 채운다
-      await mem.setSessionTopic("s1", t);
+      // 주제 핵심 영역 30개(최대)·긴 area — 주제 블록만으로 2500을 넘는다 (코어는 영역에서 빠지므로 env로)
+      const areaIds: number[] = [];
+      for (let i = 0; i < 30; i++)
+        areaIds.push(await mem.add({ section: "env", area: `[영역-${i}: ${"가".repeat(90)}]`, rule: "r", evidence: "e" }));
+      await mem.linkTopic(t, areaIds);
+      for (const m of areaIds) for (let k = 0; k < 2; k++) await wsCall(dir, "ws:topic:rate", { topicId: t, memoryId: m, delta: 1 });
+      await setTopic(mem, "s1", t);
+      expect(readSessionState(docDirOf(dir), "s1")?.topic?.areas.length).toBe(30);
       mkdirSync(join(dir, ".claude"), { recursive: true });
       writeFileSync(join(dir, ".claude", "settings.json"), JSON.stringify({ enabledPlugins: { "ponytail@x": true } }));
       writeFileSync(join(dir, ".claude", "nunchi.json"), JSON.stringify({ port: resolveMemoryPort(dir), "policy-priority": "ponytail" }));
       const ctx = ctxOf(await runHook("session-start.ts", dir, { source: "compact", session_id: "s1" }));
       expect(ctx).toContain("현재 주제: 주제-19");
+      // 영역 줄을 먼저 줄여 규약 줄이 잘리지 않는다
+      expect(ctx).toContain(formatTopicList([]));
+      expect(ctx).toMatch(/- 외 \d+개\n/);
       expect(ctx.length).toBeLessThan(10000);
       expect(ctx).toContain("기록 규약 전문(SKILL.md)");
       expect(ctx).toContain("ponytail 활성");
       // subagent-start도 같은 예산
       const sa = ctxOf(await runHook("subagent-start.ts", dir, { session_id: "s1", agent_id: "a1" }));
       expect(sa.length).toBeLessThan(10000);
+      expect(sa).toContain("현재 주제: 주제-19");
+      expect(sa).toMatch(/- 외 \d+개\n/); // 영역을 줄인 끝 — 줄 중간에서 잘리지 않았다
     } finally {
       await mem.shutdown();
       await rmProject(dir);
@@ -654,15 +676,16 @@ test(
       const edit = (file: string, sid = "s1", tool: Record<string, unknown> = { file_path: file }) =>
         runHook("pre-tool-use.ts", dir, { session_id: sid, tool_name: "Edit", tool_input: tool });
       expect(await edit(join(dir, "docs", "a.md"))).toBe(""); // 주제 없음
-      await mem.setSessionTopic("s1", t);
+      await setTopic(mem, "s1", t);
       const out = JSON.parse(await edit(join(dir, "docs", "a.md")));
       expect(out.hookSpecificOutput.hookEventName).toBe("PreToolUse");
       expect(out.hookSpecificOutput.permissionDecision).toBeUndefined();
       expect(out.hookSpecificOutput.additionalContext).toContain("작업공간 밖");
       expect(out.hookSpecificOutput.additionalContext).toContain("'탭 개발'");
       expect(await edit(join(dir, "src", "a.ts"))).toBe("");
-      // NotebookEdit는 notebook_path
+      // NotebookEdit는 notebook_path — file_path가 빈 문자열이어도 대체
       expect(await edit("", "s1", { notebook_path: join(dir, "docs", "n.ipynb") })).toContain("작업공간 밖");
+      expect(await edit("", "s1", { file_path: "", notebook_path: join(dir, "docs", "n.ipynb") })).toContain("작업공간 밖");
     } finally {
       await mem.shutdown();
       await rmProject(dir);
@@ -677,7 +700,7 @@ test(
     const { dir, mem } = await seeded();
     try {
       const t = await mem.createTopic({ name: "배포 주제" });
-      await mem.setSessionTopic("s1", t);
+      await setTopic(mem, "s1", t);
       const run = (extra: object = {}) => runHook("post-tool-use.ts", dir, { session_id: "s1", tool_name: "Read", ...extra });
       const first = JSON.parse(await run());
       expect(first.hookSpecificOutput.hookEventName).toBe("PostToolUse");
@@ -687,7 +710,7 @@ test(
       expect(ctxOf(await run({ agent_id: "a1" }))).toContain("현재 주제: 배포 주제");
       expect(await run({ agent_id: "a1" })).toBe("");
       // 주제 해제도 한 번만
-      await mem.setSessionTopic("s1", null);
+      await setTopic(mem, "s1", null);
       expect(ctxOf(await run())).toContain("현재 주제 없음");
       expect(await run()).toBe("");
     } finally {
@@ -704,7 +727,7 @@ test(
     const { dir, mem } = await seeded();
     try {
       const t = await mem.createTopic({ name: "배포 주제" });
-      const { rev } = await mem.setSessionTopic("s1", t);
+      const { rev } = await setTopic(mem, "s1", t);
       writeDelivered(docDirOf(dir), "s1", null, rev); // MCP가 메인 delivered로 기록한 것과 같다
       const call = { session_id: "s1", agent_id: "a1", tool_name: "mcp__plugin_nunchi_nunchi__nunchi_topic" };
       expect(await runHook("post-tool-use.ts", dir, call)).toBe("");
@@ -730,7 +753,7 @@ test(
     try {
       const t = await mem.createTopic({ name: "배포 주제" });
       await mem.registerSession({ sessionId: "s1" });
-      await mem.setSessionTopic("s1", t);
+      await setTopic(mem, "s1", t);
       const run = () => runHook("user-prompt-submit.ts", dir, { session_id: "s1", prompt: "일회성 스크립트에도 테스트가 필요할까?" });
       expect(ctxOf(await run())).toContain("현재 주제: 배포 주제");
       // 24시간 비활성으로 만료: last_seen을 과거로 돌리고 ws:board가 만료 처리하게 한다
@@ -768,13 +791,32 @@ test(
 );
 
 test(
+  "session_id 없는 pre/post·서버 미기동 session-end → 무출력, 서버를 띄우지 않는다",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nunchi-hook-"));
+    await assignFreePort(dir); // 다른 프로젝트 서버 포트와 겹치지 않게
+    try {
+      const file = { tool_name: "Edit", tool_input: { file_path: join(dir, "x.ts") } };
+      expect(await runHook("pre-tool-use.ts", dir, file)).toBe("");
+      expect(await runHook("post-tool-use.ts", dir, { tool_name: "Read" })).toBe("");
+      expect(await runHook("session-end.ts", dir, { session_id: "s1" })).toBe("");
+      expect(await runHook("session-end.ts", dir, {})).toBe("");
+      await expect(connectMemory(dir, { noSpawn: true })).rejects.toThrow();
+    } finally {
+      await rmProject(dir);
+    }
+  },
+  30000
+);
+
+test(
   "session-end: 세션 행·파일 삭제",
   async () => {
     const { dir, mem } = await seeded();
     try {
       const t = await mem.createTopic({ name: "배포 주제" });
       await mem.registerSession({ sessionId: "s1" });
-      await mem.setSessionTopic("s1", t);
+      await setTopic(mem, "s1", t);
       const stateFile = join(docDirOf(dir), "sessions", "s1.json");
       expect(existsSync(stateFile)).toBe(true);
       expect((await boardSessions(dir)).some((x) => x.session_id === "s1")).toBe(true);

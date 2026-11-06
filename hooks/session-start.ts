@@ -13,7 +13,7 @@ import {
   isPonytailEnabled,
   readStdinJson,
 } from "./config.ts";
-import { TOPIC_CLEARED, formatCoreBlock, formatTopicBlock, formatTopicList, sessionIdLine } from "./topic.ts";
+import { TOPIC_CLEARED, TOPIC_LIST_MAX, fitTopicBlock, formatCoreBlock, formatTopicList, sessionIdLine } from "./topic.ts";
 import { writeDelivered } from "../memory/session-state.ts";
 
 const projectDir = hookProjectDir();
@@ -81,15 +81,19 @@ if (sid) {
   if (input.source === "fork") head.push(TOPIC_CLEARED); // fork는 부모 주제를 이어받지 않는다
   else if (input.source === "resume" || input.source === "compact") {
     try {
-      if (topic) head.push(formatTopicBlock(topic));
+      if (topic) {
+        // 영역 줄을 먼저 줄인다 — 목록 0개일 때의 꼬리(외 N개·규약 줄)가 들어갈 자리를 남긴다
+        const tail = topicList ? formatTopicList(topicList, 0).length + 1 : 0;
+        head.push(fitTopicBlock(topic, TOPIC_BUDGET - head.join("\n").length - 1 - tail));
+      }
       // resume: SessionEnd가 정상 종료 시 세션을 지우므로 옛 transcript의 주제 블록은 무효다. compact: 요약에 옛 주제가 남을 수 있다
       else if (stateOk) head.push(TOPIC_CLEARED);
       if (topic || stateOk) writeDelivered(docDir, sid, null, rev); // 첫 메시지 재주입 방지
     } catch { /* 렌더링·기록 실패 — 첫 메시지 훅이 다시 알린다 */ }
   }
   // 주제 목록은 남는 예산에 들어가는 만큼만 (규약 줄은 formatTopicList가 항상 마지막에 붙인다)
-  const fit = (n: number) => [...head, formatTopicList(topicList!.slice(0, n))].join("\n");
-  let n = topicList ? topicList.length : 0;
+  const fit = (n: number) => [...head, formatTopicList(topicList!, n)].join("\n");
+  let n = topicList ? Math.min(topicList.length, TOPIC_LIST_MAX) : 0;
   while (topicList && n > 0 && fit(n).length > TOPIC_BUDGET) n--;
   extra = (topicList ? fit(n) : head.join("\n")).slice(0, TOPIC_BUDGET);
   lines.push(extra);

@@ -13,7 +13,7 @@ if (!sid) process.exit(0);
 
 try {
   const ti = input.tool_input ?? {};
-  const file = String(ti.file_path ?? ti.notebook_path ?? "");
+  const file = String(ti.file_path || ti.notebook_path || ""); // 빈 file_path도 notebook_path로 대체
   const topic = readSessionState(resolveDocDir(projectDir, loadConfig(projectDir)), sid)?.topic;
   if (file && topic?.folders.length && !inWorkspace(projectDir, topic.folders, file)) {
     const context = `[nunchi] 경고: ${file}는 현재 주제 '${topic.name}'의 작업공간 밖이다 (${topic.folders.join(", ")}). 의도한 작업이면 사용자에게 알린다.`;

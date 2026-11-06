@@ -28,6 +28,7 @@ import {
 } from "./store.ts";
 import { createTopicStore, sessionLabel, type SessionRow } from "./topics.ts";
 import {
+  SAFE_ID,
   readSessionState,
   removeSessionFiles,
   writeSessionState,
@@ -213,10 +214,9 @@ if (import.meta.main) {
   const topics = createTopicStore(db);
   // 상태 파일 위치 — initMemory와 같은 폴더 (훅이 소켓 없이 읽는다)
   const docDir = resolveDocDir(projectDir, pluginCfg);
-  const SAFE_SID = /^[A-Za-z0-9_-]+$/;
   const sid = (v: unknown): string => {
     const id = String(v ?? "");
-    if (!SAFE_SID.test(id)) throw new Error(`잘못된 sessionId: ${id}`);
+    if (!SAFE_ID.test(id)) throw new Error(`잘못된 sessionId: ${id}`);
     return id;
   };
   const topicState = (topicId: number | null): TopicState | null => {
@@ -224,12 +224,12 @@ if (import.meta.main) {
     return t ? { id: t.id, name: t.name, description: t.description, folders: t.folders, areas: topics.areas(t.id) } : null;
   };
   const withLabel = (s: SessionRow) => ({ ...s, label: sessionLabel(s) });
-  /** 만료 세션 정리 — 행과 상태 파일 모두 */
-  const expire = () => {
-    for (const id of topics.expireSessions()) {
-      try { removeSessionFiles(docDir, id); } catch (e) { console.error(`[nunchi] 세션 파일 삭제 실패 (${id}): ${e}`); }
-    }
+  /** 상태 파일 삭제 실패는 로그만 — 세션 행 정리(만료·종료)는 계속한다 */
+  const dropFiles = (id: string) => {
+    try { removeSessionFiles(docDir, id); } catch (e) { console.error(`[nunchi] 세션 파일 삭제 실패 (${id}): ${e}`); }
   };
+  /** 만료 세션 정리 — 행과 상태 파일 모두 */
+  const expire = () => topics.expireSessions().forEach(dropFiles);
   /** 세션별로 렌더링한 주제 상태가 파일과 다르면 rev를 올리고 파일을 다시 쓴다 — 훅은 rev만 비교한다 */
   // shortcut: 변경마다 모든 세션 상태를 다시 계산, 세션이 수십 개를 넘으면 영향받은 세션만 동기화
   function syncSessionStates(): void {
@@ -457,11 +457,13 @@ if (import.meta.main) {
     ws("ws:session:end", (p) => {
       const id = sid(p.sessionId);
       topics.endSession(id);
-      try { removeSessionFiles(docDir, id); } catch (e) { console.error(`[nunchi] 세션 파일 삭제 실패 (${id}): ${e}`); }
+      dropFiles(id);
       return {};
     }, true);
     ws("ws:session:set", (p) => {
       const id = sid(p.sessionId);
+      // 종료·만료된 세션을 대시보드가 옮기면 행이 되살아나 유령 세션이 된다 — 등록된 세션만 받는다
+      if (!topics.session(id)) throw new Error(`세션 없음: ${id} (종료·만료됐거나 등록 전)`);
       topics.setSessionTopic(id, p.topicId == null ? null : Number(p.topicId));
       syncSessionStates(); // 응답의 rev가 동기화 결과를 담도록 먼저 실행 (뒤의 changed()는 변화 없으면 no-op)
       const { rev, topic } = stateOf(id);

@@ -145,6 +145,7 @@
         <span class="dt-actions"><button id="dt-edit">편집</button><button id="dt-delete">삭제</button></span>
       </div>
       <p id="dt-desc" class="pv-desc"></p>
+      <p id="dt-error" class="form-error" role="alert" hidden></p>
       <div class="dt-grid">
         <div>
           <h3 class="lbl">작업공간 폴더</h3>
@@ -452,6 +453,7 @@
       return async (p) => { const k = ++n; const r = await req(ev, p); return k === n ? r : null; };
     }
     const fetchBoard = latestOnly("ws:board"), fetchPreview = latestOnly("ws:topic"), fetchDetail = latestOnly("ws:topic");
+    const fetchFound = latestOnly("mem:search");
 
     function chipHtml(s) {
       return `<button class="agent" draggable="true" data-sid="${esc(s.session_id)}" data-key="s:${esc(s.session_id)}"
@@ -462,14 +464,14 @@
       const of = (tid) => board.sessions.filter((s) => (ids.has(s.topic_id) ? s.topic_id : null) === tid);
       const cards = board.topics.map((t) => `
         <div class="tcard${t.id === openTid ? " sel" : ""}" data-tid="${t.id}">
-          <h3><button class="tcard-open" data-key="t:${t.id}" aria-controls="preview" aria-expanded="${t.id === openTid}">${esc(t.name)}</button></h3>
+          <h2><button class="tcard-open" data-key="t:${t.id}" aria-controls="preview" aria-expanded="${t.id === openTid}">${esc(t.name)}</button></h2>
           <p class="tmeta">기억 ${t.memberCount} · 폴더 ${t.folders.length}</p>
           ${of(t.id).map(chipHtml).join("")}
         </div>`);
       const loose = of(null);
       cards.push(`
         <div class="tcard none" data-tid="">
-          <h3>주제 없음</h3>
+          <h2>주제 없음</h2>
           <p class="tmeta">${loose.length ? "주제를 정하지 않은 세션" : "주제 없는 세션이 없습니다"}</p>
           ${loose.map(chipHtml).join("")}
         </div>`);
@@ -545,6 +547,7 @@
     // SQLite UTC 문자열("YYYY-MM-DD HH:MM:SS.sss", 시간대 없음) → "N분 전". 세션은 24시간이면 만료된다
     function ago(s) {
       const min = Math.floor((Date.now() - new Date(String(s).replace(" ", "T") + "Z")) / 60000);
+      if (Number.isNaN(min)) return String(s); // 형식이 다르면 원문 그대로
       return min < 1 ? "방금" : min < 60 ? `${min}분 전` : `${Math.floor(min / 60)}시간 전`;
     }
     const secDot = (m) => `<span class="mark sec-${esc(m.section)}" aria-hidden="true"></span>`;
@@ -570,7 +573,7 @@
           <td><span class="chip">${secDot(m)}${esc(m.section)}</span></td>
           <td><b class="dt-area">${esc(m.area)}</b><span class="dt-rule">${esc(m.rule)}</span></td>
           <td class="dt-tc"><span class="num">${m.topic_confidence}</span>
-            <button class="react" data-act="up" data-id="${m.id}" data-key="dt:m:${m.id}:up" title="이 주제에서 맞았음 — 주제 신뢰도 +1" aria-label="주제 신뢰도 올리기">👍</button><button class="react" data-act="down" data-id="${m.id}" data-key="dt:m:${m.id}:down" title="이 주제에서 틀렸음 — 주제 신뢰도 −1" aria-label="주제 신뢰도 내리기">👎</button></td>
+            <button class="react" data-act="up" data-id="${m.id}" data-key="dt:m:${m.id}:up" title="이 주제에서 맞았음 — 주제 신뢰도 +1" aria-label="#${m.id} 주제 신뢰도 올리기">👍</button><button class="react" data-act="down" data-id="${m.id}" data-key="dt:m:${m.id}:down" title="이 주제에서 틀렸음 — 주제 신뢰도 −1" aria-label="#${m.id} 주제 신뢰도 내리기">👎</button></td>
           <td class="num dt-gc" title="전체 신뢰도 — Memory 탭에서 바꾼다">${m.confidence}</td>
           <td class="actions"><button data-act="unlink" data-id="${m.id}" data-key="dt:m:${m.id}:out" title="주제에서만 뺀다 — 기억은 지우지 않는다">빼기</button></td>
         </tr>`).join("")
@@ -601,6 +604,7 @@
     async function openDetail(id) {
       detailTid = id;
       detail = found = null;
+      showDtError(null);
       $("dt-q").value = $("dt-folder").value = "";
       $("dt-search").hidden = true;
       $("dt-add").setAttribute("aria-expanded", "false");
@@ -623,27 +627,36 @@
         : document.querySelector(`[data-key="t:${tid}"]`);
       (back ?? $("btn-topic-new")).focus();
     }
+    /** 상세 안 오류 줄 — null이면 숨긴다 */
+    function showDtError(e) {
+      $("dt-error").textContent = e ? `요청 실패: ${String(e.message ?? e).replace(/^Error: /, "")}` : "";
+      $("dt-error").hidden = !e;
+    }
+    /** 상세의 이벤트 핸들러 — 실패는 전역 alert 대신 상세 안에 표시하고, 성공하면 지난 오류를 지운다 */
+    const dtAct = (fn) => async (ev) => {
+      try { await fn(ev); showDtError(null); } catch (e) { showDtError(e); }
+    };
     // 변경 요청만 보낸다 — 화면은 서버의 ws:changed 방송(보낸 소켓 포함)으로 다시 조회된다
     const setFolders = (folders) => req("ws:topic:update", { id: detailTid, folders });
 
     $("dt-back").onclick = closeDetail;
     $("dt-edit").onclick = () => detail && openTopicForm(detail.topic);
     $("dt-delete").onclick = () => detail && deleteTopic(detail.topic);
-    $("dt-folder-form").addEventListener("submit", async (ev) => {
+    $("dt-folder-form").addEventListener("submit", dtAct(async (ev) => {
       ev.preventDefault();
       const v = $("dt-folder").value.trim();
       if (!v || !detail) return;
       // shortcut: 마지막 조회본 기준 전체 교체 — 동시 편집 시 앞선 변경을 덮을 수 있음, 충돌이 실제로 생기면 서버에 폴더 단위 추가·삭제 이벤트를 둔다
       if (!detail.topic.folders.includes(v)) await setFolders([...detail.topic.folders, v]);
       $("dt-folder").value = "";
-    });
-    $("dt-folders").addEventListener("click", async (ev) => {
+    }));
+    $("dt-folders").addEventListener("click", dtAct(async (ev) => {
       const b = ev.target.closest('[data-act="rm-folder"]');
       if (!b || !detail) return;
       // shortcut: 마지막 조회본 기준 전체 교체 — 동시 편집 시 앞선 변경을 덮을 수 있음, 충돌이 실제로 생기면 서버에 폴더 단위 추가·삭제 이벤트를 둔다
       await setFolders(detail.topic.folders.filter((_, i) => i !== Number(b.dataset.i)));
-    });
-    $("dt-rows").addEventListener("click", async (ev) => {
+    }));
+    $("dt-rows").addEventListener("click", dtAct(async (ev) => {
       const b = ev.target.closest("button");
       if (!b || !detail) return;
       const memoryId = Number(b.dataset.id);
@@ -653,28 +666,29 @@
       else if (b.dataset.act === "down" && m?.topic_confidence > 1)
         await req("ws:topic:rate", { topicId: detailTid, memoryId, delta: -1 });
       else if (b.dataset.act === "unlink") await req("ws:topic:unlink", { topicId: detailTid, memoryIds: [memoryId] });
-    });
+    }));
     $("dt-add").onclick = () => {
       const open = $("dt-search").hidden;
       $("dt-search").hidden = !open;
       $("dt-add").setAttribute("aria-expanded", String(open));
       if (open) $("dt-q").focus();
     };
-    $("dt-search-form").addEventListener("submit", async (ev) => {
+    $("dt-search-form").addEventListener("submit", dtAct(async (ev) => {
       ev.preventDefault();
       const queries = $("dt-q").value.split(",").map((s) => s.trim()).filter(Boolean);
       if (!queries.length || !detail) return;
       // 주제 우선 검색(topicId)은 쓰지 않는다 — 이미 소속된 기억이 앞을 채운다. observe까지 전 섹션을 명시
-      found = (await req("mem:search", {
-        queries, limit: 10, sections: ["punish", "recommend", "env", "task", "observe"],
-      })).rows;
+      const id = detailTid;
+      const r = await fetchFound({ queries, limit: 10, sections: ["punish", "recommend", "env", "task", "observe"] });
+      if (!r || detailTid !== id) return; // 더 늦은 검색이 있었거나 그사이 다른 주제로 바뀜
+      found = r.rows;
       renderFound();
-    });
-    $("dt-results").addEventListener("click", async (ev) => {
+    }));
+    $("dt-results").addEventListener("click", dtAct(async (ev) => {
       const b = ev.target.closest(".dt-pick");
       if (!b || b.disabled || detailTid == null) return;
       await req("ws:topic:link", { topicId: detailTid, memoryIds: [Number(b.dataset.id)] });
-    });
+    }));
 
     /** 세션의 주제 변경 — 주제가 같으면 요청하지 않는다. 보드는 ws:changed로 갱신 */
     async function moveSession(sid, tid) {
@@ -724,15 +738,18 @@
       if (card && !card.classList.contains("none")) openPreview(cardTid(card));
     });
     // 드래그 — 칩의 session_id를 실어 카드에 떨군다 ("주제 없음" 카드 = 해제)
+    // 전용 MIME으로 칩 드래그를 구분한다 — 텍스트·파일 드래그는 강조·처리하지 않는다 (dragover에선 getData 불가, types만 보인다)
+    const SID_MIME = "application/x-nunchi-sid";
+    const isChipDrag = (ev) => ev.dataTransfer?.types.includes(SID_MIME);
     $("board").addEventListener("dragstart", (ev) => {
       const chip = ev.target.closest?.(".agent");
       if (!chip) return;
-      ev.dataTransfer.setData("text/plain", chip.dataset.sid);
+      ev.dataTransfer.setData(SID_MIME, chip.dataset.sid);
       ev.dataTransfer.effectAllowed = "move";
     });
     $("board").addEventListener("dragover", (ev) => {
       const card = ev.target.closest?.(".tcard");
-      if (!card) return;
+      if (!card || !isChipDrag(ev)) return;
       ev.preventDefault();
       card.classList.add("drop");
     });
@@ -742,10 +759,10 @@
     });
     $("board").addEventListener("drop", async (ev) => {
       const card = ev.target.closest?.(".tcard");
-      if (!card) return;
+      if (!card || !isChipDrag(ev)) return;
       ev.preventDefault();
       card.classList.remove("drop");
-      await moveSession(ev.dataTransfer.getData("text/plain"), cardTid(card));
+      await moveSession(ev.dataTransfer.getData(SID_MIME), cardTid(card));
     });
 
     $("preview").addEventListener("click", async (ev) => {

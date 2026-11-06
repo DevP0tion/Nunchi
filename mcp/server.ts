@@ -101,7 +101,7 @@ server.registerTool(
       confidence: z.number().int().min(1).optional(),
       sources: z.array(z.number().int()).optional().describe("promote 시 추가 근거 관찰 id들"),
       refs: z.array(z.number().int()).optional().describe("link 시 참조 항목 id들"),
-      session_id,
+      session_id: session_id.describe("SessionStart가 주입한 이 세션 id — confirm에서만 쓰인다(주제 신뢰도 +1)"),
     },
   },
   async ({ id, action, sources, refs, session_id: sessionId, ...f }) => {
@@ -216,7 +216,7 @@ server.registerTool(
         if (sessionId && (action === "link" || action === "unlink")) return (await m.sessionState(sessionId)).topic;
         return null;
       };
-      const label = String(topicId ?? name ?? sessionId ?? "(지정 안 됨)");
+      const label = String(topicId ?? name ?? "(지정 안 됨)");
       if (action === "set" || action === "clear") {
         if (!sessionId) return fail(`${action}에는 session_id가 필요하다`);
         const t = action === "set" ? await find() : null;
@@ -228,7 +228,8 @@ server.registerTool(
       }
       if (!memoryIds?.length) return fail(`${action}에는 memory_ids가 필요하다`);
       const t = await find();
-      if (!t) return fail(`주제 없음: ${label}`);
+      // 주제를 지정하지 않았으면 세션 주제 대체 경로 — sid를 주제 이름처럼 보이지 않게 따로 안내
+      if (!t) return fail(sessionId && topicId === undefined && !name ? "세션에 주제가 없음" : `주제 없음: ${label}`);
       return ok({ count: await (action === "link" ? m.linkTopic(t.id, memoryIds) : m.unlinkTopic(t.id, memoryIds)) });
     } catch (e) {
       return fail(e);

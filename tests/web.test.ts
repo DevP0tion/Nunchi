@@ -136,3 +136,18 @@ test("대시보드 정적 파일: 권장(recommend) 섹션·kind 선택란·코�
   expect(html.indexOf('id="f-kind-label"')).toBeGreaterThan(html.indexOf('id="f-confidence"'));
   expect(css).not.toContain("forgive");
 });
+
+test("대시보드 정적 파일: 주제 상세 오류 표시·검색 순번 가드·접근성", () => {
+  const dash = (f: string) => readFileSync(join(import.meta.dir, "..", "memory", "dashboard", f), "utf8");
+  const html = dash("index.html");
+  expect(html).toContain('id="dt-error"');
+  for (const id of ["dt-folder-form", "dt-folders", "dt-rows", "dt-search-form", "dt-results"])
+    expect(html).toContain(`$("${id}").addEventListener("${id.endsWith("form") ? "submit" : "click"}", dtAct(`);
+  expect(html).toContain('latestOnly("mem:search")');
+  expect(html).toContain('aria-label="#${m.id} 주제 신뢰도 올리기"');
+  expect(html).toContain("Number.isNaN(min)");
+  expect(html).toContain("isChipDrag(ev)");
+  // 탭 h1 아래 카드 제목은 h2 (h3로 건너뛰지 않는다)
+  expect(html).not.toMatch(/<h3><button class="tcard-open"/);
+  expect(dash("style.css")).toContain(".tcard h2 {");
+});

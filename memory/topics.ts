@@ -75,6 +75,12 @@ export function createTopicStore(db: Database) {
       throw e;
     }
   };
+  // MCP 입력 스키마(이름 60·설명 200)와 같은 상한 — 소켓(대시보드) 경로도 같은 검증을 받는다
+  const checkLen = (f: { name?: string; description?: string; folders?: string[] }) => {
+    if (f.name !== undefined && f.name.trim().length > 60) throw new Error("주제 이름은 60자 이내");
+    if (f.description !== undefined && f.description.length > 200) throw new Error("주제 설명은 200자 이내");
+    if (f.folders?.some((p) => p.trim().length > 200)) throw new Error("폴더 경로는 200자 이내");
+  };
   const cleanName = (n: string) => {
     const name = n.trim();
     if (!name) throw new Error("주제 이름이 비어 있다");
@@ -98,6 +104,7 @@ export function createTopicStore(db: Database) {
 
   return {
     create(t: { name: string; description?: string; folders?: string[] }): number {
+      checkLen(t);
       return dupName(t.name, () => db.transaction(() => {
         const id = (one<{ id: number }>(
           `INSERT INTO topics (name, description) VALUES (?, ?) RETURNING id`, cleanName(t.name), t.description ?? ""
@@ -107,6 +114,7 @@ export function createTopicStore(db: Database) {
       })());
     },
     update(id: number, f: { name?: string; description?: string; folders?: string[] }): boolean {
+      checkLen(f);
       return dupName(f.name ?? "", () => db.transaction(() => {
         const cur = get(id);
         if (!cur) return false;

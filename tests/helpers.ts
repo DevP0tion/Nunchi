@@ -3,7 +3,7 @@
 // (프로덕션에선 무해 — 서버가 하나 떠 있을 뿐. 폴더를 즉시 지우는 테스트만 충돌).
 // EBUSY면 낙오 서버를 종료시키고 재시도한다.
 import { rmSync } from "node:fs";
-import { connectMemory } from "../memory/client.ts";
+import { connectMemory, type MemoryClient } from "../memory/client.ts";
 
 export async function rmProject(dir: string): Promise<void> {
   for (let i = 0; ; i++) {
@@ -21,4 +21,10 @@ export async function rmProject(dir: string): Promise<void> {
       await new Promise((r) => setTimeout(r, 150));
     }
   }
+}
+
+/** ws:session:set은 등록된 세션만 받는다 — 테스트에서 등록과 주제 설정을 한 번에 */
+export async function setTopic(mem: MemoryClient, sid: string, topicId: number | null) {
+  await mem.registerSession({ sessionId: sid });
+  return mem.setSessionTopic(sid, topicId);
 }

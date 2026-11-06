@@ -370,7 +370,7 @@ tr.empty td {
   color: var(--ink-2);
 }
 .tcard.none.drop { border-color: var(--ink); background: var(--wash); }
-.tcard h3 { margin: 0; font: 600 14px var(--sans); }
+.tcard h2 { margin: 0; font: 600 14px var(--sans); }
 .tcard-open {
   padding: 0;
   font: inherit;
@@ -467,6 +467,7 @@ button.link:hover { color: var(--ink); }
 .dt-actions { display: flex; gap: 6px; }
 .dt-actions button { padding: 3px 10px; font-size: 12px; }
 #dt-desc { margin: 6px 0 0; }
+#dt-error { margin-top: 6px; }
 .dt-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);

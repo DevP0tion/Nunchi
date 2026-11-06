@@ -18,7 +18,7 @@ test("dist가 소스와 일치 — 실패하면 bun run build 후 dist를 함께
 });
 
 test(
-  "node_modules 없는 설치본(상위에 다른 node_modules): 훅 4종·MCP·memory server 동작",
+  "node_modules 없는 설치본(상위에 다른 node_modules): 훅 7종·MCP·memory server 동작",
   async () => {
     const tmp = mkdtempSync(join(tmpdir(), "nunchi-nodeps-"));
     // 상위 node_modules가 있으면 Bun auto-install이 꺼진다 — 번들 밖 import가 남아 있으면 여기서 실패
@@ -81,6 +81,14 @@ test(
         expect(sub.hookSpecificOutput.hookEventName).toBe("SubagentStart");
         const stop = run("dist/hooks/stop-check.js", { session_id: "nodeps" });
         if (stop) JSON.parse(stop);
+        // 주제 훅 3종 — 출력이 있으면 JSON 하나여야 한다 (session-end는 세션을 지우므로 마지막)
+        const pre = run("dist/hooks/pre-tool-use.js", { session_id: "nodeps", tool_name: "Edit", tool_input: { file_path: join(proj, "a.ts") } });
+        if (pre) JSON.parse(pre);
+        const post = run("dist/hooks/post-tool-use.js", { session_id: "nodeps", tool_name: "Read" });
+        if (post) JSON.parse(post);
+        await mem.registerSession({ sessionId: "nodeps" });
+        expect(run("dist/hooks/session-end.js", { session_id: "nodeps" })).toBe("");
+        expect((await mem.sessionState("nodeps")).rev).toBe(0); // 행이 지워졌다
 
         // MCP: stdin EOF에서 종료된다 — stdout의 모든 줄이 JSON-RPC여야 한다
         const mcp = Bun.spawnSync(["bun", join(plugin, "dist/mcp/server.js")], {

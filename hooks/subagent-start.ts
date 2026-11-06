@@ -3,7 +3,7 @@
 // 서브에이전트는 SessionStart 주입을 받지 못한다 — 규약 1줄 + 코어를 대신 주입한다.
 // 공식 스키마상 stdin에 서브에이전트 프롬프트는 없다(agent_type/agent_id만) — 관련 항목 검색은 하지 않는다.
 import { hookProjectDir, loadConfig, readStdinJson, resolveDocDir, type MemoryEntryLite } from "./config.ts";
-import { formatCoreBlock, formatTopicBlock, sessionIdLine } from "./topic.ts";
+import { fitTopicBlock, formatCoreBlock, sessionIdLine } from "./topic.ts";
 import { writeDelivered } from "../memory/session-state.ts";
 
 const projectDir = hookProjectDir();
@@ -31,7 +31,8 @@ try {
       try {
         const { rev, topic, memberIds } = await mem.sessionState(sid);
         if (topic) {
-          head.push(formatTopicBlock(topic));
+          // 영역 줄을 줄여 2500 안에 맞춘다 — 끝의 하드 슬라이스가 줄 중간을 자르지 않게
+          head.push(fitTopicBlock(topic, 2500 - head.join("\n").length - 1));
           topicMembers = memberIds;
         }
         // 주제가 없어도 기록한다 — 이후 PostToolUse가 "주제 없음"을 다시 알리지 않게. agent_id가 없으면 main 파일을 덮어쓰므로 기록하지 않는다

@@ -16944,6 +16944,14 @@ function createTopicStore(db) {
       throw e;
     }
   };
+  const checkLen = (f) => {
+    if (f.name !== undefined && f.name.trim().length > 60)
+      throw new Error("\uC8FC\uC81C \uC774\uB984\uC740 60\uC790 \uC774\uB0B4");
+    if (f.description !== undefined && f.description.length > 200)
+      throw new Error("\uC8FC\uC81C \uC124\uBA85\uC740 200\uC790 \uC774\uB0B4");
+    if (f.folders?.some((p) => p.trim().length > 200))
+      throw new Error("\uD3F4\uB354 \uACBD\uB85C\uB294 200\uC790 \uC774\uB0B4");
+  };
   const cleanName = (n) => {
     const name = n.trim();
     if (!name)
@@ -16964,6 +16972,7 @@ function createTopicStore(db) {
     ORDER BY tm.confidence DESC, m.updated_at DESC`;
   return {
     create(t) {
+      checkLen(t);
       return dupName(t.name, () => db.transaction(() => {
         const id = one(`INSERT INTO topics (name, description) VALUES (?, ?) RETURNING id`, cleanName(t.name), t.description ?? "").id;
         setFolders(id, t.folders ?? []);
@@ -16971,6 +16980,7 @@ function createTopicStore(db) {
       })());
     },
     update(id, f) {
+      checkLen(f);
       return dupName(f.name ?? "", () => db.transaction(() => {
         const cur = get(id);
         if (!cur)
@@ -17854,10 +17864,9 @@ if (import.meta.main) {
       console.log(`[nunchi] calibration.md \uC784\uD3EC\uD2B8: ${imported}\uAC74 \u2192 DB (\uC6D0\uBCF8\uC740 .imported\uB85C \uBCF4\uC874)`);
     const topics = createTopicStore(db);
     const docDir = resolveDocDir(projectDir, pluginCfg);
-    const SAFE_SID = /^[A-Za-z0-9_-]+$/;
     const sid = (v) => {
       const id = String(v ?? "");
-      if (!SAFE_SID.test(id))
+      if (!SAFE_ID.test(id))
         throw new Error(`\uC798\uBABB\uB41C sessionId: ${id}`);
       return id;
     };
@@ -17866,15 +17875,14 @@ if (import.meta.main) {
       return t ? { id: t.id, name: t.name, description: t.description, folders: t.folders, areas: topics.areas(t.id) } : null;
     };
     const withLabel = (s) => ({ ...s, label: sessionLabel(s) });
-    const expire = () => {
-      for (const id of topics.expireSessions()) {
-        try {
-          removeSessionFiles(docDir, id);
-        } catch (e) {
-          console.error(`[nunchi] \uC138\uC158 \uD30C\uC77C \uC0AD\uC81C \uC2E4\uD328 (${id}): ${e}`);
-        }
+    const dropFiles = (id) => {
+      try {
+        removeSessionFiles(docDir, id);
+      } catch (e) {
+        console.error(`[nunchi] \uC138\uC158 \uD30C\uC77C \uC0AD\uC81C \uC2E4\uD328 (${id}): ${e}`);
       }
     };
+    const expire = () => topics.expireSessions().forEach(dropFiles);
     function syncSessionStates() {
       for (const row of topics.sessions()) {
         try {
@@ -18083,15 +18091,13 @@ if (import.meta.main) {
       ws("ws:session:end", (p) => {
         const id = sid(p.sessionId);
         topics.endSession(id);
-        try {
-          removeSessionFiles(docDir, id);
-        } catch (e) {
-          console.error(`[nunchi] \uC138\uC158 \uD30C\uC77C \uC0AD\uC81C \uC2E4\uD328 (${id}): ${e}`);
-        }
+        dropFiles(id);
         return {};
       }, true);
       ws("ws:session:set", (p) => {
         const id = sid(p.sessionId);
+        if (!topics.session(id))
+          throw new Error(`\uC138\uC158 \uC5C6\uC74C: ${id} (\uC885\uB8CC\xB7\uB9CC\uB8CC\uB410\uAC70\uB098 \uB4F1\uB85D \uC804)`);
         topics.setSessionTopic(id, p.topicId == null ? null : Number(p.topicId));
         syncSessionStates();
         const { rev, topic } = stateOf(id);

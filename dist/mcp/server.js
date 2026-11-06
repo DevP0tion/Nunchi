@@ -23536,18 +23536,21 @@ var TOPIC_CLEARED = "[nunchi] \uD604\uC7AC \uC8FC\uC81C \uC5C6\uC74C \u2014 \uC7
 function sessionIdLine(sid) {
   return `[nunchi] \uC774 \uC138\uC158 id: ${sid} \u2014 nunchi_topic\xB7nunchi_record\xB7nunchi_update\xB7nunchi_search \uD638\uCD9C \uC2DC session_id\uB85C \uB118\uAE34\uB2E4`;
 }
-function formatTopicList(topics) {
+function formatTopicList(topics, max = TOPIC_LIST_MAX) {
   const lines = [];
   if (topics.length) {
     lines.push("[nunchi] \uC8FC\uC81C \uBAA9\uB85D:");
-    for (const t of topics.slice(0, TOPIC_LIST_MAX))
-      lines.push(`- ${t.name} \u2014 ${t.description}`);
+    const shown = topics.slice(0, max);
+    for (const t of shown)
+      lines.push(t.description ? `- ${t.name} \u2014 ${t.description}` : `- ${t.name}`);
+    if (topics.length > shown.length)
+      lines.push(`- \uC678 ${topics.length - shown.length}\uAC1C \u2014 \uC804\uCCB4\uB294 nunchi_topic(list)`);
   }
   lines.push("[nunchi] \uC791\uC5C5\uC744 \uC2DC\uC791\uD560 \uB54C \uB9DE\uB294 \uC8FC\uC81C\uAC00 \uC788\uC73C\uBA74 nunchi_topic(set)\uC73C\uB85C \uC124\uC815\uD55C\uB2E4. \uC0AC\uC6A9\uC790\uAC00 \uC8FC\uC81C \uBCC0\uACBD\uC744 \uC694\uCCAD\uD558\uBA74(`/nunchi:topic`, \uC790\uC5F0\uC5B4) \uB530\uB978\uB2E4. \uC791\uC5C5\uACF5\uAC04 \uBC16 \uD30C\uC77C\uC744 \uACE0\uCCD0\uC57C \uD558\uBA74 \uC0AC\uC6A9\uC790\uC5D0\uAC8C \uC54C\uB9B0\uB2E4.");
   return lines.join(`
 `);
 }
-function formatTopicBlock(t, changed = false) {
+function formatTopicBlock(t, changed = false, maxAreas = Infinity) {
   const lines = [];
   if (changed)
     lines.push("[nunchi] \uC8FC\uC81C \uC815\uBCF4\uAC00 \uAC31\uC2E0\uB428");
@@ -23555,11 +23558,21 @@ function formatTopicBlock(t, changed = false) {
   lines.push(t.folders.length ? `\uC791\uC5C5\uACF5\uAC04: ${t.folders.join(", ")} \u2014 \uC774 \uD3F4\uB354\uB4E4 \uC548\uC5D0\uC11C \uC791\uC5C5\uD55C\uB2E4` : "\uC791\uC5C5\uACF5\uAC04: (\uC9C0\uC815 \uC5C6\uC74C)");
   if (t.areas.length) {
     lines.push("\uC8FC\uC81C \uD575\uC2EC \uC601\uC5ED(\uC8FC\uC81C \uC2E0\uB8B0\uB3C4 3+, \uC804\uBB38\uC740 nunchi_list(ids)\uB85C \uC870\uD68C):");
-    for (const a of t.areas)
+    const shown = t.areas.slice(0, maxAreas);
+    for (const a of shown)
       lines.push(`- #${a.id} ${a.area}`);
+    if (t.areas.length > shown.length)
+      lines.push(`- \uC678 ${t.areas.length - shown.length}\uAC1C`);
   }
   return lines.join(`
 `);
+}
+function fitTopicBlock(t, budget) {
+  let n = t.areas.length;
+  let block = formatTopicBlock(t, false, n);
+  while (n > 0 && block.length > budget)
+    block = formatTopicBlock(t, false, --n);
+  return block;
 }
 function formatCoreBlock(core, memberIds) {
   if (!core.length)
@@ -23727,7 +23740,7 @@ server.registerTool("nunchi_update", {
     confidence: numberType().int().min(1).optional(),
     sources: arrayType(numberType().int()).optional().describe("promote \uC2DC \uCD94\uAC00 \uADFC\uAC70 \uAD00\uCC30 id\uB4E4"),
     refs: arrayType(numberType().int()).optional().describe("link \uC2DC \uCC38\uC870 \uD56D\uBAA9 id\uB4E4"),
-    session_id
+    session_id: session_id.describe("SessionStart\uAC00 \uC8FC\uC785\uD55C \uC774 \uC138\uC158 id \u2014 confirm\uC5D0\uC11C\uB9CC \uC4F0\uC778\uB2E4(\uC8FC\uC81C \uC2E0\uB8B0\uB3C4 +1)")
   }
 }, async ({ id, action, sources, refs, session_id: sessionId, ...f }) => {
   try {
@@ -23836,7 +23849,7 @@ server.registerTool("nunchi_topic", {
         return (await m.sessionState(sessionId)).topic;
       return null;
     };
-    const label = String(topicId ?? name ?? sessionId ?? "(\uC9C0\uC815 \uC548 \uB428)");
+    const label = String(topicId ?? name ?? "(\uC9C0\uC815 \uC548 \uB428)");
     if (action === "set" || action === "clear") {
       if (!sessionId)
         return fail(`${action}\uC5D0\uB294 session_id\uAC00 \uD544\uC694\uD558\uB2E4`);
@@ -23853,7 +23866,7 @@ server.registerTool("nunchi_topic", {
       return fail(`${action}\uC5D0\uB294 memory_ids\uAC00 \uD544\uC694\uD558\uB2E4`);
     const t = await find();
     if (!t)
-      return fail(`\uC8FC\uC81C \uC5C6\uC74C: ${label}`);
+      return fail(sessionId && topicId === undefined && !name ? "\uC138\uC158\uC5D0 \uC8FC\uC81C\uAC00 \uC5C6\uC74C" : `\uC8FC\uC81C \uC5C6\uC74C: ${label}`);
     return ok({ count: await (action === "link" ? m.linkTopic(t.id, memoryIds) : m.unlinkTopic(t.id, memoryIds)) });
   } catch (e) {
     return fail(e);

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, resolveDocDir } from "../hooks/config.ts";
-import { assignFreePort, connectMemory } from "../memory/client.ts";
+import { assignFreePort, connectMemory, type MemoryClient } from "../memory/client.ts";
 import { readDelivered } from "../memory/session-state.ts";
 import { rmProject } from "./helpers.ts";
 
@@ -233,6 +233,7 @@ test(
       return waitFor(id);
     };
     const text = (r: { result?: { content: { text: string }[] } }) => r.result!.content[0].text;
+    let mem: MemoryClient | null = null;
     try {
       send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
         protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" },
@@ -251,11 +252,24 @@ test(
       expect(JSON.parse(text(lk)).count).toBe(1);
       const ls = await call("nunchi_topic", { action: "list" });
       expect(JSON.parse(text(ls)).topics[0]).toMatchObject({ id: topicId, name: "UI", memberCount: 1 });
+      // set은 등록된 세션만 — SessionStart 훅이 하는 등록을 대신한다 (MCP가 띄운 서버에 접속)
+      const ghost = await call("nunchi_topic", { action: "set", session_id: "ghost", name: "UI" });
+      expect(ghost.result?.isError).toBe(true);
+      expect(text(ghost)).toContain("세션 없음");
+      mem = await connectMemory(dir, { noSpawn: true });
+      await mem.registerSession({ sessionId: "s1" });
+      const docDir = resolveDocDir(dir, loadConfig(dir));
       const set = await call("nunchi_topic", { action: "set", session_id: "s1", name: "UI" });
       expect(set.result?.isError).toBeFalsy();
       expect(text(set)).toContain("현재 주제: UI");
       expect(text(set)).toContain("src/");
-      expect(readDelivered(resolveDocDir(dir, loadConfig(dir)), "s1")).toBeGreaterThanOrEqual(1);
+      expect(readDelivered(docDir, "s1")).toBe((await mem.sessionState("s1")).rev); // 전달한 rev 그대로
+      // topic_id 경로
+      const byId = await call("nunchi_topic", { action: "set", session_id: "s1", topic_id: topicId });
+      expect(text(byId)).toContain("현재 주제: UI");
+      const noId = await call("nunchi_topic", { action: "set", session_id: "s1", topic_id: 999 });
+      expect(noId.result?.isError).toBe(true);
+      expect(text(noId)).toContain("주제 없음: 999");
       // 세션 주제로 link 대상 해석 (topic_id·name 생략)
       const ulk = await call("nunchi_topic", { action: "unlink", session_id: "s1", memory_ids: [memId] });
       expect(JSON.parse(text(ulk)).count).toBe(1);
@@ -269,10 +283,18 @@ test(
       // clear → TOPIC_CLEARED
       const clr = await call("nunchi_topic", { action: "clear", session_id: "s1" });
       expect(text(clr)).toContain("현재 주제 없음");
+      const cleared = await mem.sessionState("s1");
+      expect(cleared.topic).toBe(null);
+      expect(readDelivered(docDir, "s1")).toBe(cleared.rev);
+      // 세션 주제 대체 경로 — 주제가 없으면 sid가 아니라 세션 주제 없음으로 안내
+      const lk2 = await call("nunchi_topic", { action: "link", session_id: "s1", memory_ids: [memId] });
+      expect(lk2.result?.isError).toBe(true);
+      expect(text(lk2)).toBe("세션에 주제가 없음");
       send({ jsonrpc: "2.0", id: 99, method: "tools/list" });
       await proc.stdin.flush();
       expect(JSON.stringify(await waitFor(99))).toContain('"nunchi_topic"');
     } finally {
+      mem?.close();
       proc.kill();
       await pump;
       await rmProject(dir);

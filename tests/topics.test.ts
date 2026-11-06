@@ -21,6 +21,19 @@ test("create: 빈 이름·중복 이름 throw", () => {
   expect(() => topics.create({ name: "대시보드" })).toThrow("이미 있는 주제 이름: 대시보드");
   const other = topics.create({ name: "기타" });
   expect(() => topics.update(other, { name: " 대시보드 " })).toThrow("이미 있는 주제 이름: 대시보드");
+  expect(() => topics.update(other, { name: "  " })).toThrow("주제 이름이 비어 있다");
+  expect(topics.get(other)?.name).toBe("기타"); // 실패한 이름 변경은 반영되지 않는다
+});
+
+test("create/update: 이름 60·설명 200·폴더 200자 상한", () => {
+  const { topics } = setup();
+  expect(() => topics.create({ name: "가".repeat(61) })).toThrow("60자");
+  expect(() => topics.create({ name: "A", description: "d".repeat(201) })).toThrow("200자");
+  expect(() => topics.create({ name: "A", folders: ["f".repeat(201)] })).toThrow("200자");
+  const t = topics.create({ name: "가".repeat(60), description: "d".repeat(200), folders: ["f".repeat(200)] });
+  expect(() => topics.update(t, { name: "가".repeat(61) })).toThrow("60자");
+  expect(() => topics.update(t, { folders: ["f".repeat(201)] })).toThrow("200자");
+  expect(topics.update(t, {})).toBe(true); // 안 보낸 필드는 상한 검사도 없다
 });
 
 test("setFolders: 공백 제거 저장, 빈 경로 무시", () => {
@@ -117,8 +130,10 @@ test("remove(주제): 기억 보존·세션 해제", () => {
   topics.link(t, [m]);
   topics.registerSession({ sessionId: "s1", prompt: "hi" });
   topics.setSessionTopic("s1", t);
+  const rev = topics.session("s1")!.topic_rev;
   expect(topics.remove(t)).toEqual(["s1"]);
   expect(topics.session("s1")?.topic_id).toBe(null);
+  expect(topics.session("s1")?.topic_rev).toBe(rev + 1);
   expect(mem.get(m)).not.toBe(null);
   expect(topics.get(t)).toBe(null);
   expect(topics.memberIds(t)).toEqual([]);
@@ -158,6 +173,9 @@ test("expireSessions: 24시간 초과만 삭제", () => {
   set("recent", 23);
   expect(topics.expireSessions()).toEqual(["old"]);
   expect(topics.session("recent")).not.toBe(null);
+  // now 인자: 2시간 뒤 기준이면 23시간 전 세션도 만료
+  expect(topics.expireSessions(new Date(Date.now() + 2 * 3600_000))).toEqual(["recent"]);
+  expect(topics.sessions()).toEqual([]);
 });
 
 test("confirmInTopic: 소속만 +1", () => {

@@ -24,7 +24,7 @@ export function sessionsDir(docDir: string): string {
 }
 
 // 파일명에 들어가는 id — 경로 탈출 방지를 위해 이 문자만 허용
-const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+export const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 
 function deliveredName(sid: string, agentId?: string | null): string | null {
   if (!SAFE_ID.test(sid)) return null;

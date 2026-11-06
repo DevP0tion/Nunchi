@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { formatMemoryEntries, type MemoryEntryLite } from "../hooks/config.ts";
 import {
   TOPIC_CLEARED,
+  fitTopicBlock,
   formatCoreBlock,
   formatTopicBlock,
   formatTopicList,
@@ -65,6 +66,19 @@ test("formatTopicBlock: 형식", () => {
   expect(formatTopicBlock(topic, true)).toContain("현재 주제: 대시보드 접근성");
 });
 
+test("fitTopicBlock: 영역 줄을 줄여 예산에 맞추고 외 N개 표시", () => {
+  const areas = Array.from({ length: 30 }, (_, i) => ({ id: i + 1, area: `[영역-${i}: ${"가".repeat(90)}]` }));
+  const big = { ...topic, areas };
+  expect(formatTopicBlock(big).length).toBeGreaterThan(2400);
+  const b = fitTopicBlock(big, 1000);
+  expect(b.length).toBeLessThanOrEqual(1000);
+  expect(b).toContain("- #1 [영역-0:");
+  expect(b).toMatch(/- 외 \d+개$/); // 줄 중간에서 잘리지 않고 마지막 줄이 생략 표시
+  expect(fitTopicBlock(big, 100000)).toBe(formatTopicBlock(big)); // 넉넉하면 그대로
+  // 영역을 다 빼도 넘치면 영역 0개 블록 (최종 슬라이스는 호출자 몫)
+  expect(fitTopicBlock(big, 10)).toContain("- 외 30개");
+});
+
 test("formatTopicBlock: 폴더·영역이 비면", () => {
   const b = formatTopicBlock({ ...topic, folders: [], areas: [] });
   expect(b).toContain("작업공간: (지정 없음)");
@@ -78,7 +92,12 @@ test("formatTopicList: 20개 상한 + 규약 1줄(비어도 규약은 출력)", 
   expect(l).toContain("- t0 — d0");
   expect(l).toContain("- t19 — d19");
   expect(l).not.toContain("t20");
+  expect(l).toContain("- 외 5개");
   expect(l).toContain("nunchi_topic(set)");
+  expect(formatTopicList(many, 3)).toContain("- 외 22개");
+  expect(formatTopicList(many.slice(0, 2))).not.toContain("외 ");
+  // 설명이 비면 구분자 없이 이름만
+  expect(formatTopicList([{ name: "빈설명", description: "" }]).split("\n")[1]).toBe("- 빈설명");
   const empty = formatTopicList([]);
   expect(empty).toContain("nunchi_topic(set)");
   expect(empty).not.toContain("- ");
@@ -115,7 +134,7 @@ test("formatCoreBlock: 소속은 전문, 비소속은 #id · area", () => {
   expect(formatCoreBlock([], null)).toBe("");
 });
 
-test("상태 파일: 원자적 쓰기·깨진 파일 null·delivered 에이전트별", () => {
+test("상태 파일: 쓰기·읽기·깨진 파일 null·delivered 에이전트별·세션 파일 삭제", () => {
   const d = mkdtempSync(join(tmpdir(), "nunchi-ss-"));
   try {
     expect(readSessionState(d, "s1")).toBeNull();
@@ -149,10 +168,10 @@ test("sid·agentId 경로 탈출 거부", () => {
   const d = mkdtempSync(join(tmpdir(), "nunchi-ss-"));
   try {
     writeSessionState(d, "../x", { rev: 1, topic: null });
-    expect(existsSync(join(d, "x.json"))).toBe(false);
-    expect(existsSync(join(sessionsDir(d), "..", "x.json"))).toBe(false);
     writeDelivered(d, "s1", "../y", 2);
-    expect(existsSync(join(d, "y.delivered"))).toBe(false);
+    // 거부된 쓰기는 아무것도 만들지 않는다 — 통과했다면 writeAtomic이 sessions 폴더부터 만들었을 것
+    expect(existsSync(sessionsDir(d))).toBe(false);
+    expect(existsSync(join(d, "x.json"))).toBe(false);
     expect(readDelivered(d, "s1", "../y")).toBe(0);
     expect(readSessionState(d, "../x")).toBeNull();
     removeSessionFiles(d, "../x"); // 무시
