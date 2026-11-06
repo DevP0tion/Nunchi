@@ -16,6 +16,9 @@ export const ENTRIES = [
   "hooks/user-prompt-submit.ts",
   "hooks/subagent-start.ts",
   "hooks/stop-check.ts",
+  "hooks/pre-tool-use.ts",
+  "hooks/post-tool-use.ts",
+  "hooks/session-end.ts",
   "mcp/server.ts",
   "memory/server.ts",
 ];

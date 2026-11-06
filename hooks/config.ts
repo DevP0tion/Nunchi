@@ -25,7 +25,7 @@ export const BUNDLED = process.env.NUNCHI_BUNDLED === "1";
 /** 플러그인 루트. 번들에서는 import.meta.url이 이 모듈이 아니라 번들 파일(dist/<폴더>/<진입점>.js)을 가리킨다 */
 export const PLUGIN_ROOT = fileURLToPath(new URL(BUNDLED ? "../../" : "../", import.meta.url));
 /** 플러그인 버전 — MCP serverInfo·memory server 기동 정보 공용. .claude-plugin/plugin.json version과 함께 범프 */
-export const VERSION = "0.13.5";
+export const VERSION = "0.14.0";
 
 export interface NunchiConfig {
   /** true면 SessionStart 시 memory server(server.ts) 자동 시작 */
@@ -65,6 +65,14 @@ export interface HookInput {
   /** UserPromptSubmit: 사용자 프롬프트 (일부 버전은 user_input) */
   prompt?: string;
   user_input?: string;
+  /** SessionStart/UserPromptSubmit: 사용자가 붙인 세션 제목 (대시보드 라벨) */
+  session_title?: string;
+  /** SubagentStart/Pre·PostToolUse: 서브에이전트 식별 */
+  agent_id?: string;
+  agent_type?: string;
+  /** Pre/PostToolUse */
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
 }
 
 export async function readStdinJson(): Promise<HookInput> {
