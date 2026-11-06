@@ -45,10 +45,10 @@
       <span class="tile-label"><span class="mark sec-observe" aria-hidden="true"></span>observe · 관찰</span>
       <span class="tile-num" id="n-observe">–</span>
     </button>
-    <div class="tile" title="punish 또는 권장(방법)이면서 신뢰도 3 이상 — 세션마다 상시 주입되는 항목">
+    <button class="tile" id="tile-core" aria-pressed="false" title="punish 또는 권장(방법)이면서 신뢰도 3 이상 — 세션마다 상시 주입되는 항목. 섹션 타일과 함께 고르면 둘 다 만족하는 항목만">
       <span class="tile-label"><span class="mark mark-core" aria-hidden="true"></span>코어 · 상시 주입</span>
       <span class="tile-num" id="n-core">–</span>
-    </div>
+    </button>
   </section>
 
   <section id="toolbar" aria-label="검색·동작">
@@ -208,6 +208,7 @@
     let rowCache = []; // 마지막 렌더 목록 — 수정 버튼이 폼을 채울 때 사용
     let allRows = []; // 마지막 전체 목록 — 통계 타일과 클라이언트 필터용
     const secFilter = new Set(); // 섹션 타일 클릭으로 토글되는 구분 필터 — 빈 셋 = 전체
+    let coreOnly = false; // 코어 타일 — 섹션 필터와 AND
     const $ = (id) => document.getElementById(id);
     const socket = io({ auth: { token: localStorage.getItem("nunchi-token") ?? "" } });
 
@@ -240,7 +241,7 @@
       [1, 2, 3].map((n) => `<i class="${c >= n ? "on" : ""}"></i>`).join("")}</span>`;
 
     // 신뢰도·기간 필터의 원본은 DOM(#filters 입력들), 구분은 secFilter 셋
-    const filtersActive = () => secFilter.size > 0 ||
+    const filtersActive = () => secFilter.size > 0 || coreOnly ||
       $("flt-cmin").value !== "" || $("flt-cmax").value !== "" ||
       $("flt-from").value !== "" || $("flt-to").value !== "";
     function applyFilters(rows) {
@@ -248,15 +249,16 @@
       const max = Number($("flt-cmax").value) || Infinity; // 빈 입력 = 상한 없음
       const [from, to] = [$("flt-from").value, $("flt-to").value];
       return rows.filter((e) =>
-        (!secFilter.size || secFilter.has(e.section)) &&
+        (!secFilter.size || secFilter.has(e.section)) && (!coreOnly || isCore(e)) &&
         e.confidence >= min && e.confidence <= max &&
         (!from || e.updated_at.slice(0, 10) >= from) &&
         (!to || e.updated_at.slice(0, 10) <= to));
     }
-    /** 타일 aria-pressed를 secFilter와 동기화 */
+    /** 타일 aria-pressed를 secFilter·coreOnly와 동기화 */
     function syncTiles() {
       document.querySelectorAll(".tile[data-sec]").forEach((t) =>
         t.setAttribute("aria-pressed", String(secFilter.has(t.dataset.sec))));
+      $("tile-core").setAttribute("aria-pressed", String(coreOnly));
     }
 
     // 행을 누르면(Enter·Space 포함) 아래에 주제 첨부 줄이 열린다 — 소속 주제 칩(✕로 빼기)과 첨부할 주제 선택
@@ -353,6 +355,11 @@
         syncTiles();
         await search(); // 검색어가 있으면 필터 적용 재검색, 없으면 목록 갱신
       }));
+    $("tile-core").addEventListener("click", async () => {
+      coreOnly = !coreOnly;
+      syncTiles();
+      await search();
+    });
 
     $("filters").addEventListener("change", search);
 
@@ -436,6 +443,7 @@
     $("btn-refresh").onclick = () => {
       $("q").value = "";
       secFilter.clear();
+      coreOnly = false;
       $("flt-cmin").value = "";
       $("flt-cmax").value = "";
       $("flt-from").value = "";
