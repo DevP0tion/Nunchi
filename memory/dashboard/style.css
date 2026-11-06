@@ -463,10 +463,14 @@ button.link {
 }
 button.link:hover { color: var(--ink); }
 .dt-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; }
-#dt-name { flex: 1; min-width: 0; margin: 0; font: 600 16px var(--sans); }
+.dt-title { flex: 1; min-width: 0; margin: 0; }
+/* 평소엔 글자처럼 보이고, 가리키거나 고칠 때만 칸 테두리가 드러난다 */
+.inline-edit { width: 100%; padding: 2px 4px; margin-left: -5px; background: transparent; border-color: transparent; }
+.inline-edit:hover, .inline-edit:focus { background: var(--surface); border-color: var(--line-2); }
+#dt-name { font: 600 16px var(--sans); }
 .dt-actions { display: flex; gap: 6px; }
 .dt-actions button { padding: 3px 10px; font-size: 12px; }
-#dt-desc { margin: 6px 0 0; }
+#dt-desc { display: block; margin-top: 6px; }
 #dt-error { margin-top: 6px; }
 .dt-grid {
   display: grid;

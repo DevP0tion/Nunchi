@@ -141,10 +141,11 @@
     <section id="detail" class="panel" aria-labelledby="dt-name" hidden>
       <div class="dt-head">
         <button id="dt-back" class="link">← 보드</button>
-        <h2 id="dt-name" tabindex="-1"></h2>
-        <span class="dt-actions"><button id="dt-edit">편집</button><button id="dt-delete">삭제</button></span>
+        <!-- 이름·설명은 칸에서 바로 고친다 (Enter·포커스 이탈로 저장, Esc로 되돌림) -->
+        <h2 class="dt-title"><input id="dt-name" class="inline-edit" aria-label="주제 이름" autocomplete="off" spellcheck="false"></h2>
+        <span class="dt-actions"><button id="dt-delete">삭제</button></span>
       </div>
-      <p id="dt-desc" class="pv-desc"></p>
+      <input id="dt-desc" class="inline-edit pv-desc" aria-label="주제 설명" placeholder="설명 없음 — 눌러서 추가" autocomplete="off">
       <p id="dt-error" class="form-error" role="alert" hidden></p>
       <div class="dt-grid">
         <div>
@@ -186,7 +187,6 @@
   <dialog id="topic-dialog" aria-labelledby="td-title">
     <form id="topic-form">
       <h2 id="td-title">새 주제</h2>
-      <input type="hidden" id="td-id">
       <label>이름 <input id="td-name" required autocomplete="off"></label>
       <label>설명 <input id="td-desc" autocomplete="off"></label>
       <label><span>작업공간 폴더 · 한 줄에 하나</span>
@@ -437,7 +437,7 @@
     // ── WorkSpace: 보드 · 미리보기 · 주제 폼 ─────────────────
     let board = { topics: [], sessions: [] }; // 마지막 ws:board 응답
     let openTid = null; // 미리보기 패널에 열린 주제 id
-    let preview = null; // 마지막 ws:topic 응답 — 편집·삭제가 사용
+    let preview = null; // 마지막 ws:topic 응답 — 삭제가 사용
     const shown = {}; // 요소 id → 마지막으로 넣은 HTML. 같으면 다시 그리지 않는다 (aria-live 중복 낭독·열린 이동 폼 보존)
     /** 내용이 바뀐 경우에만 다시 그리고, 포커스는 data-key가 같은 새 요소로 되돌린다 */
     function paint(el, html) {
@@ -503,7 +503,6 @@
           : '<p class="muted">소속 기억 없음</p>'}
         <div class="pv-actions">
           <button class="primary" data-act="detail" data-key="pv:detail">자세히 보기 →</button>
-          <button data-act="edit" data-key="pv:edit">편집</button>
           <button data-act="delete" data-key="pv:delete">삭제</button>
         </div>`);
       $("preview").hidden = false;
@@ -556,9 +555,9 @@
       const { topic: t, members, sessions } = detail;
       // 다시 그려 사라진 행(지운 폴더·뺀 기억·비활성이 된 검색 결과)에 있던 포커스는 그 칸의 입력으로 옮긴다
       const from = ["dt-folders", "dt-rows", "dt-results"].find((id) => $(id).contains(document.activeElement));
-      $("dt-name").textContent = t.name;
-      $("dt-desc").textContent = t.description || "설명 없음";
-      $("dt-desc").classList.toggle("muted", !t.description);
+      // 고치는 중인 칸은 덮지 않는다 — 다른 곳의 변경 방송이 입력을 지우지 않도록
+      for (const [id, v] of [["dt-name", t.name], ["dt-desc", t.description]])
+        if (document.activeElement !== $(id)) $(id).value = v;
       paint($("dt-folders"), t.folders.length ? t.folders.map((f, i) => `
         <li><span class="path">${esc(f)}</span><button class="x" data-act="rm-folder" data-i="${i}" data-key="dt:f:${i}" aria-label="폴더 삭제: ${esc(f)}">✕</button></li>`).join("")
         : '<li class="muted">폴더 없음</li>');
@@ -640,7 +639,20 @@
     const setFolders = (folders) => req("ws:topic:update", { id: detailTid, folders });
 
     $("dt-back").onclick = closeDetail;
-    $("dt-edit").onclick = () => detail && openTopicForm(detail.topic);
+    for (const [id, field] of [["dt-name", "name"], ["dt-desc", "description"]]) {
+      const el = $(id);
+      const saved = () => detail?.topic[field] ?? "";
+      el.addEventListener("change", dtAct(async () => {
+        const v = el.value.trim();
+        if (!detail || v === saved()) return;
+        if (field === "name" && !v) return void (el.value = saved()); // 이름은 비울 수 없다
+        await req("ws:topic:update", { id: detailTid, [field]: v }); // 이름 중복 등 실패는 dt-error에 표시, 입력은 남겨 고치게 한다
+      }));
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") el.blur(); // 저장은 change가 한다
+        else if (e.key === "Escape") { el.value = saved(); showDtError(null); el.blur(); }
+      });
+    }
     $("dt-delete").onclick = () => detail && deleteTopic(detail.topic);
     $("dt-folder-form").addEventListener("submit", dtAct(async (ev) => {
       ev.preventDefault();
@@ -769,7 +781,6 @@
       const act = ev.target.closest("button")?.dataset.act;
       if (act === "close") closePreview();
       else if (act === "detail") openDetail(openTid);
-      else if (act === "edit") openTopicForm(preview.topic);
       else if (act === "delete") deleteTopic(preview.topic);
     });
     // 미리보기·상세 공용 삭제 — 둘 다 닫고 보드로
@@ -781,18 +792,13 @@
       $("btn-topic-new").focus(); // 지운 카드로는 포커스를 돌릴 수 없다
     }
 
-    // 새 주제·편집 공용 폼 — 서버 오류(ok:false)는 alert 대신 폼 안에 표시
-    function openTopicForm(t) {
-      $("td-title").textContent = t ? "주제 편집" : "새 주제";
-      $("td-id").value = t?.id ?? "";
-      $("td-name").value = t?.name ?? "";
-      $("td-desc").value = t?.description ?? "";
-      $("td-folders").value = t?.folders.join("\n") ?? "";
+    // 새 주제 폼 — 서버 오류(ok:false)는 alert 대신 폼 안에 표시. 기존 주제 수정은 상세 화면에서 한다
+    $("btn-topic-new").onclick = () => {
+      for (const id of ["td-name", "td-desc", "td-folders"]) $(id).value = "";
       $("td-error").hidden = true;
       $("topic-dialog").showModal();
       $("td-name").focus();
-    }
-    $("btn-topic-new").onclick = () => openTopicForm(null);
+    };
     $("td-cancel").onclick = () => $("topic-dialog").close();
     $("topic-form").addEventListener("submit", async (ev) => {
       ev.preventDefault();
@@ -801,12 +807,11 @@
         description: $("td-desc").value.trim(),
         folders: $("td-folders").value.split("\n").map((s) => s.trim()).filter(Boolean),
       };
-      const id = $("td-id").value;
       const submit = $("topic-form").querySelector('button[type="submit"]');
       submit.disabled = true; // 응답 전 두 번 제출(중복 생성) 방지
       let r;
       try {
-        r = id ? await req("ws:topic:update", { id: Number(id), ...fields }) : await req("ws:topic:create", fields);
+        r = await req("ws:topic:create", fields);
       } catch (e) {
         $("td-error").textContent = e.message.replace(/^Error: /, ""); // 서버가 String(err)로 보낸다
         $("td-error").hidden = false;
@@ -815,7 +820,7 @@
         submit.disabled = false;
       }
       $("topic-dialog").close();
-      if (!id) await openPreview(r.id);
+      await openPreview(r.id);
     });
 
     socket.on("connect", loadBoard);
